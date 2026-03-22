@@ -1,0 +1,14 @@
+# Dependencies & environments
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# LightRAG has its own repo
+LightRAG/
+
+# RAG storage data (large JSON/binary files)
+westbury/rag_storage_westbury_qwen3_32b/
+
+# OS files
+.DS_Store
