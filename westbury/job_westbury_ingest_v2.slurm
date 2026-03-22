@@ -74,6 +74,43 @@ for s in ("processed", "processing", "pending", "failed"):
     print(f"    {s}: {counts.get(s, 0)}")
 PYEOF
 
+# ── (2A) Start Qdrant sidecar via Apptainer ───────────────────────────────
+# Use Qdrant if the SIF image exists; otherwise fall back to NanoVectorDB.
+QDRANT_SIF="$WORKDIR/qdrant_latest.sif"
+QDRANT_DATA="$WORKDIR/qdrant_storage_westbury"
+QDRANT_PID=""
+
+if [ -f "$QDRANT_SIF" ]; then
+    mkdir -p "$QDRANT_DATA"
+    module load apptainer/1.4.5 2>/dev/null || true
+    echo "[$(date)] Starting Qdrant sidecar (Apptainer)..."
+    apptainer run --bind "$QDRANT_DATA:/qdrant/storage" "$QDRANT_SIF" &
+    QDRANT_PID=$!
+
+    # Wait for Qdrant to be ready (up to 2 minutes)
+    for i in $(seq 1 24); do
+        if curl -sf "http://localhost:6333/healthz" > /dev/null 2>&1; then
+            echo "[$(date)] Qdrant ready after $((i * 5))s"
+            break
+        fi
+        if [ $i -eq 24 ]; then
+            echo "[$(date)] WARNING: Qdrant did not start in 2 min. Falling back to NanoVectorDB."
+            kill $QDRANT_PID 2>/dev/null
+            QDRANT_PID=""
+        fi
+        sleep 5
+    done
+else
+    echo "[$(date)] No Qdrant SIF found at $QDRANT_SIF — using NanoVectorDB."
+    echo "  To enable Qdrant: apptainer pull $QDRANT_SIF docker://qdrant/qdrant:latest"
+fi
+
+# Set QDRANT_URL only if Qdrant is running
+QDRANT_URL=""
+if [ -n "$QDRANT_PID" ] && kill -0 $QDRANT_PID 2>/dev/null; then
+    QDRANT_URL="http://localhost:6333"
+fi
+
 # ── Run ingest (v2) ───────────────────────────────────────────────────────
 echo "[$(date)] Starting ingestion v2 (rag_storage_westbury_qwen3_32b, MIG 3/8)..."
 WORKDIR=$WORKDIR \
@@ -88,10 +125,19 @@ CONTEXT_MAX_ASYNC=32 \
 MAX_DOC_TOKENS=20000 \
 EMBED_FUNC_MAX_ASYNC=4 \
 MAX_PARALLEL_INSERT=32 \
+QDRANT_URL=$QDRANT_URL \
+INSERT_DONE_EVERY_N=5 \
   python "$WORKDIR/ingest_cml_octen_v2.py"
 
 EXIT_CODE=$?
 echo "[$(date)] Ingestion finished with exit code $EXIT_CODE."
+
+# Stop Qdrant sidecar if running
+if [ -n "$QDRANT_PID" ]; then
+    kill $QDRANT_PID 2>/dev/null
+    wait $QDRANT_PID 2>/dev/null
+    echo "[$(date)] Qdrant sidecar stopped."
+fi
 
 # ── Auto-resubmission (2B) ────────────────────────────────────────────────
 # Count remaining unprocessed docs. If any remain and we haven't hit the

@@ -8,6 +8,10 @@ Changes from v1 (ingest_cml_octen.py):
       processed). LightRAG's pipeline picks them up internally.
   1C. Live status monitor: background task prints real extraction counts
       every 30s from kv_store_doc_status.json.
+  2A. Qdrant support: if QDRANT_URL is set, uses QdrantVectorDBStorage
+      instead of NanoVectorDB. Eliminates 10+ GB JSON files.
+  3A. Batched flush: INSERT_DONE_EVERY_N controls how often _insert_done()
+      is called (default: every doc). Higher values reduce GPU idle time.
   3B. LLM retry with failover: 3 retries per call, exponential backoff,
       endpoint removal + re-discovery on persistent failure.
 
@@ -24,6 +28,8 @@ Environment variables (set by job_westbury_ingest_v2.slurm):
     CONTEXT_MAX_ASYNC — max concurrent contextualization requests (default 8)
     EMBED_FUNC_MAX_ASYNC — max concurrent embedding calls (default 1)
     MAX_PARALLEL_INSERT  — LightRAG pipeline concurrency (default 2)
+    QDRANT_URL           — if set, use QdrantVectorDBStorage instead of NanoVectorDB (2A)
+    INSERT_DONE_EVERY_N  — flush storage every N docs instead of every 1 (3A, default 1)
 """
 
 import asyncio
@@ -60,6 +66,13 @@ LLM_MAX_ASYNC     = int(os.environ.get("LLM_MAX_ASYNC", 8))
 CONTEXT_MAX_ASYNC = int(os.environ.get("CONTEXT_MAX_ASYNC", 8))
 EMBED_FUNC_MAX_ASYNC = int(os.environ.get("EMBED_FUNC_MAX_ASYNC", 1))
 MAX_PARALLEL_INSERT  = int(os.environ.get("MAX_PARALLEL_INSERT", 2))
+
+# 2A: Qdrant support — if QDRANT_URL is set, use QdrantVectorDBStorage
+QDRANT_URL = os.environ.get("QDRANT_URL", "")
+USE_QDRANT = bool(QDRANT_URL)
+
+# 3A: Batched flush — flush storage every N docs instead of every 1
+INSERT_DONE_EVERY_N = int(os.environ.get("INSERT_DONE_EVERY_N", 1))
 
 # ── Embedding ──────────────────────────────────────────────────────────────────
 
@@ -316,6 +329,8 @@ async def main():
     print(f"CTX_MAX_ASYNC : {CONTEXT_MAX_ASYNC}")
     print(f"EMBED_MAX_ASYNC: {EMBED_FUNC_MAX_ASYNC}")
     print(f"MAX_PARALLEL_INSERT: {MAX_PARALLEL_INSERT}")
+    print(f"QDRANT_URL    : {QDRANT_URL or '(not set — using NanoVectorDB)'}")
+    print(f"INSERT_DONE_N : {INSERT_DONE_EVERY_N}")
     print(f"[v2] Endpoint validation, resume support, status monitor, LLM failover\n")
 
     # Pre-load embedding model now (takes ~1 min) while waiting for vLLM
@@ -328,7 +343,8 @@ async def main():
 
     llm_func = build_round_robin_llm(endpoints)
 
-    rag = LightRAG(
+    # Build LightRAG kwargs — conditionally add Qdrant and batched flush
+    rag_kwargs = dict(
         working_dir=str(STORAGE_DIR),
         llm_model_func=llm_func,
         embedding_func=EmbeddingFunc(
@@ -342,6 +358,18 @@ async def main():
         embedding_func_max_async=EMBED_FUNC_MAX_ASYNC,
         max_parallel_insert=MAX_PARALLEL_INSERT,
     )
+
+    # 2A: Use Qdrant if QDRANT_URL is set
+    if USE_QDRANT:
+        rag_kwargs["vector_storage"] = "QdrantVectorDBStorage"
+        print(f"[2A] Using QdrantVectorDBStorage at {QDRANT_URL}")
+
+    # 3A: Batched flush
+    if INSERT_DONE_EVERY_N > 1:
+        rag_kwargs["insert_done_every_n"] = INSERT_DONE_EVERY_N
+        print(f"[3A] Flushing storage every {INSERT_DONE_EVERY_N} docs")
+
+    rag = LightRAG(**rag_kwargs)
 
     await rag.initialize_storages()
 
