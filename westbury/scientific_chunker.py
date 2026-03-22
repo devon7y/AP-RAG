@@ -307,7 +307,13 @@ _ACK_SECTIONS = frozenset(
     }
 )
 
-_NUM_PREFIX = re.compile(r"^(\d+(?:\.\d+)*\.?\s+|[IVXivx]+\.\s+)")
+# Strips any number prefix (digits only — roman numerals handled separately below)
+_NUM_PREFIX = re.compile(r"^(\d+(?:\.\d+)*\.?\s+)")
+
+# Requires a dot after the number — used for catch-all numbered-header detection
+# to avoid matching page headers like "72 Author Name". Uppercase roman numerals
+# only, to avoid matching "v. August" (common date format).
+_NUM_PREFIX_DOT = re.compile(r"^(\d+(?:\.\d+)*\.\s+|[IVX]+\.\s+)")
 
 _CAPTION_START = re.compile(
     r"^(?:Figure|Fig\.|Table|Plate|Chart|Scheme)\s+\d",
@@ -321,24 +327,31 @@ def _is_section_header(line: str) -> tuple[bool, str]:
     if not stripped or len(stripped) > 120:
         return False, ""
 
-    # Remove number prefix for matching
+    # Strip any leading digit-based number prefix to get the title body
     num_match = _NUM_PREFIX.match(stripped)
     title_core = stripped[num_match.end() :].strip() if num_match else stripped
 
-    # Known section name (case-insensitive)
-    core_lower = title_core.lower().rstrip(".:")
-    if core_lower in _KNOWN_SECTIONS:
-        return True, stripped
+    # Known section name — require the line to start with an uppercase letter or
+    # digit to avoid matching lowercase sentence fragments ("stimuli.", "data.").
+    if stripped[0].isupper() or stripped[0].isdigit():
+        core_lower = title_core.lower().rstrip(".:")
+        if core_lower in _KNOWN_SECTIONS:
+            return True, stripped
 
     # All-caps line matching a known section
     if stripped.isupper() and stripped.lower().rstrip(".:") in _KNOWN_SECTIONS:
         return True, stripped
 
-    # Numbered header with short capitalized text (e.g. "3.2 Feature Extraction")
-    if num_match and title_core and title_core[0].isupper():
-        words = title_core.split()
-        if 1 <= len(words) <= 8 and not title_core.rstrip().endswith("."):
-            return True, stripped
+    # Numbered header with short capitalized text (e.g. "3.2 Feature Extraction").
+    # Require a DOT after the number to avoid matching page headers like
+    # "72 Author Name" or "332 Language and Speech 56(3)".
+    num_match_dot = _NUM_PREFIX_DOT.match(stripped)
+    if num_match_dot:
+        title_core_dot = stripped[num_match_dot.end() :].strip()
+        if title_core_dot and title_core_dot[0].isupper():
+            words = title_core_dot.split()
+            if 1 <= len(words) <= 8 and not title_core_dot.rstrip().endswith("."):
+                return True, stripped
 
     return False, ""
 
