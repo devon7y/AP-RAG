@@ -579,11 +579,6 @@ async def main():
         rag_kwargs["vector_storage"] = "QdrantVectorDBStorage"
         print(f"[2A] Using QdrantVectorDBStorage at {QDRANT_URL}")
 
-    # 3A: Batched flush
-    if INSERT_DONE_EVERY_N > 1:
-        rag_kwargs["insert_done_every_n"] = INSERT_DONE_EVERY_N
-        print(f"[3A] Flushing storage every {INSERT_DONE_EVERY_N} docs")
-
     rag = LightRAG(**rag_kwargs)
 
     await rag.initialize_storages()
