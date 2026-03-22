@@ -14,6 +14,9 @@ Changes from v1 (ingest_cml_octen.py):
       is called (default: every doc). Higher values reduce GPU idle time.
   3B. LLM retry with failover: 3 retries per call, exponential backoff,
       endpoint removal + re-discovery on persistent failure.
+  4.  Rebuild embeddings mode: REBUILD_EMBEDDINGS=1 rebuilds vector DBs
+      from cached intermediates (KV stores + graph) without any LLM calls.
+      Use when switching embedding models or vector DB backends.
 
 Environment variables (set by job_westbury_ingest_v2.slurm):
     WORKDIR          — HPC working directory
@@ -30,6 +33,8 @@ Environment variables (set by job_westbury_ingest_v2.slurm):
     MAX_PARALLEL_INSERT  — LightRAG pipeline concurrency (default 2)
     QDRANT_URL           — if set, use QdrantVectorDBStorage instead of NanoVectorDB (2A)
     INSERT_DONE_EVERY_N  — flush storage every N docs instead of every 1 (3A, default 1)
+    REBUILD_EMBEDDINGS   — if "1", skip LLM pipeline and rebuild vector DBs from cache (4)
+    REBUILD_BATCH_SIZE   — records per upsert batch during rebuild (default 50)
 """
 
 import asyncio
@@ -73,6 +78,10 @@ USE_QDRANT = bool(QDRANT_URL)
 
 # 3A: Batched flush — flush storage every N docs instead of every 1
 INSERT_DONE_EVERY_N = int(os.environ.get("INSERT_DONE_EVERY_N", 1))
+
+# 4: Rebuild embeddings mode — skip LLM pipeline, recompute vectors from cache
+REBUILD_EMBEDDINGS = os.environ.get("REBUILD_EMBEDDINGS", "0") == "1"
+REBUILD_BATCH_SIZE = int(os.environ.get("REBUILD_BATCH_SIZE", 50))
 
 # ── Embedding ──────────────────────────────────────────────────────────────────
 
@@ -314,9 +323,196 @@ async def status_monitor(storage_dir: Path, t_start: float):
             pass  # Don't crash on monitor errors
 
 
+# ── Rebuild Embeddings from Cache (4) ─────────────────────────────────────────
+
+async def rebuild_embeddings_from_cache():
+    """
+    Rebuild vector DBs from existing KV stores and graph. No LLM calls.
+
+    Reads contextualized chunks from kv_store_text_chunks.json and
+    entity/relation data from graph_chunk_entity_relation.graphml,
+    then recomputes embeddings and inserts into the configured vector DB.
+
+    Use when switching embedding models or vector DB backends without
+    re-running the entire extraction pipeline.
+    """
+    import networkx as nx
+    from lightrag import LightRAG
+    from lightrag.utils import EmbeddingFunc, compute_mdhash_id
+
+    print("=" * 60)
+    print("REBUILD EMBEDDINGS MODE")
+    print("Reading cached intermediates — no LLM calls will be made.")
+    print("=" * 60)
+
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ── Verify cached intermediates exist ──
+    chunks_path = STORAGE_DIR / "kv_store_text_chunks.json"
+    graph_path = STORAGE_DIR / "graph_chunk_entity_relation.graphml"
+
+    missing = []
+    if not chunks_path.exists():
+        missing.append(str(chunks_path))
+    if not graph_path.exists():
+        missing.append(str(graph_path))
+    if missing:
+        print("ERROR: Cannot rebuild — missing cached intermediates:")
+        for m in missing:
+            print(f"  {m}")
+        print("Run a full ingestion first to populate the cache.")
+        sys.exit(1)
+
+    t_start = time.time()
+
+    # ── Load cached data ──
+    print("\nLoading cached intermediates...")
+    chunks = json.loads(chunks_path.read_text())
+    print(f"  Text chunks: {len(chunks)}")
+
+    graph = nx.read_graphml(str(graph_path))
+    n_entities = graph.number_of_nodes()
+    n_relations = graph.number_of_edges()
+    print(f"  Entities:    {n_entities}")
+    print(f"  Relations:   {n_relations}")
+
+    # ── Clear old vector DB data ──
+    print("\nClearing old vector DB data...")
+    for f in STORAGE_DIR.glob("vdb_*.json"):
+        f.unlink()
+        print(f"  Removed: {f.name}")
+
+    # ── Pre-load embedding model ──
+    get_embed_model()
+
+    # ── Initialize LightRAG (embedding only, no LLM) ──
+    async def _dummy_llm(*args, **kwargs):
+        raise RuntimeError("LLM should not be called during REBUILD_EMBEDDINGS")
+
+    rag_kwargs = dict(
+        working_dir=str(STORAGE_DIR),
+        llm_model_func=_dummy_llm,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=EMBEDDING_DIM,
+            max_token_size=8192,
+            func=local_embed,
+        ),
+        embedding_func_max_async=EMBED_FUNC_MAX_ASYNC,
+    )
+    if USE_QDRANT:
+        rag_kwargs["vector_storage"] = "QdrantVectorDBStorage"
+        print(f"\nTarget vector DB: Qdrant ({QDRANT_URL})")
+    else:
+        print("\nTarget vector DB: NanoVectorDB")
+
+    rag = LightRAG(**rag_kwargs)
+    await rag.initialize_storages()
+
+    # ── Rebuild chunk embeddings ──
+    print(f"\nRebuilding chunk embeddings ({len(chunks)} chunks, batch={REBUILD_BATCH_SIZE})...")
+    batch = {}
+    done = 0
+    for chunk_id, chunk_data in chunks.items():
+        batch[chunk_id] = {
+            "content": chunk_data.get("content", ""),
+            "full_doc_id": chunk_data.get("full_doc_id", ""),
+            "file_path": chunk_data.get("file_path", ""),
+        }
+        if len(batch) >= REBUILD_BATCH_SIZE:
+            await rag.chunks_vdb.upsert(batch)
+            done += len(batch)
+            batch = {}
+            elapsed = time.time() - t_start
+            rate = done / (elapsed / 60) if elapsed > 0 else 0
+            print(f"  Chunks: {done}/{len(chunks)} ({rate:.0f}/min)", flush=True)
+    if batch:
+        await rag.chunks_vdb.upsert(batch)
+        done += len(batch)
+    print(f"  Chunks: {done}/{len(chunks)} done")
+
+    # ── Rebuild entity embeddings ──
+    print(f"\nRebuilding entity embeddings ({n_entities} entities, batch={REBUILD_BATCH_SIZE})...")
+    batch = {}
+    done = 0
+    for node_name, node_data in graph.nodes(data=True):
+        description = node_data.get("description", "")
+        entity_vdb_id = compute_mdhash_id(node_name, prefix="ent-")
+        batch[entity_vdb_id] = {
+            "content": f"{node_name}\n{description}",
+            "entity_name": node_name,
+            "source_id": node_data.get("source_id", ""),
+            "description": description,
+            "entity_type": node_data.get("entity_type", ""),
+            "file_path": node_data.get("file_path", ""),
+        }
+        if len(batch) >= REBUILD_BATCH_SIZE:
+            await rag.entities_vdb.upsert(batch)
+            done += len(batch)
+            batch = {}
+            elapsed = time.time() - t_start
+            rate = done / (elapsed / 60) if elapsed > 0 else 0
+            print(f"  Entities: {done}/{n_entities} ({rate:.0f}/min)", flush=True)
+    if batch:
+        await rag.entities_vdb.upsert(batch)
+        done += len(batch)
+    print(f"  Entities: {done}/{n_entities} done")
+
+    # ── Rebuild relation embeddings ──
+    print(f"\nRebuilding relation embeddings ({n_relations} relations, batch={REBUILD_BATCH_SIZE})...")
+    batch = {}
+    done = 0
+    for src, tgt, edge_data in graph.edges(data=True):
+        keywords = edge_data.get("keywords", "")
+        description = edge_data.get("description", "")
+        rel_vdb_id = compute_mdhash_id(f"{src}_{tgt}", prefix="rel-")
+        batch[rel_vdb_id] = {
+            "src_id": src,
+            "tgt_id": tgt,
+            "source_id": edge_data.get("source_id", ""),
+            "content": f"{keywords}\t{src}\n{tgt}\n{description}",
+            "keywords": keywords,
+            "description": description,
+            "weight": float(edge_data.get("weight", 1.0)),
+            "file_path": edge_data.get("file_path", ""),
+        }
+        if len(batch) >= REBUILD_BATCH_SIZE:
+            await rag.relationships_vdb.upsert(batch)
+            done += len(batch)
+            batch = {}
+            elapsed = time.time() - t_start
+            rate = done / (elapsed / 60) if elapsed > 0 else 0
+            print(f"  Relations: {done}/{n_relations} ({rate:.0f}/min)", flush=True)
+    if batch:
+        await rag.relationships_vdb.upsert(batch)
+        done += len(batch)
+    print(f"  Relations: {done}/{n_relations} done")
+
+    # ── Flush and finalize ──
+    await rag._insert_done()
+    await rag.finalize_storages()
+
+    elapsed = time.time() - t_start
+    total = len(chunks) + n_entities + n_relations
+    print(f"\n{'='*60}")
+    print(f"Rebuild complete in {elapsed/60:.1f} min")
+    print(f"  Chunks:    {len(chunks)}")
+    print(f"  Entities:  {n_entities}")
+    print(f"  Relations: {n_relations}")
+    print(f"  Total embeddings: {total}")
+    if elapsed > 0:
+        print(f"  Rate: {total/(elapsed/60):.0f} embeddings/min")
+    print(f"  Embed model: {EMBED_MODEL_ID}")
+    print(f"  Vector DB:   {'Qdrant' if USE_QDRANT else 'NanoVectorDB'}")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 async def main():
+    # ── Rebuild mode: skip full pipeline, only recompute embeddings ──
+    if REBUILD_EMBEDDINGS:
+        await rebuild_embeddings_from_cache()
+        return
+
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     ENDPOINTS_DIR.mkdir(parents=True, exist_ok=True)
 

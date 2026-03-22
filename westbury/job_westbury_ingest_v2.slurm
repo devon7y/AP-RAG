@@ -14,6 +14,8 @@
 #   - Read-only status report before ingestion
 #   - Auto-resubmission: if unprocessed docs remain, submits a new job pair
 #   - References ingest_cml_octen_v2.py instead of ingest_cml_octen.py
+#   - REBUILD_EMBEDDINGS=1 mode: rebuild vector DBs from cached intermediates
+#     (no vLLM needed, no auto-resubmission)
 #
 # Memory budget (40 GB MIG):
 #   Octen-8B-INT8 model: ~10 GiB
@@ -112,7 +114,13 @@ if [ -n "$QDRANT_PID" ] && kill -0 $QDRANT_PID 2>/dev/null; then
 fi
 
 # ── Run ingest (v2) ───────────────────────────────────────────────────────
-echo "[$(date)] Starting ingestion v2 (rag_storage_westbury_qwen3_32b, MIG 3/8)..."
+REBUILD_EMBEDDINGS=${REBUILD_EMBEDDINGS:-0}
+if [ "$REBUILD_EMBEDDINGS" = "1" ]; then
+    echo "[$(date)] REBUILD EMBEDDINGS MODE — no vLLM needed, recomputing vectors from cache..."
+else
+    echo "[$(date)] Starting ingestion v2 (rag_storage_westbury_qwen3_32b, MIG 3/8)..."
+fi
+
 WORKDIR=$WORKDIR \
 N_VLLM=1 \
 ENDPOINTS_SUBDIR=vllm_endpoints_westbury_qwen3_32b \
@@ -127,6 +135,7 @@ EMBED_FUNC_MAX_ASYNC=4 \
 MAX_PARALLEL_INSERT=32 \
 QDRANT_URL=$QDRANT_URL \
 INSERT_DONE_EVERY_N=5 \
+REBUILD_EMBEDDINGS=$REBUILD_EMBEDDINGS \
   python "$WORKDIR/ingest_cml_octen_v2.py"
 
 EXIT_CODE=$?
@@ -140,6 +149,12 @@ if [ -n "$QDRANT_PID" ]; then
 fi
 
 # ── Auto-resubmission (2B) ────────────────────────────────────────────────
+# Skip auto-resubmission in rebuild mode (single-pass operation).
+if [ "$REBUILD_EMBEDDINGS" = "1" ]; then
+    echo "[$(date)] Rebuild mode — no auto-resubmission."
+    exit $EXIT_CODE
+fi
+
 # Count remaining unprocessed docs. If any remain and we haven't hit the
 # iteration limit, submit a new vLLM + ingest pair.
 REMAINING=$(python3 -c "
