@@ -17,6 +17,9 @@ Changes from v1 (ingest_cml_octen.py):
   4.  Rebuild embeddings mode: REBUILD_EMBEDDINGS=1 rebuilds vector DBs
       from cached intermediates (KV stores + graph) without any LLM calls.
       Use when switching embedding models or vector DB backends.
+  5.  Structure-aware chunking: replaces LightRAG's fixed-length token chunker
+      with a scientific-paper-aware chunker that respects section, paragraph,
+      and sentence boundaries. Configurable via CHUNK_* env vars.
 
 Environment variables (set by job_westbury_ingest_v2.slurm):
     WORKDIR          — HPC working directory
@@ -35,6 +38,12 @@ Environment variables (set by job_westbury_ingest_v2.slurm):
     INSERT_DONE_EVERY_N  — flush storage every N docs instead of every 1 (3A, default 1)
     REBUILD_EMBEDDINGS   — if "1", skip LLM pipeline and rebuild vector DBs from cache (4)
     REBUILD_BATCH_SIZE   — records per upsert batch during rebuild (default 50)
+    CHUNK_TARGET_TOKENS  — target chunk size in tokens (5, default 800)
+    CHUNK_MAX_TOKENS     — hard max chunk size in tokens (5, default 1000)
+    CHUNK_MIN_TOKENS     — min chunk size; smaller tails are rebalanced (5, default 300)
+    CHUNK_OVERLAP_TOKENS — sentence-aware overlap between chunks (5, default 150)
+    CHUNK_EXCLUDE_REFS   — exclude References section from chunks (5, default 1)
+    CHUNK_EXCLUDE_ACK    — exclude Acknowledgements section (5, default 1)
 """
 
 import asyncio
@@ -82,6 +91,12 @@ INSERT_DONE_EVERY_N = int(os.environ.get("INSERT_DONE_EVERY_N", 1))
 # 4: Rebuild embeddings mode — skip LLM pipeline, recompute vectors from cache
 REBUILD_EMBEDDINGS = os.environ.get("REBUILD_EMBEDDINGS", "0") == "1"
 REBUILD_BATCH_SIZE = int(os.environ.get("REBUILD_BATCH_SIZE", 50))
+
+# 5: Structure-aware scientific paper chunker (replaces LightRAG's token chunker)
+from scientific_chunker import ChunkerConfig, make_scientific_chunker
+
+CHUNKER_CONFIG = ChunkerConfig.from_env()
+SCIENTIFIC_CHUNKER = make_scientific_chunker(CHUNKER_CONFIG)
 
 # ── Embedding ──────────────────────────────────────────────────────────────────
 
@@ -527,6 +542,9 @@ async def main():
     print(f"MAX_PARALLEL_INSERT: {MAX_PARALLEL_INSERT}")
     print(f"QDRANT_URL    : {QDRANT_URL or '(not set — using NanoVectorDB)'}")
     print(f"INSERT_DONE_N : {INSERT_DONE_EVERY_N}")
+    print(f"Chunker       : scientific (target={CHUNKER_CONFIG.target_tokens}, "
+          f"max={CHUNKER_CONFIG.max_tokens}, min={CHUNKER_CONFIG.min_tokens}, "
+          f"overlap={CHUNKER_CONFIG.overlap_tokens})")
     print(f"[v2] Endpoint validation, resume support, status monitor, LLM failover\n")
 
     # Pre-load embedding model now (takes ~1 min) while waiting for vLLM
@@ -548,6 +566,7 @@ async def main():
             max_token_size=8192,
             func=local_embed,
         ),
+        chunking_func=SCIENTIFIC_CHUNKER,  # 5: structure-aware chunker
         contextualize_chunks=True,
         llm_model_max_async=LLM_MAX_ASYNC,
         contextualize_max_async=CONTEXT_MAX_ASYNC,

@@ -16,6 +16,7 @@
 #   - References ingest_cml_octen_v2.py instead of ingest_cml_octen.py
 #   - REBUILD_EMBEDDINGS=1 mode: rebuild vector DBs from cached intermediates
 #     (no vLLM needed, no auto-resubmission)
+#   - Structure-aware chunking via CHUNK_* env vars (section/paragraph/sentence)
 #
 # Memory budget (40 GB MIG):
 #   Octen-8B-INT8 model: ~10 GiB
@@ -136,6 +137,12 @@ MAX_PARALLEL_INSERT=32 \
 QDRANT_URL=$QDRANT_URL \
 INSERT_DONE_EVERY_N=5 \
 REBUILD_EMBEDDINGS=$REBUILD_EMBEDDINGS \
+CHUNK_TARGET_TOKENS=${CHUNK_TARGET_TOKENS:-800} \
+CHUNK_MAX_TOKENS=${CHUNK_MAX_TOKENS:-1000} \
+CHUNK_MIN_TOKENS=${CHUNK_MIN_TOKENS:-300} \
+CHUNK_OVERLAP_TOKENS=${CHUNK_OVERLAP_TOKENS:-150} \
+CHUNK_EXCLUDE_REFS=${CHUNK_EXCLUDE_REFS:-1} \
+CHUNK_EXCLUDE_ACK=${CHUNK_EXCLUDE_ACK:-1} \
   python "$WORKDIR/ingest_cml_octen_v2.py"
 
 EXIT_CODE=$?
