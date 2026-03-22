@@ -1,0 +1,480 @@
+"""
+ingest_cml_octen_v2.py — Improved LightRAG ingestion for Westbury/CML papers.
+
+Changes from v1 (ingest_cml_octen.py):
+  1A. Endpoint validation: health-check + squeue cross-check on discovery;
+      stale endpoint files are deleted automatically.
+  1B. Resume support: skip docs with status pending/processing (not just
+      processed). LightRAG's pipeline picks them up internally.
+  1C. Live status monitor: background task prints real extraction counts
+      every 30s from kv_store_doc_status.json.
+  3B. LLM retry with failover: 3 retries per call, exponential backoff,
+      endpoint removal + re-discovery on persistent failure.
+
+Environment variables (set by job_westbury_ingest_v2.slurm):
+    WORKDIR          — HPC working directory
+    N_VLLM           — number of vLLM nodes to wait for (default 1)
+    ENDPOINTS_SUBDIR — subdirectory name for vLLM endpoint files
+    PAPERS_SUBDIR    — subdirectory containing PDFs
+    STORAGE_SUBDIR   — subdirectory for LightRAG storage
+    LLM_MODEL        — model name served by vLLM
+    MAX_DOC_TOKENS   — max tokens per document before truncation (default 120000)
+    PARALLEL_DOCS    — number of documents to ingest concurrently (default 4)
+    LLM_MAX_ASYNC    — max concurrent LLM requests (default 8)
+    CONTEXT_MAX_ASYNC — max concurrent contextualization requests (default 8)
+    EMBED_FUNC_MAX_ASYNC — max concurrent embedding calls (default 1)
+    MAX_PARALLEL_INSERT  — LightRAG pipeline concurrency (default 2)
+"""
+
+import asyncio
+import hashlib
+import itertools
+import json
+import os
+import subprocess
+import sys
+import time
+from functools import partial
+from pathlib import Path
+
+import numpy as np
+
+# ── Configuration ──────────────────────────────────────────────────────────────
+
+WORKDIR       = Path(os.environ["WORKDIR"])
+PAPERS_DIR    = WORKDIR / os.environ.get("PAPERS_SUBDIR", "papers_raw")
+STORAGE_DIR   = WORKDIR / os.environ.get("STORAGE_SUBDIR", "rag_storage_octen")
+ENDPOINTS_DIR = WORKDIR / os.environ.get("ENDPOINTS_SUBDIR", "vllm_endpoints_cml")
+N_VLLM        = int(os.environ.get("N_VLLM", 1))
+
+LLM_MODEL  = os.environ.get("LLM_MODEL", "Qwen/Qwen3.5-27B-FP8")
+LLM_API_KEY = "EMPTY"
+
+EMBED_MODEL_ID = "Octen/Octen-Embedding-8B-INT8"
+EMBEDDING_DIM  = 4096
+EMBED_BATCH    = 16   # sentences per GPU batch
+
+MAX_DOC_TOKENS    = int(os.environ.get("MAX_DOC_TOKENS", 120_000))
+PARALLEL_DOCS     = int(os.environ.get("PARALLEL_DOCS", 4))
+LLM_MAX_ASYNC     = int(os.environ.get("LLM_MAX_ASYNC", 8))
+CONTEXT_MAX_ASYNC = int(os.environ.get("CONTEXT_MAX_ASYNC", 8))
+EMBED_FUNC_MAX_ASYNC = int(os.environ.get("EMBED_FUNC_MAX_ASYNC", 1))
+MAX_PARALLEL_INSERT  = int(os.environ.get("MAX_PARALLEL_INSERT", 2))
+
+# ── Embedding ──────────────────────────────────────────────────────────────────
+
+_embed_model = None
+
+
+def get_embed_model():
+    global _embed_model
+    if _embed_model is None:
+        from sentence_transformers import SentenceTransformer
+        print(f"Loading embedding model {EMBED_MODEL_ID} on cuda…", flush=True)
+        _embed_model = SentenceTransformer(EMBED_MODEL_ID, device="cuda")
+        print("Embedding model ready.", flush=True)
+    return _embed_model
+
+
+async def local_embed(texts: list[str]) -> np.ndarray:
+    model = get_embed_model()
+    prefixed = ["- " + t for t in texts]
+    loop = asyncio.get_event_loop()
+    embeddings = await loop.run_in_executor(
+        None,
+        lambda: model.encode(
+            prefixed,
+            normalize_embeddings=True,
+            batch_size=EMBED_BATCH,
+            show_progress_bar=False,
+        ),
+    )
+    return np.array(embeddings)
+
+
+# ── Endpoint Discovery & Validation (1A) ──────────────────────────────────────
+
+def _health_check(endpoint_url: str, timeout: float = 10.0) -> bool:
+    """Check if a vLLM endpoint is alive via GET /health."""
+    import urllib.request
+    import urllib.error
+    # endpoint_url is like http://host:port/v1 — health is at /health
+    health_url = endpoint_url.rstrip("/").replace("/v1", "") + "/health"
+    try:
+        req = urllib.request.Request(health_url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _is_slurm_job_running(job_id: str) -> bool:
+    """Check if a SLURM job ID is still active via squeue."""
+    try:
+        result = subprocess.run(
+            ["squeue", "--job", job_id, "--noheader", "-o", "%T"],
+            capture_output=True, text=True, timeout=10,
+        )
+        state = result.stdout.strip()
+        return state in ("RUNNING", "PENDING", "CONFIGURING")
+    except Exception:
+        # If squeue is unavailable, assume job is running (don't delete)
+        return True
+
+
+def _validate_endpoint_file(filepath: Path) -> str | None:
+    """
+    Validate a single endpoint file. Returns the endpoint URL if valid,
+    or None if stale (and deletes the file).
+    """
+    endpoint = filepath.read_text().strip()
+    if not endpoint:
+        print(f"  [STALE] Empty endpoint file: {filepath.name} — deleting", flush=True)
+        filepath.unlink(missing_ok=True)
+        return None
+
+    # Extract SLURM job ID from filename (e.g., "28818145.txt")
+    job_id = filepath.stem
+
+    # Check 1: Is the SLURM job still running?
+    if not _is_slurm_job_running(job_id):
+        print(f"  [STALE] Job {job_id} not in squeue — deleting {filepath.name}", flush=True)
+        filepath.unlink(missing_ok=True)
+        return None
+
+    # Check 2: Does the endpoint respond to health check?
+    if not _health_check(endpoint):
+        print(f"  [STALE] {endpoint} failed health check — deleting {filepath.name}", flush=True)
+        filepath.unlink(missing_ok=True)
+        return None
+
+    return endpoint
+
+
+def discover_endpoints(timeout_s: int = 3600) -> list[str]:
+    """Discover and validate vLLM endpoints. Deletes stale endpoint files."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        files = sorted(ENDPOINTS_DIR.glob("*.txt"))
+        endpoints = []
+        for f in files:
+            ep = _validate_endpoint_file(f)
+            if ep:
+                endpoints.append(ep)
+
+        if len(endpoints) >= N_VLLM:
+            print(f"Discovered {len(endpoints)} validated vLLM endpoint(s):")
+            for ep in endpoints:
+                print(f"  {ep}")
+            return endpoints
+        print(f"  waiting for valid endpoints ({len(endpoints)}/{N_VLLM})…", flush=True)
+        time.sleep(15)
+
+    # Timeout — try with whatever we have
+    files = sorted(ENDPOINTS_DIR.glob("*.txt"))
+    endpoints = []
+    for f in files:
+        ep = _validate_endpoint_file(f)
+        if ep:
+            endpoints.append(ep)
+    if not endpoints:
+        print("ERROR: No valid vLLM endpoints discovered. Exiting.")
+        sys.exit(1)
+    print(f"WARNING: Timed out. Proceeding with {len(endpoints)} validated endpoint(s).")
+    return endpoints
+
+
+# ── LLM with Retry & Failover (3B) ────────────────────────────────────────────
+
+# Mutable shared state for endpoint management
+_live_endpoints: list[str] = []
+_endpoint_lock = asyncio.Lock()
+
+
+def build_round_robin_llm(endpoints: list[str]):
+    """Build an LLM function with retry, exponential backoff, and endpoint failover."""
+    from lightrag.llm.openai import openai_complete_if_cache
+
+    _live_endpoints.clear()
+    _live_endpoints.extend(endpoints)
+    cycle = itertools.cycle(range(1_000_000))  # index counter
+
+    async def llm_func(prompt, system_prompt=None, history_messages=None, **kwargs):
+        if history_messages is None:
+            history_messages = []
+
+        last_error = None
+        for attempt in range(3):
+            async with _endpoint_lock:
+                if not _live_endpoints:
+                    # All endpoints dead — try re-discovery
+                    print("[FAILOVER] All endpoints exhausted, re-discovering…", flush=True)
+                    new_eps = discover_endpoints(timeout_s=300)
+                    _live_endpoints.extend(new_eps)
+                idx = next(cycle) % len(_live_endpoints)
+                endpoint = _live_endpoints[idx]
+
+            try:
+                return await openai_complete_if_cache(
+                    LLM_MODEL, "/no_think\n" + prompt,
+                    system_prompt=system_prompt,
+                    history_messages=history_messages,
+                    api_key=LLM_API_KEY,
+                    base_url=endpoint,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                    **kwargs,
+                )
+            except (ConnectionError, OSError) as e:
+                last_error = e
+                print(f"[RETRY {attempt+1}/3] {endpoint} — {type(e).__name__}: {e}", flush=True)
+                # Remove dead endpoint
+                async with _endpoint_lock:
+                    if endpoint in _live_endpoints:
+                        _live_endpoints.remove(endpoint)
+                        print(f"[FAILOVER] Removed {endpoint} ({len(_live_endpoints)} remaining)", flush=True)
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)  # 1s, 2s
+            except Exception as e:
+                # Non-connection errors (token limit, etc.) — don't retry
+                raise
+
+        raise last_error or RuntimeError("All LLM retry attempts failed")
+
+    return llm_func
+
+
+# ── Token Truncation ───────────────────────────────────────────────────────────
+
+def truncate_to_tokens(text: str, max_tokens: int) -> tuple[str, bool]:
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        tokens = enc.encode(text)
+        if len(tokens) <= max_tokens:
+            return text, False
+        return enc.decode(tokens[:max_tokens]), True
+    except Exception:
+        limit = max_tokens * 4
+        if len(text) <= limit:
+            return text, False
+        return text[:limit], True
+
+
+# ── Live Status Monitor (1C) ──────────────────────────────────────────────────
+
+async def status_monitor(storage_dir: Path, t_start: float):
+    """Background task that prints real extraction status every 30s."""
+    status_path = storage_dir / "kv_store_doc_status.json"
+    last_processed = 0
+    while True:
+        await asyncio.sleep(30)
+        try:
+            if not status_path.exists():
+                continue
+            raw = json.loads(status_path.read_text())
+            counts = {}
+            for k, v in raw.items():
+                if not k.startswith("doc-"):
+                    continue
+                s = v.get("status", "unknown")
+                counts[s] = counts.get(s, 0) + 1
+
+            processed = counts.get("processed", 0)
+            processing = counts.get("processing", 0)
+            pending = counts.get("pending", 0)
+            failed = counts.get("failed", 0)
+            elapsed_h = (time.time() - t_start) / 3600
+
+            # Rate based on newly processed docs
+            rate = processed / elapsed_h if elapsed_h > 0 else 0
+            remaining = processing + pending
+            eta_h = remaining / rate if rate > 0 else float("inf")
+
+            print(
+                f"[STATUS] processed: {processed} | processing: {processing} | "
+                f"pending: {pending} | failed: {failed} | "
+                f"elapsed: {elapsed_h:.1f}h | rate: {rate:.0f}/hr | ETA: {eta_h:.1f}h",
+                flush=True,
+            )
+            last_processed = processed
+        except Exception:
+            pass  # Don't crash on monitor errors
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
+async def main():
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    ENDPOINTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    print(f"Papers dir    : {PAPERS_DIR}")
+    print(f"Storage dir   : {STORAGE_DIR}")
+    print(f"Embed model   : {EMBED_MODEL_ID}")
+    print(f"Waiting for   : {N_VLLM} vLLM node(s)")
+    print(f"PARALLEL_DOCS : {PARALLEL_DOCS}")
+    print(f"LLM_MAX_ASYNC : {LLM_MAX_ASYNC}")
+    print(f"CTX_MAX_ASYNC : {CONTEXT_MAX_ASYNC}")
+    print(f"EMBED_MAX_ASYNC: {EMBED_FUNC_MAX_ASYNC}")
+    print(f"MAX_PARALLEL_INSERT: {MAX_PARALLEL_INSERT}")
+    print(f"[v2] Endpoint validation, resume support, status monitor, LLM failover\n")
+
+    # Pre-load embedding model now (takes ~1 min) while waiting for vLLM
+    get_embed_model()
+
+    endpoints = discover_endpoints()
+
+    from lightrag import LightRAG
+    from lightrag.utils import EmbeddingFunc
+
+    llm_func = build_round_robin_llm(endpoints)
+
+    rag = LightRAG(
+        working_dir=str(STORAGE_DIR),
+        llm_model_func=llm_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=EMBEDDING_DIM,
+            max_token_size=8192,
+            func=local_embed,
+        ),
+        contextualize_chunks=True,
+        llm_model_max_async=LLM_MAX_ASYNC,
+        contextualize_max_async=CONTEXT_MAX_ASYNC,
+        embedding_func_max_async=EMBED_FUNC_MAX_ASYNC,
+        max_parallel_insert=MAX_PARALLEL_INSERT,
+    )
+
+    await rag.initialize_storages()
+
+    print("Testing LLM connections…")
+    for ep in endpoints:
+        try:
+            from lightrag.llm.openai import openai_complete_if_cache
+            result = await openai_complete_if_cache(
+                LLM_MODEL, "Reply with exactly: OK",
+                api_key=LLM_API_KEY, base_url=ep,
+            )
+            print(f"  {ep} → {str(result).strip()[:20]}")
+        except Exception as e:
+            print(f"  {ep} → ERROR: {e}")
+
+    papers = sorted(PAPERS_DIR.glob("*.pdf"))
+    if not papers:
+        print(f"No PDFs found in {PAPERS_DIR}")
+        await rag.finalize_storages()
+        sys.exit(1)
+
+    # ── (1B) Skip docs already known to LightRAG (processed, pending, processing) ──
+    # Only re-submit docs that LightRAG has never seen. Pending/processing docs
+    # are already in the pipeline and will be picked up by apipeline_process_enqueue_documents.
+    doc_status_path = STORAGE_DIR / "kv_store_doc_status.json"
+    known_doc_ids = set()
+    status_counts = {"processed": 0, "pending": 0, "processing": 0, "failed": 0}
+    if doc_status_path.exists():
+        try:
+            raw = json.loads(doc_status_path.read_text())
+            for k, v in raw.items():
+                if not k.startswith("doc-"):
+                    continue
+                status = v.get("status", "unknown")
+                if status in ("processed", "pending", "processing"):
+                    known_doc_ids.add(k)
+                status_counts[status] = status_counts.get(status, 0) + 1
+        except Exception:
+            pass
+    print(f"Doc status: {status_counts}")
+    print(f"Known doc IDs (will skip): {len(known_doc_ids)}")
+
+    print(f"\nFound {len(papers)} papers. Starting ingestion (PARALLEL_DOCS={PARALLEL_DOCS})…\n")
+
+    from pypdf import PdfReader
+
+    t_start = time.time()
+
+    # Start status monitor (1C)
+    monitor_task = asyncio.create_task(status_monitor(STORAGE_DIR, t_start))
+
+    succeeded = failed = skipped = truncated = 0
+    counter_lock = asyncio.Lock()
+    sem = asyncio.Semaphore(PARALLEL_DOCS)
+
+    async def process_one(idx: int, pdf_path: Path):
+        nonlocal succeeded, failed, skipped, truncated
+        async with sem:
+            try:
+                reader = PdfReader(str(pdf_path))
+                text = "\n".join(
+                    page.extract_text() or "" for page in reader.pages
+                ).strip()
+                if not text:
+                    print(f"[{idx:04d}/{len(papers)}] {pdf_path.name[:55]} ⚠  Empty — skipping", flush=True)
+                    async with counter_lock:
+                        skipped += 1
+                    return
+
+                text, was_trunc = truncate_to_tokens(text, MAX_DOC_TOKENS)
+
+                doc_id = "doc-" + hashlib.md5(text.encode("utf-8")).hexdigest()
+                if doc_id in known_doc_ids:
+                    print(f"[{idx:04d}/{len(papers)}] {pdf_path.name[:55]} ↷  already known — skipping", flush=True)
+                    async with counter_lock:
+                        skipped += 1
+                    return
+
+                await rag.ainsert(text)
+
+                async with counter_lock:
+                    succeeded += 1
+                    if was_trunc:
+                        truncated += 1
+                    elapsed = time.time() - t_start
+                    rate = succeeded / (elapsed / 3600) if elapsed > 0 else 0
+                    eta_h = (len(papers) - idx) / rate if rate > 0 else float("inf")
+                    print(
+                        f"[{idx:04d}/{len(papers)}] {pdf_path.name[:55]} ✓"
+                        + (" [trunc]" if was_trunc else "")
+                        + f"  ({rate:.0f}/hr, ETA {eta_h:.1f}h)",
+                        flush=True,
+                    )
+
+            except Exception as e:
+                print(f"[{idx:04d}/{len(papers)}] {pdf_path.name[:55]} ✗  {e}", flush=True)
+                async with counter_lock:
+                    failed += 1
+
+    tasks = [process_one(i, p) for i, p in enumerate(papers, 1)]
+    await asyncio.gather(*tasks)
+
+    # Stop status monitor
+    monitor_task.cancel()
+    try:
+        await monitor_task
+    except asyncio.CancelledError:
+        pass
+
+    await rag.finalize_storages()
+
+    # Final status report from doc_status.json
+    elapsed = time.time() - t_start
+    print(f"\n{'='*60}")
+    print(f"Done in {elapsed/3600:.1f}h")
+    print(f"  Submitted : {succeeded}")
+    print(f"  Skipped   : {skipped}")
+    print(f"  Truncated : {truncated}")
+    print(f"  Failed    : {failed}")
+
+    # Print actual extraction results
+    if doc_status_path.exists():
+        try:
+            raw = json.loads(doc_status_path.read_text())
+            final_counts = {}
+            for k, v in raw.items():
+                if k.startswith("doc-"):
+                    s = v.get("status", "unknown")
+                    final_counts[s] = final_counts.get(s, 0) + 1
+            print(f"\nFinal doc_status: {final_counts}")
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
