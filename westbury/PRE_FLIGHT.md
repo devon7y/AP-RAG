@@ -66,6 +66,32 @@ print(f'Reset {reset} failed -> pending')
 Only wipe storage if: (a) settings changed (different `MAX_DOC_TOKENS`, `contextualize_chunks`, etc.)
 or (b) failures are `'Content already exists'` (duplicate entries, reset won't help).
 
+**Stale `pending` entries cause pipeline hangs.** If a job is killed mid-run (SLURM timeout,
+scancel), any in-flight docs are left with status `pending`. On the next run, LightRAG picks
+up ALL pending entries at startup and tries to process them simultaneously — this can overload
+the pipeline and cause a complete hang (0 LLM calls made, vLLM idle). Always check for and
+remove pending entries before resubmitting after a failed/cancelled run:
+
+```bash
+ssh ror "python3 -c \"
+import json
+from pathlib import Path
+
+storage = Path('/scratch/devon7y/westbury_rag/rag_storage_westbury_qwen3_32b')
+status = json.loads((storage / 'kv_store_doc_status.json').read_text())
+full_docs = json.loads((storage / 'kv_store_full_docs.json').read_text())
+
+pending = [k for k,v in status.items() if v.get('status') == 'pending']
+for k in pending:
+    status.pop(k)
+    full_docs.pop(k, None)
+
+(storage / 'kv_store_doc_status.json').write_text(json.dumps(status))
+(storage / 'kv_store_full_docs.json').write_text(json.dumps(full_docs))
+print(f'Removed {len(pending)} pending entries')
+\""
+```
+
 ---
 
 ## 2. Paper Count
@@ -127,6 +153,34 @@ before proceeding, giving the vLLM time to load the model.
 
 **Walltime alignment:** vLLM walltime must be ≥ ingest walltime. Both are currently `10:00:00`.
 If the ingest might run long, increase vLLM walltime first.
+
+**Rorqual: use the `_ror` scripts.** `job_westbury_vllm.slurm` and `job_westbury_ingest_v2.slurm`
+have hardcoded Fir paths (`/home/devon7y/scratch/devon7y/...`) and will fail immediately on
+Rorqual. Always use `job_westbury_vllm_ror.slurm` and `job_westbury_ingest_v2_ror.slurm` on
+Rorqual.
+
+**N_VLLM must match the number of vLLM jobs submitted.** The Rorqual ingest script defaults
+to `N_VLLM=2`. If you submit only 1 vLLM job, ingest will spin forever waiting for a second
+endpoint that never appears. Always pass `N_VLLM=<count>` explicitly:
+
+```bash
+# Single vLLM (Rorqual):
+cd /scratch/devon7y/westbury_rag
+VLLM_JOB=$(sbatch --parsable job_westbury_vllm_ror.slurm)
+sbatch --dependency=after:$VLLM_JOB \
+  --export=ALL,N_VLLM=1,PARALLEL_DOCS=1,MAX_DOC_TOKENS=20000 \
+  job_westbury_ingest_v2_ror.slurm
+
+# Two vLLMs (Rorqual) — doubles throughput if MAX_PARALLEL_INSERT is high enough:
+VLLM1=$(sbatch --parsable job_westbury_vllm_ror.slurm)
+VLLM2=$(sbatch --parsable job_westbury_vllm_ror.slurm)
+sbatch --dependency=after:$VLLM1 \
+  --export=ALL,N_VLLM=2,PARALLEL_DOCS=1,MAX_DOC_TOKENS=20000 \
+  job_westbury_ingest_v2_ror.slurm
+```
+
+For 2 vLLMs to help, also raise `MAX_PARALLEL_INSERT=8` and `LLM_MAX_ASYNC=32` so the
+pipeline feeds both GPUs. Otherwise the single pipeline worker stays the bottleneck.
 
 ---
 

@@ -25,6 +25,7 @@ Environment variables (used by ChunkerConfig.from_env()):
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass, field
@@ -47,6 +48,8 @@ class ChunkerConfig:
     split_oversize_paragraphs_by_sentence: bool = True
     exclude_references: bool = True
     exclude_acknowledgements: bool = True
+    strip_repeated_page_furniture: bool = True
+    exclusion_safety_valve: bool = True
 
     @classmethod
     def from_env(cls) -> ChunkerConfig:
@@ -57,6 +60,7 @@ class ChunkerConfig:
             overlap_tokens=int(os.environ.get("CHUNK_OVERLAP_TOKENS", 150)),
             exclude_references=os.environ.get("CHUNK_EXCLUDE_REFS", "1") == "1",
             exclude_acknowledgements=os.environ.get("CHUNK_EXCLUDE_ACK", "1") == "1",
+            exclusion_safety_valve=os.environ.get("CHUNK_EXCLUSION_SAFETY", "1") == "1",
         )
 
 
@@ -239,6 +243,7 @@ _KNOWN_SECTIONS = frozenset(
         "materials and methods",
         "experimental setup",
         "experimental design",
+        "research methods",
         "experiment",
         "experiments",
         "data",
@@ -257,6 +262,56 @@ _KNOWN_SECTIONS = frozenset(
         "analysis",
         "data analysis",
         "statistical analysis",
+        "results",
+        "findings",
+        "discussion",
+        "general discussion",
+        "conclusion",
+        "conclusions",
+        "concluding remarks",
+        "summary",
+        "summary and conclusions",
+        "limitations",
+        "future work",
+        "future directions",
+        "implications",
+        "practical implications",
+        "theoretical implications",
+        "acknowledgements",
+        "acknowledgments",
+        "acknowledgement",
+        "acknowledgment",
+        "references",
+        "bibliography",
+        "works cited",
+        "literature cited",
+        "appendix",
+        "appendices",
+        "supplementary",
+        "supplementary materials",
+        "supplementary material",
+        "supporting information",
+    }
+)
+
+_HARD_SECTIONS = frozenset(
+    {
+        "abstract",
+        "introduction",
+        "background",
+        "related work",
+        "literature review",
+        "theoretical framework",
+        "theory",
+        "methods",
+        "method",
+        "methodology",
+        "materials and methods",
+        "experimental setup",
+        "experimental design",
+        "research methods",
+        "experiment",
+        "experiments",
         "results",
         "findings",
         "discussion",
@@ -320,27 +375,265 @@ _CAPTION_START = re.compile(
     re.IGNORECASE,
 )
 
+_PAGE_PREFIX = re.compile(r"^(?:\d+|[ivxlcdm]+)\.?\s+", re.IGNORECASE)
+_PAGE_NUMBER_ONLY = re.compile(r"^(?:\d+|[ivxlcdm]+)\.?\s*$", re.IGNORECASE)
+_MONTH_NAME = re.compile(
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\b",
+    re.IGNORECASE,
+)
+_DOI_OR_URL = re.compile(r"\b(?:doi:|https?://|www\.)", re.IGNORECASE)
+_JOURNALISH = re.compile(
+    r"\b(?:journal|vol\.?|volume|issue|copyright|permissions|sagepub|"
+    r"science direct|sciencedirect|language and speech|cognition|omeg[ao])\b",
+    re.IGNORECASE,
+)
+_INLINE_SECTION_TITLES = sorted(_KNOWN_SECTIONS, key=lambda s: (-len(s.split()), -len(s)))
+_INLINE_CONNECTORS = frozenset({"a", "an", "and", "for", "in", "of", "on", "the", "to", "with"})
 
-def _is_section_header(line: str) -> tuple[bool, str]:
-    """Return (is_header, title) for a single line."""
+
+def _normalize_title_core(title: str) -> str:
+    """Normalize a section title for matching."""
+    title_lower = title.lower().rstrip(".:")
+    num_match = _NUM_PREFIX.match(title_lower)
+    if num_match:
+        title_lower = title_lower[num_match.end() :].strip()
+    return title_lower
+
+
+def _header_kind_for_title(title: str) -> str:
+    """Classify a normalized title as hard, soft, or none."""
+    normalized = _normalize_title_core(title)
+    if normalized in _HARD_SECTIONS:
+        return "hard"
+    if normalized in _KNOWN_SECTIONS:
+        return "soft"
+    return "none"
+
+
+def _normalize_page_furniture_line(line: str) -> str:
+    """Normalize boundary lines so repeated running headers compare equal."""
+    stripped = re.sub(r"\s+", " ", line.strip())
+    if not stripped:
+        return ""
+    stripped = _PAGE_PREFIX.sub("", stripped)
+    stripped = re.sub(r"\s+\d+\s*$", "", stripped)
+    return stripped.casefold()
+
+
+def _looks_like_page_furniture(line: str) -> bool:
+    """Heuristic for page headers/footers and page numbers."""
+    stripped = re.sub(r"\s+", " ", line.strip())
+    if not stripped:
+        return False
+    if _PAGE_NUMBER_ONLY.fullmatch(stripped):
+        return True
+
+    normalized = _normalize_page_furniture_line(stripped)
+    if not normalized or normalized in _KNOWN_SECTIONS:
+        return False
+
+    upper_words = sum(word.isupper() for word in re.findall(r"[A-Za-z]+", stripped))
+    total_words = len(re.findall(r"[A-Za-z]+", stripped))
+
+    if _MONTH_NAME.search(stripped):
+        return True
+    if _DOI_OR_URL.search(stripped):
+        return True
+    if _JOURNALISH.search(stripped):
+        return True
+    if stripped[0].isdigit() and total_words <= 12:
+        return True
+    if total_words and upper_words / total_words >= 0.6:
+        return True
+    return False
+
+
+def _strip_repeated_page_furniture(text: str, config: ChunkerConfig) -> str:
+    """Remove repeated page headers/footers while preserving page flow."""
+    if not config.strip_repeated_page_furniture or "\f" not in text:
+        return text
+
+    pages = [page for page in re.split(r"\s*\f\s*", text) if page.strip()]
+    if len(pages) < 2:
+        return text
+
+    boundary_counts: dict[str, int] = {}
+    page_boundaries: list[tuple[list[str], list[str], list[str]]] = []
+    for page in pages:
+        lines = page.splitlines()
+        nonempty = [line for line in lines if line.strip()]
+        leading = nonempty[:3]
+        trailing = nonempty[-3:]
+        page_boundaries.append((lines, leading, trailing))
+        for line in leading + trailing:
+            normalized = _normalize_page_furniture_line(line)
+            if normalized and _looks_like_page_furniture(line):
+                boundary_counts[normalized] = boundary_counts.get(normalized, 0) + 1
+
+    removable = {line for line, count in boundary_counts.items() if count >= 2}
+    cleaned_pages: list[str] = []
+
+    for lines, _, _ in page_boundaries:
+        start = 0
+        end = len(lines) - 1
+
+        while start <= end:
+            stripped = lines[start].strip()
+            normalized = _normalize_page_furniture_line(stripped)
+            if not stripped:
+                start += 1
+                continue
+            if _PAGE_NUMBER_ONLY.fullmatch(stripped) or normalized in removable:
+                start += 1
+                continue
+            break
+
+        while end >= start:
+            stripped = lines[end].strip()
+            normalized = _normalize_page_furniture_line(stripped)
+            if not stripped:
+                end -= 1
+                continue
+            if _PAGE_NUMBER_ONLY.fullmatch(stripped) or normalized in removable:
+                end -= 1
+                continue
+            break
+
+        cleaned = "\n".join(lines[start : end + 1]).strip()
+        if cleaned:
+            cleaned_pages.append(cleaned)
+
+    return "\n".join(cleaned_pages).strip()
+
+
+def preprocess_extracted_text(text: str, config: ChunkerConfig) -> str:
+    """Clean extracted PDF text while preserving page-aware cleanup opportunities."""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return ""
+    normalized = _strip_repeated_page_furniture(normalized, config)
+    return normalized.strip()
+
+
+def _match_inline_heading(block: str) -> tuple[str, str, str] | None:
+    """Detect headings embedded at the start of a paragraph block."""
+    collapsed = re.sub(r"\s+", " ", block).strip()
+    if not collapsed:
+        return None
+
+    prefix_match = _NUM_PREFIX.match(collapsed)
+    prefix = prefix_match.group(0) if prefix_match else ""
+    remainder = collapsed[len(prefix) :]
+
+    for title in _INLINE_SECTION_TITLES:
+        if not remainder.lower().startswith(title):
+            continue
+        title_text = remainder[: len(title)]
+        if title_text.lower() != title:
+            continue
+
+        title_words = re.findall(r"[A-Za-z]+", title_text)
+        if not title_words:
+            continue
+        if not title_text.isupper():
+            if not all(
+                word[0].isupper() or word.lower() in _INLINE_CONNECTORS
+                for word in title_words
+            ):
+                continue
+
+        if remainder[: len(title_text) + 1].endswith("."):
+            continue
+
+        rest = remainder[len(title) :].lstrip(" :.-–—")
+        if not rest:
+            continue
+        if not (rest[0].isupper() or rest[0].isdigit() or rest[0] == "("):
+            continue
+
+        rendered_title = (prefix + title_text).strip()
+        return _header_kind_for_title(rendered_title), rendered_title, rest
+
+    return None
+
+
+def _build_section(
+    title: str,
+    index: int,
+    blocks: list[str],
+    config: ChunkerConfig,
+) -> Section | None:
+    """Construct a Section from buffered blocks."""
+    section_text = "\n\n".join(block for block in blocks if block.strip()).strip()
+    if not section_text:
+        return None
+    return Section(
+        title=title,
+        index=index,
+        text=section_text,
+        is_excluded=_should_exclude(title, config),
+    )
+
+
+def _refine_sections_with_inline_headers(
+    sections: list[Section], config: ChunkerConfig
+) -> list[Section]:
+    """Split hard inline headings into sections and preserve soft headings in-place."""
+    refined: list[Section] = []
+    section_idx = 0
+
+    for section in sections:
+        current_title = section.title
+        current_blocks: list[str] = []
+        blocks = [block for block in re.split(r"\n\s*\n", section.text) if block.strip()]
+
+        for block in blocks:
+            inline = _match_inline_heading(block)
+            if not inline:
+                current_blocks.append(block)
+                continue
+
+            kind, title, body = inline
+            if kind == "hard":
+                built = _build_section(current_title, section_idx, current_blocks, config)
+                if built is not None:
+                    refined.append(built)
+                    section_idx += 1
+                current_title = title
+                current_blocks = [body]
+            else:
+                current_blocks.append(f"{title}\n{body}")
+
+        built = _build_section(current_title, section_idx, current_blocks, config)
+        if built is not None:
+            refined.append(built)
+            section_idx += 1
+
+    return refined or sections
+
+
+def _classify_section_header(line: str) -> tuple[str, str]:
+    """Return (kind, title) where kind is hard, soft, or none."""
     stripped = line.strip()
     if not stripped or len(stripped) > 120:
-        return False, ""
+        return "none", ""
 
     # Strip any leading digit-based number prefix to get the title body
     num_match = _NUM_PREFIX.match(stripped)
     title_core = stripped[num_match.end() :].strip() if num_match else stripped
+    normalized_core = title_core.lower().rstrip(".:")
 
     # Known section name — require the line to start with an uppercase letter or
     # digit to avoid matching lowercase sentence fragments ("stimuli.", "data.").
     if stripped[0].isupper() or stripped[0].isdigit():
-        core_lower = title_core.lower().rstrip(".:")
-        if core_lower in _KNOWN_SECTIONS:
-            return True, stripped
+        if normalized_core in _KNOWN_SECTIONS:
+            return _header_kind_for_title(stripped), stripped
 
     # All-caps line matching a known section
-    if stripped.isupper() and stripped.lower().rstrip(".:") in _KNOWN_SECTIONS:
-        return True, stripped
+    if stripped.isupper() and normalized_core in _KNOWN_SECTIONS:
+        return _header_kind_for_title(stripped), stripped
 
     # Numbered header with short capitalized text (e.g. "3.2 Feature Extraction").
     # Require a DOT after the number to avoid matching page headers like
@@ -348,12 +641,21 @@ def _is_section_header(line: str) -> tuple[bool, str]:
     num_match_dot = _NUM_PREFIX_DOT.match(stripped)
     if num_match_dot:
         title_core_dot = stripped[num_match_dot.end() :].strip()
+        normalized_core_dot = title_core_dot.lower().rstrip(".:")
+        if normalized_core_dot in _KNOWN_SECTIONS:
+            return _header_kind_for_title(stripped), stripped
         if title_core_dot and title_core_dot[0].isupper():
             words = title_core_dot.split()
             if 1 <= len(words) <= 8 and not title_core_dot.rstrip().endswith("."):
-                return True, stripped
+                return "soft", stripped
 
-    return False, ""
+    return "none", ""
+
+
+def _is_section_header(line: str) -> tuple[bool, str]:
+    """Return (is_header, title) for a single line."""
+    kind, title = _classify_section_header(line)
+    return kind == "hard", title
 
 
 def _should_exclude(title: str, config: ChunkerConfig) -> bool:
@@ -372,6 +674,7 @@ def _should_exclude(title: str, config: ChunkerConfig) -> bool:
 
 def detect_sections(text: str, config: ChunkerConfig) -> list[Section]:
     """Detect major sections from plain text extracted from a scientific PDF."""
+    text = preprocess_extracted_text(text, config)
     lines = text.split("\n")
     sections: list[Section] = []
     current_title = "Untitled"
@@ -379,8 +682,8 @@ def detect_sections(text: str, config: ChunkerConfig) -> list[Section]:
     section_idx = 0
 
     for line in lines:
-        is_header, title = _is_section_header(line)
-        if is_header:
+        kind, title = _classify_section_header(line)
+        if kind == "hard":
             # Flush accumulated lines as a section
             if current_lines:
                 section_text = "\n".join(current_lines).strip()
@@ -415,7 +718,7 @@ def detect_sections(text: str, config: ChunkerConfig) -> list[Section]:
     if not sections:
         sections = [Section(title="Untitled", index=0, text=text.strip())]
 
-    return sections
+    return _refine_sections_with_inline_headers(sections, config)
 
 
 # ── Paragraph parsing ──────────────────────────────────────────────────────────
@@ -449,6 +752,57 @@ def parse_paragraphs(section: Section, tokenizer: Tokenizer) -> list[Paragraph]:
 
     section.paragraphs = paragraphs
     return paragraphs
+
+
+# ── Exclusion safety valve ─────────────────────────────────────────────────────
+
+
+def _should_disable_exclusions(sections: list[Section], config: ChunkerConfig) -> bool:
+    """Detect when exclusion heuristics would drop most document content."""
+    if not (config.exclude_references or config.exclude_acknowledgements):
+        return False
+
+    kept_tokens = 0
+    excluded_tokens = 0
+    kept_sections = 0
+    excluded_sections = 0
+
+    for section in sections:
+        if not section.paragraphs:
+            continue
+        section_tokens = sum(p.token_count for p in section.paragraphs)
+        if section.is_excluded:
+            excluded_sections += 1
+            excluded_tokens += section_tokens
+        else:
+            kept_sections += 1
+            kept_tokens += section_tokens
+
+    total_tokens = kept_tokens + excluded_tokens
+    if total_tokens == 0 or excluded_tokens == 0:
+        return False
+
+    excluded_ratio = excluded_tokens / total_tokens
+
+    # Catastrophic case: all meaningful text ended up in excluded sections.
+    if kept_tokens == 0 and excluded_tokens >= 1000:
+        return True
+
+    # Very little retained and most content excluded.
+    if excluded_ratio >= 0.80 and kept_tokens <= 2000 and excluded_tokens >= 10000:
+        return True
+
+    # Extremely skewed exclusion is suspicious even for medium-length docs.
+    if excluded_ratio >= 0.95 and excluded_tokens >= 5000:
+        return True
+
+    # Multiple excluded sections but almost no kept sections usually indicates
+    # false header detection from running heads / TOC fragments.
+    if kept_sections <= 1 and excluded_sections >= 2 and excluded_ratio >= 0.70:
+        if excluded_tokens >= 5000:
+            return True
+
+    return False
 
 
 # ── Oversized paragraph splitting ──────────────────────────────────────────────
@@ -688,43 +1042,46 @@ def _rebalance_pair(
     chunks: list[RawChunk],
     config: ChunkerConfig,
 ) -> list[RawChunk]:
-    """If the last chunk is below min_tokens, rebalance with the previous chunk."""
+    """Rebalance two adjacent chunks to eliminate undersized chunks."""
     if len(chunks) < 2:
         return chunks
 
-    last = chunks[-1]
-    if last.token_count >= config.min_tokens:
+    left = chunks[-2]
+    right = chunks[-1]
+    if left.token_count >= config.min_tokens and right.token_count >= config.min_tokens:
         return chunks
 
-    prev = chunks[-2]
-
     # Option 1: merge entirely
-    merged_text = prev.text + "\n\n" + last.text
+    merged_text = left.text + "\n\n" + right.text
     merged_tokens = count_tokens(tokenizer, merged_text)
 
     if merged_tokens <= config.max_tokens:
         merged = RawChunk(
             text=merged_text,
-            section_title=prev.section_title,
-            section_index=prev.section_index,
-            paragraph_start=prev.paragraph_start,
-            paragraph_end=last.paragraph_end,
-            sentence_start=prev.sentence_start,
-            sentence_end=last.sentence_end,
+            section_title=left.section_title,
+            section_index=left.section_index,
+            paragraph_start=left.paragraph_start,
+            paragraph_end=right.paragraph_end,
+            sentence_start=left.sentence_start,
+            sentence_end=right.sentence_end,
             token_count=merged_tokens,
         )
         return chunks[:-2] + [merged]
 
     # Option 2: sentence-level rebalancing
-    prev_sents = segment_sentences(prev.text)
-    last_sents = segment_sentences(last.text)
-    all_sents = prev_sents + last_sents
+    left_sents = segment_sentences(left.text)
+    right_sents = segment_sentences(right.text)
+    all_sents = left_sents + right_sents
 
     if len(all_sents) < 2:
         return chunks
 
-    best_split = len(prev_sents)
-    best_balance = abs(prev.token_count - last.token_count)
+    baseline_split = len(left_sents)
+    best_split = baseline_split
+    best_score = (
+        int(left.token_count < config.min_tokens or right.token_count < config.min_tokens),
+        abs(left.token_count - right.token_count),
+    )
 
     for split_at in range(1, len(all_sents)):
         text_a = " ".join(all_sents[:split_at])
@@ -734,36 +1091,35 @@ def _rebalance_pair(
 
         if tok_a > config.max_tokens or tok_b > config.max_tokens:
             continue
-        if tok_b < config.min_tokens:
-            continue
 
-        balance = abs(tok_a - tok_b)
-        if balance < best_balance:
-            best_balance = balance
+        invalid = int(tok_a < config.min_tokens or tok_b < config.min_tokens)
+        score = (invalid, abs(tok_a - tok_b))
+        if score < best_score:
+            best_score = score
             best_split = split_at
 
-    if best_split != len(prev_sents):
+    if best_split != baseline_split:
         text_a = " ".join(all_sents[:best_split])
         text_b = " ".join(all_sents[best_split:])
 
         chunks[-2] = RawChunk(
             text=text_a,
-            section_title=prev.section_title,
-            section_index=prev.section_index,
-            paragraph_start=prev.paragraph_start,
-            paragraph_end=prev.paragraph_end,
-            sentence_start=prev.sentence_start,
-            sentence_end=prev.sentence_start + best_split - 1,
+            section_title=left.section_title,
+            section_index=left.section_index,
+            paragraph_start=left.paragraph_start,
+            paragraph_end=left.paragraph_end,
+            sentence_start=left.sentence_start,
+            sentence_end=left.sentence_start + best_split - 1,
             token_count=count_tokens(tokenizer, text_a),
         )
         chunks[-1] = RawChunk(
             text=text_b,
-            section_title=last.section_title,
-            section_index=last.section_index,
-            paragraph_start=last.paragraph_start,
-            paragraph_end=last.paragraph_end,
-            sentence_start=prev.sentence_start + best_split,
-            sentence_end=last.sentence_end,
+            section_title=right.section_title,
+            section_index=right.section_index,
+            paragraph_start=right.paragraph_start,
+            paragraph_end=right.paragraph_end,
+            sentence_start=left.sentence_start + best_split,
+            sentence_end=right.sentence_end,
             token_count=count_tokens(tokenizer, text_b),
         )
 
@@ -775,37 +1131,70 @@ def rebalance_chunks(
     chunks: list[RawChunk],
     config: ChunkerConfig,
 ) -> list[RawChunk]:
-    """Rebalance the last pair within each section to eliminate tiny tails."""
+    """Rebalance adjacent chunks within each section to eliminate tiny chunks."""
     if len(chunks) < 2:
         return chunks
 
     # Group chunk indices by section
-    section_groups: dict[int, list[int]] = {}
-    for i, chunk in enumerate(chunks):
-        section_groups.setdefault(chunk.section_index, []).append(i)
+    section_groups: dict[int, list[RawChunk]] = {}
+    section_order: list[int] = []
+    for chunk in chunks:
+        if chunk.section_index not in section_groups:
+            section_groups[chunk.section_index] = []
+            section_order.append(chunk.section_index)
+        section_groups[chunk.section_index].append(chunk)
 
-    result = list(chunks)
-    remove: set[int] = set()
+    rebalanced: list[RawChunk] = []
 
-    for indices in section_groups.values():
-        if len(indices) < 2:
-            continue
-        last_idx = indices[-1]
-        prev_idx = indices[-2]
+    for section_index in section_order:
+        section_chunks = list(section_groups[section_index])
+        changed = True
+        while changed and len(section_chunks) >= 2:
+            changed = False
+            i = 0
+            while i < len(section_chunks):
+                current_small = section_chunks[i].token_count < config.min_tokens
+                next_small = (
+                    i + 1 < len(section_chunks)
+                    and section_chunks[i + 1].token_count < config.min_tokens
+                )
+                if not current_small and not next_small:
+                    i += 1
+                    continue
 
-        pair = _rebalance_pair(
-            tokenizer,
-            [result[prev_idx], result[last_idx]],
-            config,
-        )
-        if len(pair) == 1:
-            result[prev_idx] = pair[0]
-            remove.add(last_idx)
-        else:
-            result[prev_idx] = pair[0]
-            result[last_idx] = pair[1]
+                if current_small and i + 1 < len(section_chunks):
+                    pair = [section_chunks[i], section_chunks[i + 1]]
+                    updated = _rebalance_pair(tokenizer, pair, config)
+                    section_chunks[i : i + 2] = updated
+                    actually_changed = len(updated) != len(pair) or any(
+                        a.text != b.text for a, b in zip(updated, pair)
+                    )
+                    if actually_changed:
+                        changed = True
+                        i = max(i - 1, 0)
+                        continue
+                    i += 1
+                    continue
 
-    return [c for i, c in enumerate(result) if i not in remove]
+                if next_small:
+                    pair = [section_chunks[i], section_chunks[i + 1]]
+                    updated = _rebalance_pair(tokenizer, pair, config)
+                    section_chunks[i : i + 2] = updated
+                    actually_changed = len(updated) != len(pair) or any(
+                        a.text != b.text for a, b in zip(updated, pair)
+                    )
+                    if actually_changed:
+                        changed = True
+                        i = max(i - 1, 0)
+                        continue
+                    i += 1
+                    continue
+
+                i += 1
+
+        rebalanced.extend(section_chunks)
+
+    return rebalanced
 
 
 # ── Overlap injection ──────────────────────────────────────────────────────────
@@ -916,10 +1305,14 @@ def chunk_document(
     for section in sections:
         parse_paragraphs(section, tokenizer)
 
+    include_excluded_sections = (
+        config.exclusion_safety_valve and _should_disable_exclusions(sections, config)
+    )
+
     # 3. Pack paragraphs into chunks (per section, excluding filtered sections)
     raw_chunks: list[RawChunk] = []
     for section in sections:
-        if section.is_excluded or not section.paragraphs:
+        if (section.is_excluded and not include_excluded_sections) or not section.paragraphs:
             continue
         raw_chunks.extend(pack_paragraphs(tokenizer, section.paragraphs, config))
 
@@ -962,9 +1355,19 @@ def chunk_document(
 # ── LightRAG-compatible factory ────────────────────────────────────────────────
 
 
-def make_scientific_chunker(config: ChunkerConfig | None = None) -> Callable:
+def make_scientific_chunker(
+    config: ChunkerConfig | None = None,
+    chunk_cache: dict[str, list[dict[str, Any]]] | None = None,
+) -> Callable:
     """
     Return a chunking function compatible with LightRAG's chunking_func parameter.
+
+    Args:
+        config: Chunker configuration. Defaults to ChunkerConfig.from_env().
+        chunk_cache: Optional pre-computed chunk cache keyed by MD5 hex digest
+            of the document content. When provided, cache hits return instantly
+            (no CPU-bound work), allowing PARALLEL_DOCS > 1 without blocking
+            the asyncio event loop.
 
     Usage:
         rag = LightRAG(
@@ -982,6 +1385,11 @@ def make_scientific_chunker(config: ChunkerConfig | None = None) -> Callable:
         chunk_overlap_token_size=100,
         chunk_token_size=1200,
     ) -> list[dict[str, Any]]:
+        if chunk_cache is not None:
+            content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
+            cached = chunk_cache.get(content_hash)
+            if cached is not None:
+                return cached
         return chunk_document(tokenizer, content, cfg)
 
     return chunking_func

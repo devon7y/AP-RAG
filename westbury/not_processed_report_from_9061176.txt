@@ -1,0 +1,6 @@
+total_papers	1316
+run_progress_rows	1234
+skipped_count	82
+error_count	3
+empty_count	29
+union_count	111

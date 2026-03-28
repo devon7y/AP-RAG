@@ -28,10 +28,12 @@ Environment variables (set by job_westbury_ingest_v2.slurm):
     PAPERS_SUBDIR    — subdirectory containing PDFs
     STORAGE_SUBDIR   — subdirectory for LightRAG storage
     LLM_MODEL        — model name served by vLLM
-    MAX_DOC_TOKENS   — max tokens per document before truncation (default 120000)
+    MAX_DOC_TOKENS   — max tokens of full-doc context used during chunk contextualization
+                       (default 120000). Does NOT truncate document ingestion/chunking.
     PARALLEL_DOCS    — number of documents to ingest concurrently (default 4)
     LLM_MAX_ASYNC    — max concurrent LLM requests (default 8)
     CONTEXT_MAX_ASYNC — max concurrent contextualization requests (default 8)
+    CONTEXTUALIZE_CHUNKS — "1"/"0" to enable/disable contextualization (default "1")
     EMBED_FUNC_MAX_ASYNC — max concurrent embedding calls (default 1)
     MAX_PARALLEL_INSERT  — LightRAG pipeline concurrency (default 2)
     QDRANT_URL           — if set, use QdrantVectorDBStorage instead of NanoVectorDB (2A)
@@ -51,6 +53,7 @@ import hashlib
 import itertools
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -78,6 +81,7 @@ MAX_DOC_TOKENS    = int(os.environ.get("MAX_DOC_TOKENS", 120_000))
 PARALLEL_DOCS     = int(os.environ.get("PARALLEL_DOCS", 4))
 LLM_MAX_ASYNC     = int(os.environ.get("LLM_MAX_ASYNC", 8))
 CONTEXT_MAX_ASYNC = int(os.environ.get("CONTEXT_MAX_ASYNC", 8))
+CONTEXTUALIZE_CHUNKS = os.environ.get("CONTEXTUALIZE_CHUNKS", "1") == "1"
 EMBED_FUNC_MAX_ASYNC = int(os.environ.get("EMBED_FUNC_MAX_ASYNC", 1))
 MAX_PARALLEL_INSERT  = int(os.environ.get("MAX_PARALLEL_INSERT", 2))
 
@@ -96,7 +100,73 @@ REBUILD_BATCH_SIZE = int(os.environ.get("REBUILD_BATCH_SIZE", 50))
 from scientific_chunker import ChunkerConfig, make_scientific_chunker
 
 CHUNKER_CONFIG = ChunkerConfig.from_env()
-SCIENTIFIC_CHUNKER = make_scientific_chunker(CHUNKER_CONFIG)
+
+# Load pre-computed chunk cache if available (from prechunk_all.py).
+# Cache hits are instant dict lookups — no CPU-bound work — so
+# PARALLEL_DOCS > 1 won't block the asyncio event loop.
+_chunk_cache_path = STORAGE_DIR / "chunk_cache.json"
+_CHUNK_CACHE = None
+if _chunk_cache_path.exists():
+    _CHUNK_CACHE = json.loads(_chunk_cache_path.read_text())
+    print(f"[CACHE] Loaded {len(_CHUNK_CACHE)} pre-chunked docs from {_chunk_cache_path.name}")
+else:
+    print(f"[CACHE] No chunk cache found — chunking will be computed live")
+
+SCIENTIFIC_CHUNKER = make_scientific_chunker(CHUNKER_CONFIG, chunk_cache=_CHUNK_CACHE)
+
+# ── Chunker timeout (SIGALRM) ──────────────────────────────────────────────────
+# Some docs trigger an infinite loop in the scientific chunker. SIGALRM is the
+# only reliable way to interrupt synchronous Python blocking the event loop.
+# On timeout, the offending PDF is moved to EXCLUDED_DIR and the doc fails cleanly.
+
+CHUNK_TIMEOUT = int(os.environ.get("CHUNK_TIMEOUT", 600))  # seconds (default 10 min)
+EXCLUDED_DIR  = WORKDIR / os.environ.get("EXCLUDED_SUBDIR", "papers_excluded_not_processed_9061176")
+
+_current_pdf_path: Path | None = None
+
+
+class ChunkingTimeoutError(RuntimeError):
+    pass
+
+
+def _sigalrm_handler(signum, frame):
+    raise ChunkingTimeoutError(f"Chunker hung for >{CHUNK_TIMEOUT}s")
+
+
+_raw_chunker = SCIENTIFIC_CHUNKER
+
+
+def SCIENTIFIC_CHUNKER(  # noqa: N816 — shadow module-level name intentionally
+    tokenizer,
+    content,
+    split_by_character=None,
+    split_by_character_only=False,
+    chunk_overlap_token_size=100,
+    chunk_token_size=1200,
+):
+    old = signal.signal(signal.SIGALRM, _sigalrm_handler)
+    signal.alarm(CHUNK_TIMEOUT)
+    try:
+        result = _raw_chunker(
+            tokenizer,
+            content,
+            split_by_character,
+            split_by_character_only,
+            chunk_overlap_token_size,
+            chunk_token_size,
+        )
+        signal.alarm(0)
+        return result
+    except ChunkingTimeoutError:
+        signal.alarm(0)
+        if _current_pdf_path is not None and _current_pdf_path.exists():
+            EXCLUDED_DIR.mkdir(parents=True, exist_ok=True)
+            dest = EXCLUDED_DIR / _current_pdf_path.name
+            _current_pdf_path.rename(dest)
+            print(f"[TIMEOUT] Chunker hung: moved {_current_pdf_path.name} → {EXCLUDED_DIR.name}/", flush=True)
+        raise
+    finally:
+        signal.signal(signal.SIGALRM, old)
 
 # ── Embedding ──────────────────────────────────────────────────────────────────
 
@@ -240,6 +310,11 @@ def build_round_robin_llm(endpoints: list[str]):
         if history_messages is None:
             history_messages = []
 
+        # Debug: log prompt size and kwargs
+        prompt_len = len(prompt)
+        kw_keys = [k for k in kwargs if k != "hashing_kv"]
+        print(f"[LLM_DEBUG] llm_func called: prompt_len={prompt_len} chars, extra_kwargs={kw_keys}", flush=True)
+
         last_error = None
         for attempt in range(3):
             async with _endpoint_lock:
@@ -252,7 +327,9 @@ def build_round_robin_llm(endpoints: list[str]):
                 endpoint = _live_endpoints[idx]
 
             try:
-                return await openai_complete_if_cache(
+                print(f"[LLM_DEBUG] attempt={attempt+1} sending to {endpoint} prompt_len={prompt_len}", flush=True)
+                t0 = time.time()
+                result = await openai_complete_if_cache(
                     LLM_MODEL, "/no_think\n" + prompt,
                     system_prompt=system_prompt,
                     history_messages=history_messages,
@@ -261,6 +338,8 @@ def build_round_robin_llm(endpoints: list[str]):
                     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                     **kwargs,
                 )
+                print(f"[LLM_DEBUG] SUCCESS in {time.time()-t0:.1f}s, result_len={len(str(result))}", flush=True)
+                return result
             except (ConnectionError, OSError) as e:
                 last_error = e
                 print(f"[RETRY {attempt+1}/3] {endpoint} — {type(e).__name__}: {e}", flush=True)
@@ -273,6 +352,7 @@ def build_round_robin_llm(endpoints: list[str]):
                     await asyncio.sleep(2 ** attempt)  # 1s, 2s
             except Exception as e:
                 # Non-connection errors (token limit, etc.) — don't retry
+                print(f"[LLM_DEBUG] EXCEPTION {type(e).__name__}: {str(e)[:200]}", flush=True)
                 raise
 
         raise last_error or RuntimeError("All LLM retry attempts failed")
@@ -295,6 +375,13 @@ def truncate_to_tokens(text: str, max_tokens: int) -> tuple[str, bool]:
         if len(text) <= limit:
             return text, False
         return text[:limit], True
+
+
+def cap_context_document(text: str) -> tuple[str, bool]:
+    """Apply MAX_DOC_TOKENS only to contextualization document prompts."""
+    if MAX_DOC_TOKENS <= 0:
+        return text, False
+    return truncate_to_tokens(text, MAX_DOC_TOKENS)
 
 
 # ── Live Status Monitor (1C) ──────────────────────────────────────────────────
@@ -540,6 +627,11 @@ async def main():
     print(f"CTX_MAX_ASYNC : {CONTEXT_MAX_ASYNC}")
     print(f"EMBED_MAX_ASYNC: {EMBED_FUNC_MAX_ASYNC}")
     print(f"MAX_PARALLEL_INSERT: {MAX_PARALLEL_INSERT}")
+    print(f"CONTEXTUALIZE_CHUNKS: {CONTEXTUALIZE_CHUNKS}")
+    if CONTEXTUALIZE_CHUNKS:
+        print(f"MAX_DOC_TOKENS (context cap): {MAX_DOC_TOKENS}")
+    else:
+        print("MAX_DOC_TOKENS (context cap): disabled (contextualization off)")
     print(f"QDRANT_URL    : {QDRANT_URL or '(not set — using NanoVectorDB)'}")
     print(f"INSERT_DONE_N : {INSERT_DONE_EVERY_N}")
     print(f"Chunker       : scientific (target={CHUNKER_CONFIG.target_tokens}, "
@@ -567,11 +659,12 @@ async def main():
             func=local_embed,
         ),
         chunking_func=SCIENTIFIC_CHUNKER,  # 5: structure-aware chunker
-        contextualize_chunks=True,
+        contextualize_chunks=CONTEXTUALIZE_CHUNKS,
         llm_model_max_async=LLM_MAX_ASYNC,
         contextualize_max_async=CONTEXT_MAX_ASYNC,
         embedding_func_max_async=EMBED_FUNC_MAX_ASYNC,
         max_parallel_insert=MAX_PARALLEL_INSERT,
+        default_embedding_timeout=300,
     )
 
     # 2A: Use Qdrant if QDRANT_URL is set
@@ -580,6 +673,20 @@ async def main():
         print(f"[2A] Using QdrantVectorDBStorage at {QDRANT_URL}")
 
     rag = LightRAG(**rag_kwargs)
+
+    # Keep full-document ingestion, but cap doc context sent into contextualization prompts.
+    context_cap_stats = {"documents": 0, "truncated": 0}
+    if rag.contextualize_chunks and MAX_DOC_TOKENS > 0:
+        original_contextualize_chunks = rag._contextualize_chunks
+
+        async def _contextualize_chunks_with_doc_cap(chunks: dict[str, dict], doc_content: str):
+            capped_doc_content, was_truncated = cap_context_document(doc_content)
+            context_cap_stats["documents"] += 1
+            if was_truncated:
+                context_cap_stats["truncated"] += 1
+            return await original_contextualize_chunks(chunks, capped_doc_content)
+
+        rag._contextualize_chunks = _contextualize_chunks_with_doc_cap
 
     await rag.initialize_storages()
 
@@ -631,25 +738,25 @@ async def main():
     # Start status monitor (1C)
     monitor_task = asyncio.create_task(status_monitor(STORAGE_DIR, t_start))
 
-    succeeded = failed = skipped = truncated = 0
+    succeeded = failed = skipped = 0
     counter_lock = asyncio.Lock()
     sem = asyncio.Semaphore(PARALLEL_DOCS)
 
     async def process_one(idx: int, pdf_path: Path):
-        nonlocal succeeded, failed, skipped, truncated
+        nonlocal succeeded, failed, skipped
         async with sem:
             try:
                 reader = PdfReader(str(pdf_path))
-                text = "\n".join(
-                    page.extract_text() or "" for page in reader.pages
-                ).strip()
+                page_texts = [
+                    (page.extract_text() or "").strip()
+                    for page in reader.pages
+                ]
+                text = "\n\f\n".join(page for page in page_texts if page).strip()
                 if not text:
                     print(f"[{idx:04d}/{len(papers)}] {pdf_path.name[:55]} ⚠  Empty — skipping", flush=True)
                     async with counter_lock:
                         skipped += 1
                     return
-
-                text, was_trunc = truncate_to_tokens(text, MAX_DOC_TOKENS)
 
                 doc_id = "doc-" + hashlib.md5(text.encode("utf-8")).hexdigest()
                 if doc_id in known_doc_ids:
@@ -658,18 +765,22 @@ async def main():
                         skipped += 1
                     return
 
-                await rag.ainsert(text)
+                global _current_pdf_path
+                _current_pdf_path = pdf_path
+                await rag.ainsert(
+                    text,
+                    ids=doc_id,
+                    file_paths=str(pdf_path),
+                )
+                _current_pdf_path = None
 
                 async with counter_lock:
                     succeeded += 1
-                    if was_trunc:
-                        truncated += 1
                     elapsed = time.time() - t_start
                     rate = succeeded / (elapsed / 3600) if elapsed > 0 else 0
                     eta_h = (len(papers) - idx) / rate if rate > 0 else float("inf")
                     print(
                         f"[{idx:04d}/{len(papers)}] {pdf_path.name[:55]} ✓"
-                        + (" [trunc]" if was_trunc else "")
                         + f"  ({rate:.0f}/hr, ETA {eta_h:.1f}h)",
                         flush=True,
                     )
@@ -697,7 +808,8 @@ async def main():
     print(f"Done in {elapsed/3600:.1f}h")
     print(f"  Submitted : {succeeded}")
     print(f"  Skipped   : {skipped}")
-    print(f"  Truncated : {truncated}")
+    if CONTEXTUALIZE_CHUNKS and MAX_DOC_TOKENS > 0:
+        print(f"  Context-capped docs : {context_cap_stats['truncated']}/{context_cap_stats['documents']}")
     print(f"  Failed    : {failed}")
 
     # Print actual extraction results

@@ -169,7 +169,11 @@ class TestSectionDetection:
         )
         config = ChunkerConfig()
         sections = detect_sections(text, config)
-        assert len(sections) >= 4
+        titles = [s.title for s in sections]
+        assert "Abstract" in titles
+        assert "1. Introduction" in titles
+        assert "2. Methods" in titles
+        assert "2.1 Participants" not in titles
 
     def test_references_excluded(self):
         text = "Abstract\nText here.\n\nReferences\nSmith (2020)."
@@ -199,6 +203,57 @@ class TestSectionDetection:
         titles_lower = [s.title.lower() for s in sections]
         assert "abstract" in titles_lower
         assert "introduction" in titles_lower
+
+    def test_page_header_with_number_not_detected_as_section(self):
+        text = (
+            "72 ROBERT J. BLANCHARD AND D. CAROLINE BLANCHARD\n"
+            "Abstract\n"
+            "This is the abstract text."
+        )
+        sections = detect_sections(text, ChunkerConfig())
+        titles = [s.title for s in sections]
+        assert "72 ROBERT J. BLANCHARD AND D. CAROLINE BLANCHARD" not in titles
+        assert "Abstract" in titles
+
+    def test_journal_running_header_not_detected_as_section(self):
+        text = (
+            "332 Language and Speech 56(3)\n"
+            "Introduction\n"
+            "This is the introduction.\n\n"
+            "Results\n"
+            "These are the results."
+        )
+        sections = detect_sections(text, ChunkerConfig())
+        titles = [s.title for s in sections]
+        assert "332 Language and Speech 56(3)" not in titles
+        assert "Introduction" in titles
+        assert "Results" in titles
+
+    def test_lowercase_roman_date_not_detected_as_section(self):
+        text = (
+            "v. August 18, 2018\n"
+            "Abstract\n"
+            "This is the abstract text."
+        )
+        sections = detect_sections(text, ChunkerConfig())
+        titles = [s.title for s in sections]
+        assert "v. August 18, 2018" not in titles
+        assert "Abstract" in titles
+
+    def test_lowercase_fragments_not_detected_as_sections(self):
+        text = (
+            "Methods\n"
+            "This section describes the methods.\n\n"
+            "stimuli.\n"
+            "These stimuli were shown to participants.\n\n"
+            "data.\n"
+            "These data were analyzed later."
+        )
+        sections = detect_sections(text, ChunkerConfig())
+        titles = [s.title for s in sections]
+        assert "stimuli." not in titles
+        assert "data." not in titles
+        assert titles == ["Methods"]
 
 
 # ── Paragraph packing ─────────────────────────────────────────────────────────
@@ -353,6 +408,44 @@ class TestRebalancing:
         result = rebalance_chunks(tokenizer, chunks, config)
         assert len(result) == 2  # Different sections, no merge
 
+    def test_non_tail_tiny_chunk_rebalanced(self, tokenizer, config):
+        """Tiny chunks in the middle of a section are rebalanced too."""
+        chunks = [
+            RawChunk(
+                text=_words(10),
+                section_title="Methods",
+                section_index=0,
+                paragraph_start=0,
+                paragraph_end=0,
+                sentence_start=0,
+                sentence_end=0,
+                token_count=10,
+            ),
+            RawChunk(
+                text=_words(2),
+                section_title="Methods",
+                section_index=0,
+                paragraph_start=1,
+                paragraph_end=1,
+                sentence_start=0,
+                sentence_end=0,
+                token_count=2,
+            ),
+            RawChunk(
+                text=_words(8),
+                section_title="Methods",
+                section_index=0,
+                paragraph_start=2,
+                paragraph_end=2,
+                sentence_start=0,
+                sentence_end=0,
+                token_count=8,
+            ),
+        ]
+        result = rebalance_chunks(tokenizer, chunks, config)
+        assert len(result) == 2
+        assert all(c.token_count >= config.min_tokens for c in result)
+
 
 # ── Hard splitting ─────────────────────────────────────────────────────────────
 
@@ -494,6 +587,27 @@ class TestEndToEnd:
         for chunk in chunks:
             assert chunk["section_title"] != "References"
 
+    def test_exclusion_safety_valve_keeps_content_when_exclusion_dominates(self, tokenizer):
+        text = (
+            "Acknowledgements\n"
+            "Thanks to all contributors.\n\n"
+            "References\n"
+            + _words(3000)
+        )
+        config = ChunkerConfig(
+            target_tokens=10,
+            max_tokens=20,
+            min_tokens=3,
+            overlap_tokens=2,
+            exclude_references=True,
+            exclude_acknowledgements=True,
+        )
+        chunks = chunk_document(tokenizer, text, config)
+        assert len(chunks) > 1
+        kept = sum(c.get("token_count_without_overlap", c["tokens"]) for c in chunks)
+        assert kept > 2500
+        assert any(c["section_title"] == "References" for c in chunks)
+
     def test_lightrag_required_keys(self, tokenizer):
         """Output contains the three keys LightRAG requires."""
         text = "Some text for testing the chunker output format."
@@ -556,6 +670,77 @@ class TestEndToEnd:
         chunks = chunk_document(tokenizer, text, config, document_id="doc-abc123")
         for chunk in chunks:
             assert chunk["document_id"] == "doc-abc123"
+
+    def test_repeated_page_headers_removed_with_page_breaks(self, tokenizer):
+        text = (
+            "332 Language and Speech 56(3)\n"
+            "Introduction\n"
+            "This is the first page introduction text.\n"
+            "\f\n"
+            "334 Language and Speech 56(3)\n"
+            "This is the second page continuation text.\n"
+            "\f\n"
+            "336 Language and Speech 56(3)\n"
+            "Results\n"
+            "These are the results."
+        )
+        config = ChunkerConfig(
+            target_tokens=10, max_tokens=20, min_tokens=2, overlap_tokens=1
+        )
+        chunks = chunk_document(tokenizer, text, config)
+        assert all("Language and Speech" not in c["raw_text_without_overlap"] for c in chunks)
+        assert {c["section_title"] for c in chunks} >= {"Introduction", "Results"}
+
+    def test_inline_hard_headings_split_sections(self, tokenizer):
+        text = (
+            "Abstract This abstract summarizes the study in enough detail.\n\n"
+            "Research Methods This section describes how the study was conducted.\n\n"
+            "Results These are the main study findings."
+        )
+        config = ChunkerConfig(
+            target_tokens=10, max_tokens=20, min_tokens=2, overlap_tokens=1
+        )
+        chunks = chunk_document(tokenizer, text, config)
+        titles = {c["section_title"] for c in chunks}
+        assert "Abstract" in titles
+        assert "Research Methods" in titles
+        assert "Results" in titles
+
+    def test_soft_subsections_stay_inside_major_section(self, tokenizer):
+        text = (
+            "Methods\n"
+            "Participants\n"
+            "Ten students completed the study.\n\n"
+            "Procedure\n"
+            "They completed several tasks in sequence.\n\n"
+            "Data Analysis\n"
+            "We analyzed the responses using simple comparisons."
+        )
+        config = ChunkerConfig(
+            target_tokens=10, max_tokens=20, min_tokens=2, overlap_tokens=1
+        )
+        chunks = chunk_document(tokenizer, text, config)
+        assert chunks
+        assert all(c["section_title"] == "Methods" for c in chunks)
+        assert any("Participants" in c["raw_text_without_overlap"] for c in chunks)
+        assert any("Procedure" in c["raw_text_without_overlap"] for c in chunks)
+        assert any("Data Analysis" in c["raw_text_without_overlap"] for c in chunks)
+
+    def test_numbered_soft_subsection_does_not_become_section(self, tokenizer):
+        text = (
+            "Methods\n"
+            "3.1.1 Participants 750 participants completed the experiment.\n\n"
+            "Results\n"
+            "The results were reliable across runs."
+        )
+        config = ChunkerConfig(
+            target_tokens=10, max_tokens=20, min_tokens=2, overlap_tokens=1
+        )
+        chunks = chunk_document(tokenizer, text, config)
+        titles = {c["section_title"] for c in chunks}
+        assert "3.1.1 Participants" not in titles
+        assert "Methods" in titles
+        assert "Results" in titles
 
 
 # ── Factory ────────────────────────────────────────────────────────────────────
