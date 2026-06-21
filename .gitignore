@@ -13,3 +13,12 @@ westbury/rag_storage_westbury_qwen3_32b/
 
 # OS files
 .DS_Store
+
+# Local-only / not part of the published wrapper
+.claude/
+# unrelated 523MB Next.js app (has node_modules)
+lightrag-explainer/
+# local backup artifacts
+*.pre_upgrade_backup
+# personal roadmap notes
+new_embedding_changes.txt
