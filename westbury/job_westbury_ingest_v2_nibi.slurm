@@ -1,37 +1,22 @@
 #!/bin/bash
 #SBATCH --account=def-jcaplan
 #SBATCH --job-name=westbury_ingest
-#SBATCH --output=/home/devon7y/scratch/devon7y/westbury_rag/logs/westbury_ingest_%j.out
-#SBATCH --error=/home/devon7y/scratch/devon7y/westbury_rag/logs/westbury_ingest_%j.err
+#SBATCH --output=/scratch/devon7y/westbury_rag/logs/westbury_ingest_%j.out
+#SBATCH --error=/scratch/devon7y/westbury_rag/logs/westbury_ingest_%j.err
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=32G
-#SBATCH --gpus=nvidia_h100_80gb_hbm3_3g.40gb:1
+#SBATCH --gpus=nvidia_h100_80gb_hbm3_2g.20gb:1
 
-# v2 ingest job — changes from v1:
-#   - No destructive pre-run cleanup (resume support via ingest_cml_octen_v2.py)
-#   - Read-only status report before ingestion
-#   - Auto-resubmission: if unprocessed docs remain, submits a new job pair
-#   - References ingest_cml_octen_v2.py instead of ingest_cml_octen.py
-#   - REBUILD_EMBEDDINGS=1 mode: rebuild vector DBs from cached intermediates
-#     (no vLLM needed, no auto-resubmission)
-#   - Structure-aware chunking via CHUNK_* env vars (section/paragraph/sentence)
-#
-# Memory budget (40 GB MIG):
-#   Octen-8B-INT8 model: ~10 GiB
-#   With EMBED_FUNC_MAX_ASYNC=4: ~18 GiB total (4 x 2 GiB activations)
-#   ~22 GiB headroom
-#
-# PRE_FLIGHT check 4: submit with --dependency=after:$VLLM_JOB
-# PRE_FLIGHT check 5: LLM_MODEL must match what vLLM serves (Qwen/Qwen3-32B)
-
-WORKDIR=/home/devon7y/scratch/devon7y/westbury_rag
+WORKDIR=/scratch/devon7y/westbury_rag
 VENV_DIR=$WORKDIR/venv
 
-# Auto-resubmission: track iteration count (default 1, max 15)
 
 export HF_HOME=$WORKDIR/hf_cache
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export TIKTOKEN_CACHE_DIR=$WORKDIR/cache/tiktoken
 export XDG_CACHE_HOME=$WORKDIR/cache
 export TRITON_CACHE_DIR=$WORKDIR/cache/triton
 export FLASHINFER_CACHE_DIR=$WORKDIR/cache/flashinfer
@@ -40,22 +25,21 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 mkdir -p "$WORKDIR/logs" "$WORKDIR/rag_storage_westbury_qwen3_32b" "$WORKDIR/cache" "$WORKDIR/cache/flashinfer"
 
-module load python/3.11 gcc/12.3 opencv/4.13.0 cuda/12.6
+module load python/3.11 gcc/12.3 cuda/12.6 opencv
 
 if [ ! -f "$VENV_DIR/bin/activate" ]; then
-  echo "[$(date)] ERROR: venv not found at $VENV_DIR. Run job_setup_env.slurm first."
+  echo "[$(date)] ERROR: venv not found at $VENV_DIR. Run job_setup_env_nibi.slurm first."
   exit 1
 fi
 source "$VENV_DIR/bin/activate"
 echo "[$(date)] Environment ready (venv activated)."
 
-# ── Read-only status report (replaces v1 destructive cleanup) ──────────────
 echo "[$(date)] Current doc status:"
 python3 - <<'PYEOF'
 import json
 from pathlib import Path
 
-storage = Path("/home/devon7y/scratch/devon7y/westbury_rag/rag_storage_westbury_qwen3_32b")
+storage = Path("/scratch/devon7y/westbury_rag/rag_storage_westbury_qwen3_32b")
 status_path = storage / "kv_store_doc_status.json"
 
 if not status_path.exists():
@@ -75,27 +59,39 @@ for s in ("processed", "processing", "pending", "failed"):
     print(f"    {s}: {counts.get(s, 0)}")
 PYEOF
 
-# ── (2A) Start Qdrant sidecar via Apptainer ───────────────────────────────
-# Use Qdrant if the SIF image exists; otherwise fall back to NanoVectorDB.
+# ── Qdrant sidecar via Apptainer (Nibi: SSD scratch, use scratch directly) ──
 QDRANT_SIF="$WORKDIR/qdrant_latest.sif"
-QDRANT_DATA="$WORKDIR/qdrant_storage_westbury"
+QDRANT_LUSTRE="$WORKDIR/qdrant_storage_westbury"
+QDRANT_LOCAL="$SLURM_TMPDIR/qdrant_storage"
 QDRANT_PID=""
 
 if [ -f "$QDRANT_SIF" ]; then
-    mkdir -p "$QDRANT_DATA"
-    module load apptainer/1.4.5 2>/dev/null || true
-    echo "[$(date)] Starting Qdrant sidecar (Apptainer)..."
-    apptainer run --bind "$QDRANT_DATA:/qdrant/storage" "$QDRANT_SIF" &
-    QDRANT_PID=$!
+    mkdir -p "$QDRANT_LOCAL" "$QDRANT_LUSTRE"
 
-    # Wait for Qdrant to be ready (up to 2 minutes)
-    for i in $(seq 1 24); do
+    # Seed local NVMe from persistent storage if data exists
+    if [ "$(ls -A "$QDRANT_LUSTRE" 2>/dev/null)" ]; then
+        echo "[$(date)] Seeding Qdrant local storage from scratch..."
+        rsync -a "$QDRANT_LUSTRE/" "$QDRANT_LOCAL/"
+        echo "[$(date)] Seeded $(du -sh "$QDRANT_LOCAL" | cut -f1) from scratch."
+    fi
+
+    module load apptainer/1.4.5 2>/dev/null || true
+    echo "[$(date)] Starting Qdrant sidecar on local NVMe ($QDRANT_LOCAL)..."
+    apptainer run --writable-tmpfs --pwd /qdrant \
+    --env QDRANT__TELEMETRY_DISABLED=true \
+    --env SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt \
+    --env SSL_CERT_DIR=/etc/ssl/certs \
+    --env QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=256 \
+    --bind /etc/ssl/certs:/etc/ssl/certs \
+    --bind "$QDRANT_LOCAL:/qdrant/storage" "$QDRANT_SIF" &
+    QDRANT_PID=$!
+    for i in $(seq 1 72); do
         if curl -sf "http://localhost:6333/healthz" > /dev/null 2>&1; then
             echo "[$(date)] Qdrant ready after $((i * 5))s"
             break
         fi
-        if [ $i -eq 24 ]; then
-            echo "[$(date)] WARNING: Qdrant did not start in 2 min. Falling back to NanoVectorDB."
+        if [ $i -eq 72 ]; then
+            echo "[$(date)] WARNING: Qdrant did not start in 6 min. Falling back to NanoVectorDB."
             kill $QDRANT_PID 2>/dev/null
             QDRANT_PID=""
         fi
@@ -106,22 +102,25 @@ else
     echo "  To enable Qdrant: apptainer pull $QDRANT_SIF docker://qdrant/qdrant:latest"
 fi
 
-# Set QDRANT_URL only if Qdrant is running
 QDRANT_URL=""
 if [ -n "$QDRANT_PID" ] && kill -0 $QDRANT_PID 2>/dev/null; then
     QDRANT_URL="http://localhost:6333"
 fi
 
-# ── Run ingest (v2) ───────────────────────────────────────────────────────
+# ── Trap SIGTERM for auto-resubmission on walltime ──────────────────
+TIMED_OUT=0
+trap 'echo "[$(date)] SIGTERM received (walltime)"; TIMED_OUT=1' SIGTERM SIGINT
+
+# ── Run ingest (v2) ───────────────────────────────────────────────────
 REBUILD_EMBEDDINGS=${REBUILD_EMBEDDINGS:-0}
 if [ "$REBUILD_EMBEDDINGS" = "1" ]; then
     echo "[$(date)] REBUILD EMBEDDINGS MODE — no vLLM needed, recomputing vectors from cache..."
 else
-    echo "[$(date)] Starting ingestion v2 (rag_storage_westbury_qwen3_32b, MIG 3/8)..."
+    echo "[$(date)] Starting ingestion v2 (rag_storage_westbury_qwen3_32b, 2g.20gb MIG)..."
 fi
 
 WORKDIR=$WORKDIR \
-N_VLLM=${N_VLLM:-1} \
+N_VLLM=${N_VLLM:-2} \
 ENDPOINTS_SUBDIR=${ENDPOINTS_SUBDIR:-vllm_endpoints_westbury_qwen3_32b} \
 PAPERS_SUBDIR=${PAPERS_SUBDIR:-papers} \
 STORAGE_SUBDIR=${STORAGE_SUBDIR:-rag_storage_westbury_qwen3_32b} \
@@ -130,7 +129,7 @@ PARALLEL_DOCS=${PARALLEL_DOCS:-4} \
 LLM_MAX_ASYNC=${LLM_MAX_ASYNC:-16} \
 CONTEXT_MAX_ASYNC=${CONTEXT_MAX_ASYNC:-16} \
 MAX_DOC_TOKENS=${MAX_DOC_TOKENS:-20000} \
-EMBED_FUNC_MAX_ASYNC=${EMBED_FUNC_MAX_ASYNC:-1} \
+EMBED_FUNC_MAX_ASYNC=${EMBED_FUNC_MAX_ASYNC:-4} \
 MAX_PARALLEL_INSERT=${MAX_PARALLEL_INSERT:-4} \
 QDRANT_URL=$QDRANT_URL \
 INSERT_DONE_EVERY_N=${INSERT_DONE_EVERY_N:-1} \
@@ -146,11 +145,15 @@ CHUNK_EXCLUDE_ACK=${CHUNK_EXCLUDE_ACK:-1} \
 EXIT_CODE=$?
 echo "[$(date)] Ingestion finished with exit code $EXIT_CODE."
 
-# Stop Qdrant sidecar if running
+# ── Stop Qdrant and sync data back to persistent scratch ─────────────
 if [ -n "$QDRANT_PID" ]; then
     kill $QDRANT_PID 2>/dev/null
     wait $QDRANT_PID 2>/dev/null
     echo "[$(date)] Qdrant sidecar stopped."
+
+    echo "[$(date)] Syncing Qdrant data back to persistent scratch..."
+    rsync -a --delete "$QDRANT_LOCAL/" "$QDRANT_LUSTRE/"
+    echo "[$(date)] Qdrant sync complete ($(du -sh "$QDRANT_LUSTRE" | cut -f1))."
 fi
 
 exit $EXIT_CODE

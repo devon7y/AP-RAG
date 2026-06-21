@@ -370,6 +370,23 @@ _NUM_PREFIX = re.compile(r"^(\d+(?:\.\d+)*\.?\s+)")
 # only, to avoid matching "v. August" (common date format).
 _NUM_PREFIX_DOT = re.compile(r"^(\d+(?:\.\d+)*\.\s+|[IVX]+\.\s+)")
 
+# Chapter-level headers: "Chapter 1", "Chapter 1. Title", "CHAPTER TWO"
+_CHAPTER_HEADER = re.compile(
+    r"^chapter\s+"
+    r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|[ivx]+)"
+    r"[.:]?",
+    re.IGNORECASE,
+)
+
+# Splits at sentence-ending punctuation immediately before a numbered section
+# header that is embedded mid-line (e.g. "...word.  2. Method The next ...").
+_INLINE_SECTION_BOUNDARY = re.compile(
+    r"(?<=[\.\!\?])\s{1,5}(?=\d+(?:\.\d+)*\.\s+[A-Z])"
+)
+
+# TOC entry guard: title ends with whitespace then a bare page number (e.g. "Title 24").
+_TOC_TRAILING_PAGE = re.compile(r"\s+\d+\s*$")
+
 _CAPTION_START = re.compile(
     r"^(?:Figure|Fig\.|Table|Plate|Chart|Scheme)\s+\d",
     re.IGNORECASE,
@@ -615,9 +632,42 @@ def _refine_sections_with_inline_headers(
 
 
 def _classify_section_header(line: str) -> tuple[str, str]:
-    """Return (kind, title) where kind is hard, soft, or none."""
+    """
+    Return (kind, title) where kind is 'hard', 'soft', or 'none'.
+
+    title may be shorter than the full line when a known section name is
+    detected at the start of a long line that also contains body text
+    (e.g. "1. Introduction The Sapir-Whorf..."). In that case, the caller
+    is responsible for keeping the remainder as body text.
+    """
     stripped = line.strip()
-    if not stripped or len(stripped) > 120:
+    if not stripped:
+        return "none", ""
+
+    # ── Long-line fast path ────────────────────────────────────────────────────
+    # Lines > 120 chars are almost never standalone section headers, EXCEPT when
+    # a numbered prefix is immediately followed by a known section name. Handle
+    # that case, then bail for all other long lines.
+    if len(stripped) > 120:
+        num_match_dot = _NUM_PREFIX_DOT.match(stripped)
+        if num_match_dot:
+            title_core_dot = stripped[num_match_dot.end():].strip()
+            # Check longest known names first (greedy match)
+            for name in _INLINE_SECTION_TITLES:
+                if title_core_dot.lower().startswith(name):
+                    rest = title_core_dot[len(name):]
+                    if not rest or rest[0] in (" ", "\t", "\n", ":"):
+                        full_title = (stripped[: num_match_dot.end()] + title_core_dot[: len(name)]).strip()
+                        return _header_kind_for_title(full_title), full_title
+        if _CHAPTER_HEADER.match(stripped):
+            ch = _CHAPTER_HEADER.match(stripped)
+            return "hard", stripped[: ch.end()].strip()
+        return "none", ""
+
+    # ── TOC entry guard ────────────────────────────────────────────────────────
+    # Lines that end with two or more spaces followed by a page number are TOC
+    # entries (e.g. "1.1. Word Decoding    3"), not real section headers.
+    if _TOC_TRAILING_PAGE.search(stripped):
         return "none", ""
 
     # Strip any leading digit-based number prefix to get the title body
@@ -646,8 +696,15 @@ def _classify_section_header(line: str) -> tuple[str, str]:
             return _header_kind_for_title(stripped), stripped
         if title_core_dot and title_core_dot[0].isupper():
             words = title_core_dot.split()
-            if 1 <= len(words) <= 8 and not title_core_dot.rstrip().endswith("."):
-                return "soft", stripped
+            depth = num_match_dot.group(0).count(".")
+            if 1 <= len(words) <= 15 and not title_core_dot.rstrip().endswith("."):
+                # Depth ≤ 2 means N. or N.M. (section/subsection) → hard split.
+                # Deeper (N.M.L.) stays soft to avoid over-fragmenting.
+                return ("hard" if depth <= 2 else "soft"), stripped
+
+    # Chapter-level headers: "Chapter 1. Title", "CHAPTER ONE", "Chapter 3"
+    if _CHAPTER_HEADER.match(stripped):
+        return "hard", stripped
 
     return "none", ""
 
@@ -675,6 +732,10 @@ def _should_exclude(title: str, config: ChunkerConfig) -> bool:
 def detect_sections(text: str, config: ChunkerConfig) -> list[Section]:
     """Detect major sections from plain text extracted from a scientific PDF."""
     text = preprocess_extracted_text(text, config)
+    # Split long lines at sentence boundaries that precede numbered headers.
+    # This handles PDFs where section headers are embedded mid-paragraph
+    # (e.g. "...previous sentence. 2. Method The next section...").
+    text = _INLINE_SECTION_BOUNDARY.sub("\n", text)
     lines = text.split("\n")
     sections: list[Section] = []
     current_title = "Untitled"
@@ -698,7 +759,10 @@ def detect_sections(text: str, config: ChunkerConfig) -> list[Section]:
                     )
                     section_idx += 1
             current_title = title
-            current_lines = []
+            # When the detected title is shorter than the full line, the remainder
+            # is body text belonging to this new section (inline-header case).
+            body_remainder = line.strip()[len(title) :].lstrip(" \t:.-–—").strip()
+            current_lines = [body_remainder] if body_remainder else []
         else:
             current_lines.append(line)
 

@@ -5,12 +5,11 @@
 #SBATCH --error=/scratch/devon7y/westbury_rag/logs/westbury_vllm_%j.err
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=12
-#SBATCH --mem=64G
-#SBATCH --gpus=h100:1
+#SBATCH --partition=compute
+#SBATCH --gpus-per-node=h100:1
 
 WORKDIR=/scratch/devon7y/westbury_rag
-VENV_DIR=$WORKDIR/venv
+VENV_DIR=$WORKDIR/venv_tril
 ENDPOINTS_DIR=$WORKDIR/vllm_endpoints_westbury_qwen3_32b
 PORT=8001
 
@@ -20,30 +19,34 @@ export TRANSFORMERS_OFFLINE=1
 export XDG_CACHE_HOME=$WORKDIR/cache
 export TRITON_CACHE_DIR=$WORKDIR/cache/triton
 export FLASHINFER_CACHE_DIR=$WORKDIR/cache/flashinfer
+export FLASHINFER_DISABLE_VERSION_CHECK=1
+export MPLCONFIGDIR=$WORKDIR/cache/matplotlib
+export HOME=$WORKDIR/cache/home
 export VLLM_ENGINE_READY_TIMEOUT_S=1800
 
 mkdir -p "$ENDPOINTS_DIR" "$WORKDIR/logs" "$WORKDIR/cache" "$WORKDIR/cache/flashinfer"
 
-module load python/3.11 gcc/12.3 opencv/4.13.0 cuda/12.6
+module load python/3.11 gcc/12.3 cuda/12.6 opencv
 
 if [ ! -f "$VENV_DIR/bin/activate" ]; then
-  echo "[$(date)] ERROR: venv not found at $VENV_DIR. Run job_setup_env.slurm first."
+  echo "[$(date)] ERROR: venv not found at $VENV_DIR. Run job_setup_env_tril.slurm first."
   exit 1
 fi
 source "$VENV_DIR/bin/activate"
 echo "[$(date)] Environment ready (venv activated)."
 
-echo "[$(date)] Copying model weights to local NVMe ($SLURM_TMPDIR)..."
-_copy_start=$SECONDS
-mkdir -p "$SLURM_TMPDIR/hf_cache/hub"
-cp -a "$WORKDIR/hf_cache/hub/models--Qwen--Qwen3-32B" "$SLURM_TMPDIR/hf_cache/hub/"
-echo "[$(date)] Model copy done in $(($SECONDS - _copy_start))s."
-export HF_HOME="$SLURM_TMPDIR/hf_cache"
-
+MODEL_PATH=$(python3 -c "
+from pathlib import Path
+hub = Path('$WORKDIR/hf_cache/hub/models--Qwen--Qwen3-32B')
+commit = (hub / 'refs/main').read_text().strip()
+print(hub / 'snapshots' / commit)
+")
 echo "[$(date)] Starting Qwen/Qwen3-32B with FP8 quantization (36K context, gpu-util 0.90)..."
-vllm serve Qwen/Qwen3-32B \
+echo "[$(date)] Model path: $MODEL_PATH"
+vllm serve "$MODEL_PATH" \
   --host 0.0.0.0 \
   --port $PORT \
+  --served-model-name Qwen/Qwen3-32B \
   --tensor-parallel-size 1 \
   --max-model-len 40000 \
   --gpu-memory-utilization 0.90 \
