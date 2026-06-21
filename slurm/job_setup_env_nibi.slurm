@@ -47,7 +47,7 @@ from pathlib import Path
 hf = Path('$WORKDIR/hf_cache/hub')
 models = [
     'models--Qwen--Qwen3-32B',
-    'models--Octen--Octen-Embedding-8B-INT8',
+    'models--Qwen--Qwen3-Embedding-8B',
 ]
 for m in models:
     p = hf / m

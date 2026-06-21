@@ -3,7 +3,7 @@ reembed_missing.py — Re-embed chunks for docs missing from Qdrant.
 
 Reads kv_store_doc_status to find processed docs, scrolls Qdrant to find
 which are already covered, then re-embeds chunks for the missing ones using
-the local Octen model and upserts into Qdrant.
+the local Qwen3-Embedding-8B model and upserts into Qdrant.
 
 Usage:
     python reembed_missing.py [--dry-run]
@@ -33,10 +33,23 @@ STORAGE_SUBDIR = os.environ.get("STORAGE_SUBDIR", "rag_storage_westbury_qwen3_32
 STORAGE       = WORKDIR / STORAGE_SUBDIR
 QDRANT_URL    = os.environ.get("QDRANT_URL", "http://localhost:6333")
 BATCH_SIZE    = int(os.environ.get("BATCH_SIZE", 64))
-MODEL_ID      = "Octen/Octen-Embedding-8B-INT8"
-MODEL_LOCAL   = WORKDIR / "hf_cache/hub/models--Octen--Octen-Embedding-8B-INT8/snapshots/ed8f0d474e783853921c7d1807be69d85f7d5c4a"
-EMBEDDING_DIM = 4096
+# Must match pipeline/ingest.py exactly (same model + dtype, documents embedded
+# with NO instruction) so re-embedded vectors land in the same space.
+MODEL_ID      = os.environ.get("EMBED_MODEL_ID", "Qwen/Qwen3-Embedding-8B")
+EMBED_TORCH_DTYPE = os.environ.get("EMBED_TORCH_DTYPE", "bfloat16")
+EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", 4096))
 CHUNKS_COL    = "lightrag_vdb_chunks"
+
+
+def _resolve_model_path(model_id: str) -> str:
+    """Prefer a local HF snapshot (offline compute nodes) else the hub id."""
+    hub = WORKDIR / "hf_cache" / "hub" / f"models--{model_id.replace('/', '--')}"
+    refs = hub / "refs" / "main"
+    if refs.exists():
+        snap = hub / "snapshots" / refs.read_text().strip()
+        if snap.exists():
+            return str(snap)
+    return model_id
 
 
 def make_uid(eid: str) -> str:
@@ -102,9 +115,13 @@ def main(dry_run: bool = False):
         print("No chunks found for missing docs — they may lack text in kv_store.", flush=True)
         return
 
-    # 4. Load model — load in fp16 to avoid bitsandbytes INT8 CUDA version issues
-    print(f"\nLoading {MODEL_ID} on cuda (fp16)...", flush=True)
-    model = SentenceTransformer(str(MODEL_LOCAL), device="cuda", model_kwargs={"torch_dtype": torch.float16})
+    # 4. Load model — bf16 to match ingest's canonical document embeddings
+    print(f"\nLoading {MODEL_ID} on cuda ({EMBED_TORCH_DTYPE})...", flush=True)
+    model = SentenceTransformer(
+        _resolve_model_path(MODEL_ID),
+        device="cuda",
+        model_kwargs={"torch_dtype": getattr(torch, EMBED_TORCH_DTYPE)},
+    )
     vram = round(torch.cuda.memory_allocated() / 1e9, 2)
     print(f"  Model ready. VRAM: {vram} GB", flush=True)
 
@@ -121,7 +138,7 @@ def main(dry_run: bool = False):
     total = 0
     for i in range(0, len(chunks_to_embed), BATCH_SIZE):
         batch = chunks_to_embed[i:i + BATCH_SIZE]
-        texts = ["- " + c["content"] for c in batch]
+        texts = [c["content"] for c in batch]  # documents: no Qwen3 instruction
 
         vectors = model.encode(
             texts,

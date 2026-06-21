@@ -74,9 +74,25 @@ N_VLLM        = int(os.environ.get("N_VLLM", 1))
 LLM_MODEL  = os.environ.get("LLM_MODEL", "Qwen/Qwen3.5-27B-FP8")
 LLM_API_KEY = "EMPTY"
 
-EMBED_MODEL_ID = "Octen/Octen-Embedding-8B-INT8"
-EMBEDDING_DIM  = 4096
+EMBED_MODEL_ID = os.environ.get("EMBED_MODEL_ID", "Qwen/Qwen3-Embedding-8B")
+EMBEDDING_DIM  = int(os.environ.get("EMBEDDING_DIM", 4096))
 EMBED_BATCH    = int(os.environ.get("EMBED_BATCH", 16))  # sentences per GPU forward pass
+EMBED_DEVICE   = os.environ.get("EMBED_DEVICE", "cuda")
+# Qwen3-Embedding-8B ships in bf16. Load it in bf16 so the 8B model fits the
+# 40 GB MIG (~16 GiB); SentenceTransformer's float32 default would be ~32 GiB
+# and OOM. Override with EMBED_TORCH_DTYPE if needed.
+EMBED_TORCH_DTYPE = os.environ.get("EMBED_TORCH_DTYPE", "bfloat16")
+
+# Task-aware (asymmetric) embedding: queries get a Qwen3 instruction, documents get
+# none. This string MUST match scripts/server.py exactly. During ingest local_embed
+# is always called with context="document", but it honors context so the same code
+# stays correct if this LightRAG instance is ever also used to embed queries.
+EMBED_QUERY_INSTRUCTION = os.environ.get(
+    "EMBED_QUERY_INSTRUCTION",
+    "Given a question about scientific literature, retrieve relevant passages "
+    "from academic papers that answer the question",
+)
+QUERY_PROMPT = f"Instruct: {EMBED_QUERY_INSTRUCTION}\nQuery:"
 
 MAX_DOC_TOKENS    = int(os.environ.get("MAX_DOC_TOKENS", 120_000))
 PARALLEL_DOCS     = int(os.environ.get("PARALLEL_DOCS", 4))
@@ -186,8 +202,10 @@ _embed_model = None
 def get_embed_model():
     global _embed_model
     if _embed_model is None:
+        import torch
         from sentence_transformers import SentenceTransformer
-        print(f"Loading embedding model {EMBED_MODEL_ID} on cuda…", flush=True)
+        model_kwargs = {"torch_dtype": getattr(torch, EMBED_TORCH_DTYPE)}
+        print(f"Loading embedding model {EMBED_MODEL_ID} on {EMBED_DEVICE} ({EMBED_TORCH_DTYPE})…", flush=True)
         import os as _os
         from pathlib import Path as _Path
         _hub = _Path(_os.environ.get("HF_HOME", _os.path.expanduser("~/.cache/huggingface"))) / "hub" / f"models--{EMBED_MODEL_ID.replace('/', '--')}"
@@ -196,18 +214,22 @@ def get_embed_model():
             _commit = _refs.read_text().strip()
             _local_path = str(_hub / "snapshots" / _commit)
             print(f"Loading embedding model from local snapshot: {_local_path}", flush=True)
-            _embed_model = SentenceTransformer(_local_path, device="cuda")
+            _embed_model = SentenceTransformer(_local_path, device=EMBED_DEVICE, model_kwargs=model_kwargs)
         else:
-            _embed_model = SentenceTransformer(EMBED_MODEL_ID, device="cuda")
+            _embed_model = SentenceTransformer(EMBED_MODEL_ID, device=EMBED_DEVICE, model_kwargs=model_kwargs)
         print("Embedding model ready.", flush=True)
     return _embed_model
 
 
 _embed_stats = {"calls": 0, "total_s": 0.0, "texts": 0, "concurrent": 0, "max_concurrent": 0}
 
-async def local_embed(texts: list[str]) -> np.ndarray:
+async def local_embed(texts: list[str], context: str = "document") -> np.ndarray:
     model = get_embed_model()
-    prefixed = ["- " + t for t in texts]
+    # Task-aware: queries get the Qwen3 instruction, documents get none. LightRAG
+    # passes context="query"/"document" because EmbeddingFunc(supports_asymmetric=True).
+    # During ingest/rebuild this is always "document" (chunks, entity/relation
+    # descriptions); honored explicitly so the function is correct in any context.
+    prompt = QUERY_PROMPT if context == "query" else None
     loop = asyncio.get_event_loop()
     _embed_stats["concurrent"] += 1
     if _embed_stats["concurrent"] > _embed_stats["max_concurrent"]:
@@ -216,7 +238,8 @@ async def local_embed(texts: list[str]) -> np.ndarray:
     embeddings = await loop.run_in_executor(
         None,
         lambda: model.encode(
-            prefixed,
+            texts,
+            prompt=prompt,
             normalize_embeddings=True,
             batch_size=EMBED_BATCH,
             show_progress_bar=False,
@@ -567,6 +590,7 @@ async def rebuild_embeddings_from_cache():
             embedding_dim=EMBEDDING_DIM,
             max_token_size=8192,
             func=local_embed,
+            supports_asymmetric=True,  # forward context="query"/"document"
         ),
         embedding_func_max_async=EMBED_FUNC_MAX_ASYNC,
     )
@@ -793,6 +817,7 @@ async def main():
             embedding_dim=EMBEDDING_DIM,
             max_token_size=8192,
             func=local_embed,
+            supports_asymmetric=True,  # forward context="query"/"document"
         ),
         chunking_func=active_chunker,  # 5: structure-aware chunker (+ optional contextualizer)
         llm_model_max_async=LLM_MAX_ASYNC,

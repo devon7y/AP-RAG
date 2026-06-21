@@ -38,13 +38,21 @@ PORT          = int(os.environ.get("PORT", 8001))
 # Set QDRANT_URL for LightRAG's Qdrant backend
 os.environ.setdefault("QDRANT_URL", QDRANT_URL)
 
-# ── Embedding via local Octen server ──────────────────────────────────────────
+# ── Embedding via local Qwen3-Embedding server (scripts/server.py) ────────────
+# These calls are all query-side; the embedding server applies the Qwen3 query
+# instruction. The `model` field is ignored by that server.
 
 _embed_client = AsyncOpenAI(base_url=EMBED_HOST, api_key="ignored")
 
 
-async def pc_embed(texts: list[str]) -> np.ndarray:
-    resp = await _embed_client.embeddings.create(model="Octen", input=texts)
+async def pc_embed(texts: list[str], context: str = "query") -> np.ndarray:
+    # Forward LightRAG's task-aware context to the embedding server (extra_body adds
+    # it to the request JSON). "query" → instruction applied, "document" → none.
+    resp = await _embed_client.embeddings.create(
+        model="qwen3-embedding-8b",
+        input=texts,
+        extra_body={"context": context},
+    )
     return np.array([d.embedding for d in resp.data])
 
 
@@ -77,6 +85,7 @@ async def lifespan(app: FastAPI):
             embedding_dim=EMBEDDING_DIM,
             max_token_size=8192,
             func=pc_embed,
+            supports_asymmetric=True,  # forward context="query"/"document" to pc_embed
         ),
         vector_storage="QdrantVectorDBStorage",
         vector_db_storage_cls_kwargs={"cosine_better_than_threshold": 0.2},

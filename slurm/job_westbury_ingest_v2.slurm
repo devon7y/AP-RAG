@@ -19,9 +19,10 @@
 #   - Structure-aware chunking via CHUNK_* env vars (section/paragraph/sentence)
 #
 # Memory budget (40 GB MIG):
-#   Octen-8B-INT8 model: ~10 GiB
-#   With EMBED_FUNC_MAX_ASYNC=4: ~18 GiB total (4 x 2 GiB activations)
-#   ~22 GiB headroom
+#   Qwen3-Embedding-8B (bf16) model: ~16 GiB  (float32 would be ~32 GiB → OOM;
+#     ingest.py forces EMBED_TORCH_DTYPE=bfloat16)
+#   With EMBED_FUNC_MAX_ASYNC=1 + activations: ~18-20 GiB total
+#   ~20 GiB headroom
 #
 # PRE_FLIGHT check 4: submit with --dependency=after:$VLLM_JOB
 # PRE_FLIGHT check 5: LLM_MODEL must match what vLLM serves (Qwen/Qwen3-32B)
