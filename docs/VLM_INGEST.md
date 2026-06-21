@@ -9,6 +9,21 @@ the captioning (so MinerU's own image analysis is left **off**).
 
 Gated behind `INGEST_VLM=1`. Default (`0`) is the unchanged text-only `ainsert` path.
 
+## ⚠️ Phase 1 (Fir only) — validate before the first real run
+
+Three things genuinely need validation on the cluster (none of these can be exercised
+off-cluster):
+
+1. **The empirical crux**: confirm that under `pending_parse`, the scientific chunker +
+   contextualization actually run on MinerU's text (the whole design rests on it — the
+   code traces say yes, but verify on the first run via chunk shapes / the KG).
+2. **VERIFY items**: the exact `mineru[...]` pip extra and `mineru-models-download` flags
+   depend on the installed MinerU version — these are flagged inline in the setup job.
+3. **Phase 2 (offline clusters)**: Nibi/Trillium/Narval need MinerU models pre-staged
+   (Globus the cache, `MINERU_MODEL_SOURCE=local`) and the `_nibi/_ror/_tril` ingest jobs
+   wired — currently only Fir is wired. Docling remains a one-env-var fallback if MinerU
+   disappoints.
+
 ## How it works (code)
 
 - `pipeline/ingest.py`: when `INGEST_VLM=1`, the `vlm` role is wired to the round-robin
