@@ -121,6 +121,22 @@ else
     echo "[$(date)] Starting ingestion v2 (rag_storage_westbury_qwen3_32b, MIG 3/8)..."
 fi
 
+# ── (VLM) Discover the MinerU parser endpoint when native multimodal is enabled ──
+INGEST_VLM=${INGEST_VLM:-0}
+MINERU_LOCAL_ENDPOINT="${MINERU_LOCAL_ENDPOINT:-}"
+if [ "$INGEST_VLM" = "1" ] && [ -z "$MINERU_LOCAL_ENDPOINT" ]; then
+    for f in "$WORKDIR/mineru_endpoints"/*.txt; do
+        [ -f "$f" ] || continue
+        MINERU_LOCAL_ENDPOINT=$(cat "$f"); break
+    done
+    if [ -z "$MINERU_LOCAL_ENDPOINT" ]; then
+        echo "[$(date)] [VLM] ERROR: INGEST_VLM=1 but no MinerU endpoint in $WORKDIR/mineru_endpoints."
+        echo "[$(date)] [VLM] Submit job_westbury_mineru.slurm first (add a SLURM dependency)."
+    else
+        echo "[$(date)] [VLM] MinerU endpoint: $MINERU_LOCAL_ENDPOINT"
+    fi
+fi
+
 WORKDIR=$WORKDIR \
 N_VLLM=${N_VLLM:-1} \
 ENDPOINTS_SUBDIR=${ENDPOINTS_SUBDIR:-vllm_endpoints_westbury_qwen3_32b} \
@@ -142,6 +158,16 @@ CHUNK_MIN_TOKENS=${CHUNK_MIN_TOKENS:-300} \
 CHUNK_OVERLAP_TOKENS=${CHUNK_OVERLAP_TOKENS:-150} \
 CHUNK_EXCLUDE_REFS=${CHUNK_EXCLUDE_REFS:-1} \
 CHUNK_EXCLUDE_ACK=${CHUNK_EXCLUDE_ACK:-1} \
+INGEST_VLM=${INGEST_VLM:-0} \
+PARSE_ENGINE=${PARSE_ENGINE:-mineru} \
+PROCESS_OPTIONS=${PROCESS_OPTIONS:-ite} \
+VLM_MAX_ASYNC=${VLM_MAX_ASYNC:-16} \
+MINERU_API_MODE=${MINERU_API_MODE:-local} \
+MINERU_LOCAL_ENDPOINT="$MINERU_LOCAL_ENDPOINT" \
+MINERU_LOCAL_BACKEND=${MINERU_LOCAL_BACKEND:-pipeline} \
+MINERU_LOCAL_IMAGE_ANALYSIS=${MINERU_LOCAL_IMAGE_ANALYSIS:-false} \
+MINERU_ENABLE_TABLE=${MINERU_ENABLE_TABLE:-true} \
+MINERU_ENABLE_FORMULA=${MINERU_ENABLE_FORMULA:-true} \
   PYTHONPATH="$WORKDIR" python -m pipeline.ingest
 
 EXIT_CODE=$?

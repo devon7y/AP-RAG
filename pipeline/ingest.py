@@ -46,6 +46,16 @@ Environment variables (set by job_westbury_ingest_v2.slurm):
     CHUNK_OVERLAP_TOKENS — sentence-aware overlap between chunks (5, default 150)
     CHUNK_EXCLUDE_REFS   — exclude References section from chunks (5, default 1)
     CHUNK_EXCLUDE_ACK    — exclude Acknowledgements section (5, default 1)
+    INGEST_VLM           — if "1", ingest via LightRAG's native multimodal pipeline
+                           (an external parser service extracts figures/tables/
+                           equations; the `vlm` role captions them). Default "0" =
+                           the existing text-only ainsert path, unchanged.
+    PARSE_ENGINE         — multimodal parser engine: "mineru" (default) or "docling"
+    PROCESS_OPTIONS      — per-doc multimodal flags i/t/e (default "ite")
+    VLM_MAX_ASYNC        — max concurrent VLM caption calls (default = LLM_MAX_ASYNC).
+                           The parser endpoint itself is read by LightRAG from the env
+                           (MINERU_API_MODE/MINERU_LOCAL_ENDPOINT, or DOCLING_ENDPOINT),
+                           which the ingest SLURM script exports.
 """
 
 import asyncio
@@ -101,6 +111,18 @@ CONTEXT_MAX_ASYNC = int(os.environ.get("CONTEXT_MAX_ASYNC", 8))
 CONTEXTUALIZE_CHUNKS = os.environ.get("CONTEXTUALIZE_CHUNKS", "1") == "1"
 EMBED_FUNC_MAX_ASYNC = int(os.environ.get("EMBED_FUNC_MAX_ASYNC", 4))
 MAX_PARALLEL_INSERT  = int(os.environ.get("MAX_PARALLEL_INSERT", 2))
+
+# VLM multimodal ingestion (native LightRAG path; figures/tables/equations).
+# When INGEST_VLM=1, ingest via apipeline_enqueue_documents(pending_parse): an
+# external parser service (PARSE_ENGINE: mineru|docling) extracts figures/tables/
+# equations into sidecars and LightRAG's `vlm` role (our Qwen3.6 endpoint) captions
+# them. The scientific chunker + contextualization wrapper still run on the parser's
+# full document text. The parser endpoint is read by LightRAG directly from the env
+# (MINERU_API_MODE/MINERU_LOCAL_ENDPOINT or DOCLING_ENDPOINT), set by the SLURM job.
+INGEST_VLM      = os.environ.get("INGEST_VLM", "0") == "1"
+PARSE_ENGINE    = os.environ.get("PARSE_ENGINE", "mineru").strip().lower()
+PROCESS_OPTIONS = os.environ.get("PROCESS_OPTIONS", "ite").strip()
+VLM_MAX_ASYNC   = int(os.environ.get("VLM_MAX_ASYNC", LLM_MAX_ASYNC))
 
 # 2A: Qdrant support — if QDRANT_URL is set, use QdrantVectorDBStorage
 QDRANT_URL = os.environ.get("QDRANT_URL", "")
@@ -744,6 +766,48 @@ async def rebuild_embeddings_from_cache():
     print(f"  Vector DB:   {'Qdrant' if USE_QDRANT else 'NanoVectorDB'}")
 
 
+# ── Native multimodal ingest (VLM figures/tables/equations) ────────────────────
+
+async def ingest_native_multimodal(rag, papers):
+    """Ingest every PDF through LightRAG's native multimodal pipeline.
+
+    Unlike the text-only path (per-doc ``ainsert`` + status poll), this enqueues
+    each PDF as ``docs_format="pending_parse"`` and then drains the queue once.
+    LightRAG drives the full chain per document: parse (MinerU/Docling extracts
+    figures/tables/equations into sidecars) → ``vlm`` role captions them →
+    ``chunking_func`` (our scientific chunker + contextualization wrapper) runs on
+    the parser's full text → entity/relation extraction → embed. The parser is
+    selected by ``PARSE_ENGINE`` and reached via env vars LightRAG reads directly
+    (MINERU_* / DOCLING_ENDPOINT).
+
+    Resume is handled by LightRAG: the enqueue path dedups documents already known
+    in doc-status, so re-running skips processed PDFs without the md5(text)→doc_id
+    precompute the text path uses (here we never read the text before parsing).
+    """
+    enqueued = 0
+    for pdf in papers:
+        try:
+            await rag.apipeline_enqueue_documents(
+                input="",                      # content comes from the parser
+                file_paths=str(pdf),
+                docs_format="pending_parse",
+                parse_engine=PARSE_ENGINE,
+                process_options=PROCESS_OPTIONS,
+            )
+            enqueued += 1
+        except Exception as e:  # noqa: BLE001 — one bad PDF must not abort the batch
+            print(f"[VLM] enqueue failed: {pdf.name[:55]} — {type(e).__name__}: {e}", flush=True)
+    print(
+        f"[VLM] Enqueued {enqueued}/{len(papers)} PDFs "
+        f"(engine={PARSE_ENGINE}, options={PROCESS_OPTIONS}); draining pipeline…",
+        flush=True,
+    )
+    # Drives parse → VLM caption → chunk → contextualize → extract → embed for the
+    # whole queue, with LightRAG's own concurrency (MAX_PARALLEL_INSERT etc.).
+    await rag.apipeline_process_enqueue_documents()
+    print("[VLM] Pipeline drained.", flush=True)
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 async def main():
@@ -832,6 +896,37 @@ async def main():
         rag_kwargs["vector_storage"] = "QdrantVectorDBStorage"
         print(f"[2A] Using QdrantVectorDBStorage at {QDRANT_URL}")
 
+    # VLM: enable native multimodal analysis and point the `vlm` role at our Qwen3.6
+    # round-robin endpoint. The role wrapper strips `_priority` before calling our
+    # func, and `llm_func` already forwards `image_inputs`/`response_format` through
+    # **kwargs into openai_complete_if_cache, so no dedicated VLM caller is needed.
+    if INGEST_VLM:
+        rag_kwargs["vlm_process_enable"] = True
+        rag_kwargs["role_llm_configs"] = {
+            "vlm": {"func": llm_func, "max_async": VLM_MAX_ASYNC}
+        }
+        print(
+            f"[VLM] Multimodal ingest ENABLED: parse_engine={PARSE_ENGINE}, "
+            f"process_options={PROCESS_OPTIONS}, vlm_max_async={VLM_MAX_ASYNC}"
+        )
+        if PARSE_ENGINE == "mineru":
+            _mode = os.environ.get("MINERU_API_MODE", "local")
+            _ep = os.environ.get("MINERU_LOCAL_ENDPOINT", "")
+            if _mode == "local" and not _ep:
+                print("[VLM] WARNING: MINERU_API_MODE=local but MINERU_LOCAL_ENDPOINT "
+                      "is unset — parsing will fail.", flush=True)
+            else:
+                print(f"[VLM] MinerU: mode={_mode} endpoint={_ep or '(official cloud)'}")
+        elif PARSE_ENGINE == "docling":
+            _ep = os.environ.get("DOCLING_ENDPOINT", "")
+            if not _ep:
+                print("[VLM] WARNING: PARSE_ENGINE=docling but DOCLING_ENDPOINT is "
+                      "unset — parsing will fail.", flush=True)
+            else:
+                print(f"[VLM] Docling endpoint={_ep}")
+        else:
+            print(f"[VLM] WARNING: unknown PARSE_ENGINE={PARSE_ENGINE!r}", flush=True)
+
     rag = LightRAG(**rag_kwargs)
 
     await rag.initialize_storages()
@@ -853,6 +948,41 @@ async def main():
         print(f"No PDFs found in {PAPERS_DIR}")
         await rag.finalize_storages()
         sys.exit(1)
+
+    # ── (VLM) Native multimodal path: parser extracts figures/tables/equations, the
+    #     `vlm` role captions them, then LightRAG chunks/extracts/embeds. LightRAG
+    #     handles resume/dedup internally, so we skip the text-path doc-id precompute.
+    if INGEST_VLM:
+        print(f"\nFound {len(papers)} papers. Native multimodal ingest "
+              f"(INGEST_VLM=1, engine={PARSE_ENGINE}, options={PROCESS_OPTIONS})…\n")
+        t_start = time.time()
+        monitor_task = asyncio.create_task(status_monitor(STORAGE_DIR, t_start))
+        try:
+            await ingest_native_multimodal(rag, papers)
+        finally:
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
+            await rag.finalize_storages()
+
+        elapsed = time.time() - t_start
+        print(f"\n{'='*60}")
+        print(f"Done in {elapsed/3600:.1f}h (native multimodal, engine={PARSE_ENGINE})")
+        doc_status_path = STORAGE_DIR / "kv_store_doc_status.json"
+        if doc_status_path.exists():
+            try:
+                raw = json.loads(doc_status_path.read_text())
+                final_counts = {}
+                for k, v in raw.items():
+                    if k.startswith("doc-"):
+                        s = v.get("status", "unknown")
+                        final_counts[s] = final_counts.get(s, 0) + 1
+                print(f"Final doc_status: {final_counts}")
+            except Exception:
+                pass
+        return
 
     # ── (1B) Skip docs already known to LightRAG (processed, pending, processing) ──
     # Only re-submit docs that LightRAG has never seen. Pending/processing docs
