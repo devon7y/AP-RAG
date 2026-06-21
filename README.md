@@ -4,7 +4,7 @@
 
 The driving use case is the **Westbury lab corpus** (~1,300+ PDFs: humor, psycholinguistics, word frequency, entropy, semantic memory, cognitive science), and the design generalizes to any collection of academic PDFs.
 
-> **Status:** active work in progress. The serving/access layer (`aprag`) and the ingest pipeline are in use; several `westbury/*.md` files are operational notes rather than stable docs.
+> **Status:** active work in progress. The serving/access layer (`aprag`) and the ingest pipeline are in use; several `docs/*.md` files are operational notes rather than stable docs.
 
 ---
 
@@ -15,7 +15,7 @@ The core idea is **upgradability**. Upstream LightRAG lives in a nested, git-ign
 ```
 import lightrag (unmodified, upstream)  ──►  LightRAG(chunking_func=…, embedding_func=…, llm_model_func=…)
                                                         ▲
-        AP-RAG wrappers (this repo, in westbury/) ──────┘
+        AP-RAG wrappers (this repo, in pipeline/) ─────┘
         structure-aware chunker · contextual retrieval · academic schema
 ```
 
@@ -41,7 +41,7 @@ The pipeline has three physically separate stages. Knowing which machine runs wh
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
 │ 1. INGEST  — batch, on HPC GPU nodes (Alliance Canada H100 clusters)        │
-│    westbury/ingest_cml_octen_v2.py (launched by SLURM)                      │
+│    pipeline/ingest.py (launched by SLURM)                      │
 │    PDFs → extract text → structure-aware chunk → contextualize → extract    │
 │    entities/relations (Qwen3-32B FP8, vLLM) → embed (Octen-8B, dim 4096)    │
 │    → write graph + KV stores + vectors (Qdrant or NanoVectorDB)             │
@@ -71,14 +71,18 @@ Note the model asymmetry: **Qwen3-32B at ingest time, gpt-5-mini at query time**
 
 | Path | What it is |
 |---|---|
-| `westbury/` | The active pipeline: chunkers (`scientific_chunker.py`, `book_chunker.py`), the contextual-retrieval wrapper (`contextual_retrieval.py`), the v2 ingest script, per-cluster SLURM jobs, maintenance scripts, chunker tests, and runbooks. **New work goes here.** |
+| `pipeline/` | The pipeline package: structure-aware chunkers (`scientific_chunker.py`, `book_chunker.py`), the contextual-retrieval wrapper (`contextual_retrieval.py`), and the ingest entry point (`ingest.py`). Imported as `from pipeline.X import …`. |
+| `scripts/` | Standalone maintenance/utility scripts: prechunkers, graph/embedding rebuilders, Qdrant migration, PDF/OCR tools, and the Octen embedding `server.py`. |
+| `slurm/` | Per-cluster SLURM jobs for the corpus runs (`job_westbury_*`, `job_books_*`). |
+| `tests/` | Fast, local chunker tests (`pytest tests/`). |
+| `docs/` | Runbooks and operational notes. |
 | `aprag/` | Installable access package — the `aprag` CLI and `aprag-mcp` MCP server (thin clients over the query server). |
-| `query_server.py`, `server.py` | The PC serving stack (LightRAG query API + Octen embedding server). |
+| `query_server.py`, `scripts/server.py` | The PC serving stack (LightRAG query API + Octen embedding server). |
 | `LightRAG/` | **Upstream LightRAG, git-ignored.** Its own repo; pinned to v1.5.3; never edited. |
 | `lightrag-explainer/` | Unrelated Next.js slideshow app (git-ignored). Not part of the pipeline. |
 | `CLAUDE.md` | In-depth internal guide to the codebase. |
 | `APRAG_ACCESS.md` | How to give a new user access (Tailscale + `aprag`). |
-| `westbury/CANONICAL_INGEST_PARAMS.md` | Proven ingest parameters and the standard SLURM submission pattern. |
+| `docs/CANONICAL_INGEST_PARAMS.md` | Proven ingest parameters and the standard SLURM submission pattern. |
 
 ---
 
@@ -108,12 +112,11 @@ The client only needs `httpx` and `mcp` — it runs no models and holds no data;
 
 ### 3. (Optional) run the chunker tests
 
-These are the only fast, machine-independent tests; run them from inside `westbury/`:
+These are the only fast, machine-independent tests; run them from the repo root after `pip install -e .` (which registers the `pipeline` package):
 
 ```bash
-cd westbury
-python -m pytest test_scientific_chunker.py test_book_chunker.py test_contextual_retrieval.py -v
-python -m pytest test_chunkers_pdf.py -v        # runs chunkers over real sample PDFs
+python -m pytest tests/ -v
+python -m pytest tests/test_chunkers_pdf.py -v        # runs chunkers over real sample PDFs
 ```
 
 ---
@@ -148,13 +151,13 @@ It exposes two tools: `aprag_query(question, mode)` → synthesized answer, and 
 ### Run the serving stack (on the PC)
 
 ```bash
-python -m uvicorn server:app       --host 0.0.0.0 --port 8000   # Octen embeddings (run in westbury/)
+python -m uvicorn server:app       --host 0.0.0.0 --port 8000   # Octen embeddings (source: scripts/server.py)
 python -m uvicorn query_server:app --host 0.0.0.0 --port 8001   # query API (loads LightRAG + Qdrant)
 ```
 
 ### Run ingestion (on HPC)
 
-Ingestion needs GPUs and is submitted via SLURM on Alliance Canada H100 clusters (Fir / Rorqual / Nibi / Trillium). The standard pattern is **N vLLM jobs serving Qwen3-32B + one ingest job** with a SLURM dependency; per-cluster scripts are suffixed `_ror` / `_nibi` / `_tril`. Exact `sbatch` commands and proven parameters are in [westbury/CANONICAL_INGEST_PARAMS.md](westbury/CANONICAL_INGEST_PARAMS.md).
+Ingestion needs GPUs and is submitted via SLURM on Alliance Canada H100 clusters (Fir / Rorqual / Nibi / Trillium). The standard pattern is **N vLLM jobs serving Qwen3-32B + one ingest job** with a SLURM dependency; per-cluster scripts are suffixed `_ror` / `_nibi` / `_tril`. Exact `sbatch` commands and proven parameters are in [docs/CANONICAL_INGEST_PARAMS.md](docs/CANONICAL_INGEST_PARAMS.md).
 
 **Ingest modes:**
 
@@ -176,7 +179,7 @@ Behavior is driven by environment variables (no code edits needed):
 | `CHUNK_TARGET_TOKENS` / `CHUNK_MAX_TOKENS` / `CHUNK_MIN_TOKENS` / `CHUNK_OVERLAP_TOKENS` | Chunk sizing (defaults 800 / 1000 / 300 / 150). |
 | `CHUNK_EXCLUDE_REFS` / `CHUNK_EXCLUDE_ACK` | Drop References / Acknowledgements sections. |
 | `CONTEXTUALIZE_CHUNKS` | `1` (default) enables contextual retrieval via the chunker wrapper. |
-| `CONTEXT_MAX_ASYNC`, `LLM_MAX_ASYNC`, `EMBED_FUNC_MAX_ASYNC`, `PARALLEL_DOCS`, `MAX_PARALLEL_INSERT` | Concurrency tuning (see `westbury/CANONICAL_INGEST_PARAMS.md`). |
+| `CONTEXT_MAX_ASYNC`, `LLM_MAX_ASYNC`, `EMBED_FUNC_MAX_ASYNC`, `PARALLEL_DOCS`, `MAX_PARALLEL_INSERT` | Concurrency tuning (see `docs/CANONICAL_INGEST_PARAMS.md`). |
 | `QDRANT_URL` | Use Qdrant for vectors; otherwise file-based NanoVectorDB. |
 | `APRAG_QUERY_URL` | Where the `aprag` client sends requests. |
 

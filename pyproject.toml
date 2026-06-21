@@ -18,4 +18,4 @@ aprag = "aprag.cli:main"
 aprag-mcp = "aprag.mcp:main"
 
 [tool.setuptools]
-packages = ["aprag"]
+packages = ["aprag", "pipeline"]

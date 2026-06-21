@@ -22,3 +22,10 @@ lightrag-explainer/
 *.pre_upgrade_backup
 # personal roadmap notes
 new_embedding_changes.txt
+
+# Regenerable artifacts (PDF-naming + chunk caches, produced under scripts/)
+.crossref_cache.json
+pdf_name_report.csv
+rename_map.tsv
+rename_review.tsv
+.pytest_cache/
