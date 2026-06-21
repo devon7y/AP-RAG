@@ -196,7 +196,7 @@ ssh fir "curl -s http://<NODE>:8000/v1/models | python3 -m json.tool"
 # e.g. returns: "id": "Qwen/Qwen3.5-27B-FP8"
 ```
 
-Then confirm `LLM_MODEL` in `ingest_cml_octen.py` matches that id exactly.
+Then confirm `LLM_MODEL` in `ingest_cml_octen_v2.py` matches that id exactly.
 
 ```bash
 # Check recent log lines
@@ -399,13 +399,14 @@ or decrease `--max-model-len`.
 
 ---
 
-## 14. contextualize_chunks and MAX_DOC_TOKENS
+## 14. Contextual retrieval and MAX_DOC_TOKENS
 
-**`contextualize_chunks=True` is required.** This is not optional — disabling it produces
-a lower-quality knowledge graph. Always verify it is `True` in `ingest_cml_octen.py` before
-submitting.
+**Contextual retrieval is required.** This is not optional — disabling it produces
+a lower-quality knowledge graph. It is enabled by default (`CONTEXTUALIZE_CHUNKS=1`) in
+`ingest_cml_octen_v2.py`, applied via the `contextual_retrieval.py` chunker wrapper; verify
+it is enabled before submitting.
 
-When `contextualize_chunks=True`, LightRAG sends the **full document** as context for
+When contextual retrieval is enabled, the **full document** is sent as context for
 every chunk before entity extraction. This creates prompts of roughly
 `doc_size + chunk_size + template_overhead` and roughly doubles total LLM call volume.
 

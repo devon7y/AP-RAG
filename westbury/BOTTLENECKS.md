@@ -228,11 +228,11 @@ pick up where the pipeline left off. Those docs are either re-submitted (causing
 ## 10. MAX_PARALLEL_INSERT Previously a No-Op
 
 **Historical issue (now fixed):** The `MAX_PARALLEL_INSERT` environment variable was
-set in the SLURM script but never read by `ingest_cml_octen.py`. LightRAG defaulted to
+set in the SLURM script but never read by the ingest script. LightRAG defaulted to
 `max_parallel_insert=2` for all early runs. Every run before the fix was operating at
 minimum parallelism regardless of what was configured.
 
-**Fix applied:** `ingest_cml_octen.py` now reads `MAX_PARALLEL_INSERT` from the
+**Fix applied:** `ingest_cml_octen_v2.py` now reads `MAX_PARALLEL_INSERT` from the
 environment and passes it to the `LightRAG(max_parallel_insert=...)` constructor.
 
 ---
