@@ -25,7 +25,7 @@
 #   ~20 GiB headroom
 #
 # PRE_FLIGHT check 4: submit with --dependency=after:$VLLM_JOB
-# PRE_FLIGHT check 5: LLM_MODEL must match what vLLM serves (Qwen/Qwen3-32B)
+# PRE_FLIGHT check 5: LLM_MODEL must match what vLLM serves (Qwen/Qwen3.6-35B-A3B)
 
 WORKDIR=/home/devon7y/scratch/devon7y/westbury_rag
 VENV_DIR=$WORKDIR/venv
@@ -126,7 +126,7 @@ N_VLLM=${N_VLLM:-1} \
 ENDPOINTS_SUBDIR=${ENDPOINTS_SUBDIR:-vllm_endpoints_westbury_qwen3_32b} \
 PAPERS_SUBDIR=${PAPERS_SUBDIR:-papers} \
 STORAGE_SUBDIR=${STORAGE_SUBDIR:-rag_storage_westbury_qwen3_32b} \
-LLM_MODEL=${LLM_MODEL:-Qwen/Qwen3-32B} \
+LLM_MODEL=${LLM_MODEL:-Qwen/Qwen3.6-35B-A3B} \
 PARALLEL_DOCS=${PARALLEL_DOCS:-4} \
 LLM_MAX_ASYNC=${LLM_MAX_ASYNC:-16} \
 CONTEXT_MAX_ASYNC=${CONTEXT_MAX_ASYNC:-16} \

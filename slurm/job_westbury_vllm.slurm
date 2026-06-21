@@ -5,17 +5,17 @@
 #SBATCH --error=/home/devon7y/scratch/devon7y/westbury_rag/logs/westbury_vllm_%j.err
 #SBATCH --time=03:00:00
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=12
-#SBATCH --mem=64G
-#SBATCH --gpus=h100:1
+#SBATCH --cpus-per-task=24
+#SBATCH --mem=128G
+#SBATCH --gpus=h100:2
 
-# vLLM-only: Qwen3-32B with FP8 quantization on a dedicated H100.
-# Paired with a separate ingest job that runs Octen on its own MIG instance.
+# vLLM-only: Qwen3.6-35B-A3B (MoE, BF16) on 2× H100 (tensor-parallel-size 2).
+# Paired with a separate ingest job that runs the Qwen3 embedder on its own GPU/MIG.
 #
-# With a dedicated GPU, we can use higher gpu-memory-utilization (0.90):
-#   Model weights (FP8): ~32 GiB
-#   KV cache: ~38 GiB → ~4.3x concurrency at 36K context
-#   No Octen contention.
+# BF16 MoE across 2 dedicated H100s (gpu-memory-utilization 0.90):
+#   Model weights (BF16): ~70 GiB total (~35 GiB per GPU)
+#   Leaves large KV-cache headroom across the 2× 80 GiB H100s.
+#   3B active params/token → high decode throughput despite 35B total.
 #
 # Walltime 12h: 2h buffer over the 10h ingest job to absorb queue delays.
 # See PRE_FLIGHT.md check 4: vLLM walltime >= ingest walltime.
@@ -42,15 +42,17 @@ source "$VENV_DIR/bin/activate"
 echo "[$(date)] Environment ready (venv activated)."
 
 # ── Start vLLM ──────────────────────────────────────────────────────────────
-# PRE_FLIGHT check 13: max-model-len 36000 < max_position_embeddings 40960
-echo "[$(date)] Starting Qwen/Qwen3-32B with FP8 quantization (36K context, gpu-util 0.90)..."
-vllm serve Qwen/Qwen3-32B \
+# max-model-len 36000 is well under the model's native context (262144). Ingest
+# contextualization caps full-doc context at MAX_DOC_TOKENS (ingest scripts set
+# 20000), so 36000 covers it comfortably; raise both together if you ever need more.
+echo "[$(date)] Starting Qwen/Qwen3.6-35B-A3B (BF16, MoE) on 2× H100 (TP=2, 36K context, gpu-util 0.90)..."
+vllm serve Qwen/Qwen3.6-35B-A3B \
   --host 0.0.0.0 \
   --port $PORT \
-  --tensor-parallel-size 1 \
+  --tensor-parallel-size 2 \
   --max-model-len 36000 \
   --gpu-memory-utilization 0.90 \
-  --quantization fp8 \
+  --dtype bfloat16 \
   --default-chat-template-kwargs '{"enable_thinking": false}' &
 VLLM_PID=$!
 

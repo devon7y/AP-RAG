@@ -53,7 +53,7 @@ python3 -c "
 from pathlib import Path
 hf = Path('$WORKDIR/hf_cache/hub')
 models = [
-    'models--Qwen--Qwen3-32B',
+    'models--Qwen--Qwen3.6-35B-A3B',
     'models--Qwen--Qwen3-Embedding-8B',
 ]
 for m in models:

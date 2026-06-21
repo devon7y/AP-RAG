@@ -49,11 +49,11 @@ snapshot_download('Qwen/Qwen3.5-0.8B')
 print('Qwen3.5-0.8B download complete.')
 "
 
-echo "[$(date)] Pre-downloading Qwen/Qwen3.5-27B-FP8 (~27GB)..."
+echo "[$(date)] Pre-downloading Qwen/Qwen3.6-35B-A3B (~70GB, BF16 MoE)..."
 python -c "
 from huggingface_hub import snapshot_download
-snapshot_download('Qwen/Qwen3.5-27B-FP8')
-print('Qwen3.5-27B-FP8 download complete.')
+snapshot_download('Qwen/Qwen3.6-35B-A3B')
+print('Qwen3.6-35B-A3B download complete.')
 "
 
 echo "[$(date)] Pre-downloading Qwen/Qwen3-Embedding-8B (~16GB)..."

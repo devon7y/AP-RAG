@@ -6,7 +6,7 @@
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --partition=compute
-#SBATCH --gpus-per-node=h100:1
+#SBATCH --gpus-per-node=h100:2
 
 WORKDIR=/scratch/devon7y/westbury_rag
 VENV_DIR=$WORKDIR/venv_tril
@@ -37,20 +37,20 @@ echo "[$(date)] Environment ready (venv activated)."
 
 MODEL_PATH=$(python3 -c "
 from pathlib import Path
-hub = Path('$WORKDIR/hf_cache/hub/models--Qwen--Qwen3-32B')
+hub = Path('$WORKDIR/hf_cache/hub/models--Qwen--Qwen3.6-35B-A3B')
 commit = (hub / 'refs/main').read_text().strip()
 print(hub / 'snapshots' / commit)
 ")
-echo "[$(date)] Starting Qwen/Qwen3-32B with FP8 quantization (36K context, gpu-util 0.90)..."
+echo "[$(date)] Starting Qwen/Qwen3.6-35B-A3B (BF16, MoE) on 2× H100 (TP=2, 40K context, gpu-util 0.90)..."
 echo "[$(date)] Model path: $MODEL_PATH"
 vllm serve "$MODEL_PATH" \
   --host 0.0.0.0 \
   --port $PORT \
-  --served-model-name Qwen/Qwen3-32B \
-  --tensor-parallel-size 1 \
+  --served-model-name Qwen/Qwen3.6-35B-A3B \
+  --tensor-parallel-size 2 \
   --max-model-len 40000 \
   --gpu-memory-utilization 0.90 \
-  --quantization fp8 \
+  --dtype bfloat16 \
   --default-chat-template-kwargs '{"enable_thinking": false}' &
 VLLM_PID=$!
 

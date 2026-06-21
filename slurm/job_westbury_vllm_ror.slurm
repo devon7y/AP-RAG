@@ -5,9 +5,9 @@
 #SBATCH --error=/scratch/devon7y/westbury_rag/logs/westbury_vllm_%j.err
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=12
-#SBATCH --mem=64G
-#SBATCH --gpus=h100:1
+#SBATCH --cpus-per-task=24
+#SBATCH --mem=128G
+#SBATCH --gpus=h100:2
 
 WORKDIR=/scratch/devon7y/westbury_rag
 VENV_DIR=$WORKDIR/venv
@@ -36,18 +36,18 @@ echo "[$(date)] Environment ready (venv activated)."
 echo "[$(date)] Copying model weights to local NVMe ($SLURM_TMPDIR)..."
 _copy_start=$SECONDS
 mkdir -p "$SLURM_TMPDIR/hf_cache/hub"
-cp -a "$WORKDIR/hf_cache/hub/models--Qwen--Qwen3-32B" "$SLURM_TMPDIR/hf_cache/hub/"
+cp -a "$WORKDIR/hf_cache/hub/models--Qwen--Qwen3.6-35B-A3B" "$SLURM_TMPDIR/hf_cache/hub/"
 echo "[$(date)] Model copy done in $(($SECONDS - _copy_start))s."
 export HF_HOME="$SLURM_TMPDIR/hf_cache"
 
-echo "[$(date)] Starting Qwen/Qwen3-32B with FP8 quantization (36K context, gpu-util 0.90)..."
-vllm serve Qwen/Qwen3-32B \
+echo "[$(date)] Starting Qwen/Qwen3.6-35B-A3B (BF16, MoE) on 2× H100 (TP=2, 40K context, gpu-util 0.90)..."
+vllm serve Qwen/Qwen3.6-35B-A3B \
   --host 0.0.0.0 \
   --port $PORT \
-  --tensor-parallel-size 1 \
+  --tensor-parallel-size 2 \
   --max-model-len 40000 \
   --gpu-memory-utilization 0.90 \
-  --quantization fp8 \
+  --dtype bfloat16 \
   --default-chat-template-kwargs '{"enable_thinking": false}' &
 VLLM_PID=$!
 

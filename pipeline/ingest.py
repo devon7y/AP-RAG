@@ -71,7 +71,7 @@ STORAGE_DIR   = WORKDIR / os.environ.get("STORAGE_SUBDIR", "rag_storage_octen")
 ENDPOINTS_DIR = WORKDIR / os.environ.get("ENDPOINTS_SUBDIR", "vllm_endpoints_cml")
 N_VLLM        = int(os.environ.get("N_VLLM", 1))
 
-LLM_MODEL  = os.environ.get("LLM_MODEL", "Qwen/Qwen3.5-27B-FP8")
+LLM_MODEL  = os.environ.get("LLM_MODEL", "Qwen/Qwen3.6-35B-A3B")
 LLM_API_KEY = "EMPTY"
 
 EMBED_MODEL_ID = os.environ.get("EMBED_MODEL_ID", "Qwen/Qwen3-Embedding-8B")
