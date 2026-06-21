@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aprag"
+version = "0.1.0"
+description = "CLI + MCP client for the AP-RAG academic-papers knowledge base (synthesized answers and raw-chunk retrieval)."
+readme = "aprag/README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.24",
+    "mcp>=1.0",
+]
+
+[project.scripts]
+aprag = "aprag.cli:main"
+aprag-mcp = "aprag.mcp:main"
+
+[tool.setuptools]
+packages = ["aprag"]

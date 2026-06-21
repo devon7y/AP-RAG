@@ -2,6 +2,8 @@
 
 A separate LightRAG knowledge graph database for the Westbury lab corpus and related papers, running in parallel with the existing CML RAG database.
 
+> **⚠️ Superseded.** This README documents the original Qwen2.5-72B + OpenAI-embeddings + NanoVectorDB setup. The current pipeline uses Qwen3-32B (ingest) + Octen-8B embeddings (dim 4096) + Qdrant, driven by **[`ingest_cml_octen_v2.py`](ingest_cml_octen_v2.py)** — the sole ingest entry point (the legacy `ingest*.py` scripts were removed). See [`CANONICAL_INGEST_PARAMS.md`](CANONICAL_INGEST_PARAMS.md) and the root `CLAUDE.md` for current details.
+
 ---
 
 ## Corpus
@@ -37,10 +39,8 @@ A separate LightRAG knowledge graph database for the Westbury lab corpus and rel
 | File | Purpose |
 |---|---|
 | `westbury/.env` | Server config (port 9622, separate WORKING_DIR) |
-| `ingest_westbury.py` | Single-node ingestion (simple, slower) |
-| `ingest_westbury_parallel.py` | **Parallel ingestion — use this for large runs** |
-| `mcp_server_westbury.py` | MCP server → `query_westbury_papers` tool |
-| `query_westbury.py` | Interactive CLI query tool |
+| `ingest_cml_octen_v2.py` | **Ingestion (HPC/SLURM) — the sole ingest entry point** |
+| `aprag/` (repo root) | `aprag` CLI + `aprag-mcp` MCP server → `aprag_query` / `aprag_retrieve` tools (see [../APRAG_ACCESS.md](../APRAG_ACCESS.md)) |
 
 ---
 
@@ -66,9 +66,9 @@ Single ingestion process = no database write conflicts (file-based storage is sa
 
 1. **vLLM array** (3 jobs) — each node loads Qwen2.5-72B (takes ~25–35 min), then writes its `http://hostname:8000/v1` to `westbury_rag/vllm_endpoints/{jobid}.txt`
 2. **Ingestion job** — starts after the array job begins (SLURM `after:` dependency), polls for 3 endpoint files, then starts processing papers
-3. **Round-robin** — `ingest_westbury_parallel.py` cycles requests across all discovered endpoints
+3. **Round-robin** — `ingest_cml_octen_v2.py` cycles requests across all discovered endpoints
 4. **Document truncation** — documents over 60,000 tokens are truncated (65K context window leaves 5K headroom for prompts)
-5. **Contextual retrieval** — `contextualize_chunks=True` (Anthropic approach: LLM generates situating context for each chunk before embedding)
+5. **Contextual retrieval** — enabled by default (`CONTEXTUALIZE_CHUNKS=1`) via the `contextual_retrieval.py` chunker wrapper (Anthropic approach: LLM generates situating context for each chunk before embedding)
 
 ### Submitting
 
@@ -131,7 +131,7 @@ ENTITY_TYPES=["Author", "Concept", "Method", "Theory", "Dataset",
               "Result", "Experiment", "Finding", "Institution", "Publication"]
 ```
 
-### Parallel ingestion settings (`ingest_westbury_parallel.py`)
+### Parallel ingestion settings (`ingest_cml_octen_v2.py`)
 
 ```python
 llm_model_max_async      = 32   # concurrent entity extraction calls
@@ -144,16 +144,16 @@ MAX_DOC_TOKENS           = 28_000  # truncation limit (32K context - 4K headroom
 
 ## MCP Server
 
-Registered as `lightrag-westbury`. Claude gets tool `query_westbury_papers`.
+Registered as `aprag`. Claude gets the tools `aprag_query` and `aprag_retrieve` (see
+[../APRAG_ACCESS.md](../APRAG_ACCESS.md) for the full setup).
 
 ```bash
-# Registration (already done)
-claude mcp add --scope user lightrag-westbury -- \
-  /Users/devon7y/VS_Code/rag_testing/LightRAG/.venv/bin/python \
-  /Users/devon7y/VS_Code/rag_testing/mcp_server_westbury.py
+# Registration (after `pip install -e .` from the repo root)
+claude mcp add --scope user aprag \
+  --env APRAG_QUERY_URL=http://100.98.84.84:8001 -- aprag-mcp
 ```
 
-Loads from `LightRAG/rag_storage_westbury/` on startup (must exist before using).
+The `aprag-mcp` client is stateless; it forwards to the PC query server (`:8001`) over Tailscale.
 
 ---
 
@@ -184,6 +184,6 @@ Loads from `LightRAG/rag_storage_westbury/` on startup (must exist before using)
 | Papers | ~76 | 1,316 |
 | Port | 9621 | 9622 |
 | Storage | `rag_storage/` | `rag_storage_westbury/` |
-| MCP tool | `query_papers` | `query_westbury_papers` |
-| Ingestion | `ingest.py` | `ingest_westbury_parallel.py` |
-| Query CLI | `query.py` | `query_westbury.py` |
+| MCP tool | `query_papers` | `aprag_query` / `aprag_retrieve` |
+| Ingestion | _(removed)_ | `ingest_cml_octen_v2.py` |
+| Query CLI | `query.py` | `aprag` (CLI) |

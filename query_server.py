@@ -1,5 +1,5 @@
 """
-query_server.py — LightRAG query server for Westbury papers
+query_server.py — AP-RAG query server (LightRAG + Qdrant + embeddings).
 
 Place at C:\\rag_server\\query_server.py
 
@@ -7,11 +7,11 @@ Run:
     C:\\rag_server\\venv\\Scripts\\python -m uvicorn query_server:app --host 0.0.0.0 --port 8001
 
 Endpoints:
-    GET  /health          — liveness check
-    POST /query           — query the knowledge graph
+    GET  /health          — liveness check + capability flags
+    POST /query           — synthesized answer (LLM over retrieved context)
+    POST /retrieve        — structured retrieval only (entities/relationships/chunks), no LLM
 """
 
-import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -88,7 +88,7 @@ async def lifespan(app: FastAPI):
     print("Shutting down.", flush=True)
 
 
-app = FastAPI(title="Westbury Query Server", lifespan=lifespan)
+app = FastAPI(title="AP-RAG Query Server", lifespan=lifespan)
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
@@ -96,6 +96,29 @@ app = FastAPI(title="Westbury Query Server", lifespan=lifespan)
 class QueryRequest(BaseModel):
     question: str
     mode: str = "hybrid"
+    top_k: int | None = None
+    chunk_top_k: int | None = None
+    user_prompt: str | None = None
+
+
+class RetrieveRequest(BaseModel):
+    question: str
+    mode: str = "naive"
+    top_k: int | None = None
+    chunk_top_k: int | None = None
+
+
+def _build_query_param(req) -> QueryParam:
+    """Build a QueryParam, leaving LightRAG defaults intact for unset optionals."""
+    kwargs = {"mode": req.mode}
+    if req.top_k is not None:
+        kwargs["top_k"] = req.top_k
+    if req.chunk_top_k is not None:
+        kwargs["chunk_top_k"] = req.chunk_top_k
+    user_prompt = getattr(req, "user_prompt", None)
+    if user_prompt is not None:
+        kwargs["user_prompt"] = user_prompt
+    return QueryParam(**kwargs)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -103,15 +126,34 @@ class QueryRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "storage": STORAGE_DIR, "llm": LLM_MODEL}
+    return {
+        "status": "ok",
+        "storage": STORAGE_DIR,
+        "llm": LLM_MODEL,
+        # Lets clients/deploys detect an older LightRAG that lacks structured retrieval.
+        "lightrag_has_aquery_data": hasattr(LightRAG, "aquery_data"),
+    }
 
 
 @app.post("/query")
 async def query(req: QueryRequest):
     if _rag is None:
         raise HTTPException(status_code=503, detail="RAG not initialized")
-    result = await _rag.aquery(req.question, param=QueryParam(mode=req.mode))
+    result = await _rag.aquery(req.question, param=_build_query_param(req))
     return {"answer": result or "No relevant information found.", "mode": req.mode}
+
+
+@app.post("/retrieve")
+async def retrieve(req: RetrieveRequest):
+    """Structured retrieval without LLM synthesis — the agentic multi-hop primitive."""
+    if _rag is None:
+        raise HTTPException(status_code=503, detail="RAG not initialized")
+    if not hasattr(_rag, "aquery_data"):
+        raise HTTPException(
+            status_code=501,
+            detail="Installed LightRAG lacks aquery_data; upgrade lightrag_hku for /retrieve.",
+        )
+    return await _rag.aquery_data(req.question, param=_build_query_param(req))
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
