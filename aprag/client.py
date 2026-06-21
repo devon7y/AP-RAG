@@ -13,6 +13,7 @@ The query server (see `query_server.py`) exposes:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import httpx
 
@@ -22,8 +23,15 @@ import httpx
 VALID_MODES = ("local", "global", "hybrid", "mix", "naive")
 
 #: General default. A specific deployment (e.g. the always-on PC over Tailscale)
-#: is selected via the APRAG_QUERY_URL env var, the --server flag, or --local.
+#: is selected via the APRAG_QUERY_URL env var, the --server flag, --local, or the
+#: persisted config file (see CONFIG_PATH).
 DEFAULT_BASE_URL = "http://localhost:8001"
+
+#: Persistent config file (shell-independent — survives without an env var). Holds
+#: an `APRAG_QUERY_URL=<url>` line. Override the location with $APRAG_CONFIG.
+CONFIG_PATH = Path(
+    os.environ.get("APRAG_CONFIG", Path.home() / ".config" / "aprag" / "config")
+)
 
 CONNECT_TIMEOUT_SECONDS = float(os.environ.get("APRAG_CONNECT_TIMEOUT", "10"))
 #: Generous read timeout: /query waits on the answer LLM; /retrieve is faster.
@@ -34,18 +42,45 @@ class APRAGError(Exception):
     """A user-facing error from the client (already formatted for display)."""
 
 
+def read_config_url() -> str | None:
+    """Read the persisted `APRAG_QUERY_URL` from the config file, if present."""
+    try:
+        for line in CONFIG_PATH.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("APRAG_QUERY_URL="):
+                value = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+                return value or None
+    except OSError:
+        return None
+    return None
+
+
+def write_config_url(url: str) -> Path:
+    """Persist the default server URL to the config file; return its path."""
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(f"APRAG_QUERY_URL={url.rstrip('/')}\n")
+    return CONFIG_PATH
+
+
 def resolve_base_url(explicit: str | None = None, local: bool = False) -> str:
     """
     Resolve which query server to talk to.
 
     Precedence: explicit (--server) > local (--local → localhost) >
-    APRAG_QUERY_URL env > DEFAULT_BASE_URL.
+    APRAG_QUERY_URL env > config file (CONFIG_PATH) > DEFAULT_BASE_URL.
+    The config file makes the default shell-independent (no env var / re-sourcing needed).
     """
     if explicit:
         return explicit.rstrip("/")
     if local:
         return "http://localhost:8001"
-    return os.environ.get("APRAG_QUERY_URL", DEFAULT_BASE_URL).rstrip("/")
+    env = os.environ.get("APRAG_QUERY_URL")
+    if env:
+        return env.rstrip("/")
+    cfg = read_config_url()
+    if cfg:
+        return cfg.rstrip("/")
+    return DEFAULT_BASE_URL
 
 
 # ── Error helpers (ported from the original mcp_server_westbury.py) ───────────

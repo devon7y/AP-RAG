@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 
 from . import __version__, client
@@ -107,6 +108,22 @@ async def _cmd_health(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_config(args: argparse.Namespace) -> int:
+    if args.config_cmd == "set-server":
+        path = client.write_config_url(args.url)
+        print(f"Saved default server {args.url.rstrip('/')} -> {path}")
+        return 0
+    # show: resolved value + every source so the precedence is obvious
+    env = os.environ.get("APRAG_QUERY_URL")
+    cfg = client.read_config_url()
+    print(f"resolved server   : {client.resolve_base_url(args.server, args.local)}")
+    print(f"  --server        : {args.server or '(unset)'}")
+    print(f"  $APRAG_QUERY_URL : {env or '(unset)'}")
+    print(f"  config file      : {cfg or '(unset)'}  [{client.CONFIG_PATH}]")
+    print(f"  default          : {client.DEFAULT_BASE_URL}")
+    return 0
+
+
 # ── Argument parsing ─────────────────────────────────────────────────────────
 
 
@@ -157,6 +174,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_health = sub.add_parser("health", parents=[common], help="Server liveness + capabilities.")
     p_health.set_defaults(func=_cmd_health)
+
+    p_config = sub.add_parser(
+        "config", parents=[common],
+        help="Show or set the persisted default server (shell-independent).",
+    )
+    csub = p_config.add_subparsers(dest="config_cmd", required=True)
+    csub.add_parser("show", help="Show the resolved server and where it comes from.")
+    c_set = csub.add_parser("set-server", help="Persist the default query server URL to the config file.")
+    c_set.add_argument("url")
+    p_config.set_defaults(func=_cmd_config)
 
     return parser
 

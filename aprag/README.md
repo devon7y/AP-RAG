@@ -24,10 +24,21 @@ This puts `aprag` and `aprag-mcp` on your PATH (in the active environment).
 
 ## Point it at a server
 
-Precedence: `--server URL` > `--local` > `$APRAG_QUERY_URL` > `http://localhost:8001`.
+Precedence: `--server URL` > `--local` > `$APRAG_QUERY_URL` > **config file** > `http://localhost:8001`.
+
+The most robust option is the config file — it's read at runtime, so it works in every
+shell with no env var or re-sourcing:
 
 ```bash
-export APRAG_QUERY_URL=http://<host>:8001    # e.g. the always-on PC over Tailscale
+aprag config set-server http://<host>:8001   # persists to ~/.config/aprag/config
+aprag config show                            # show the resolved server + every source
+```
+
+Or use the env var / a per-call flag:
+
+```bash
+export APRAG_QUERY_URL=http://<host>:8001     # e.g. the always-on PC over Tailscale
+aprag ask "…" --server http://<host>:8001     # one-off override
 ```
 
 ## CLI
