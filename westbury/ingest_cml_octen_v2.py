@@ -53,6 +53,7 @@ import hashlib
 import itertools
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -75,14 +76,14 @@ LLM_API_KEY = "EMPTY"
 
 EMBED_MODEL_ID = "Octen/Octen-Embedding-8B-INT8"
 EMBEDDING_DIM  = 4096
-EMBED_BATCH    = 16   # sentences per GPU batch
+EMBED_BATCH    = int(os.environ.get("EMBED_BATCH", 16))  # sentences per GPU forward pass
 
 MAX_DOC_TOKENS    = int(os.environ.get("MAX_DOC_TOKENS", 120_000))
 PARALLEL_DOCS     = int(os.environ.get("PARALLEL_DOCS", 4))
 LLM_MAX_ASYNC     = int(os.environ.get("LLM_MAX_ASYNC", 8))
 CONTEXT_MAX_ASYNC = int(os.environ.get("CONTEXT_MAX_ASYNC", 8))
 CONTEXTUALIZE_CHUNKS = os.environ.get("CONTEXTUALIZE_CHUNKS", "1") == "1"
-EMBED_FUNC_MAX_ASYNC = int(os.environ.get("EMBED_FUNC_MAX_ASYNC", 1))
+EMBED_FUNC_MAX_ASYNC = int(os.environ.get("EMBED_FUNC_MAX_ASYNC", 4))
 MAX_PARALLEL_INSERT  = int(os.environ.get("MAX_PARALLEL_INSERT", 2))
 
 # 2A: Qdrant support — if QDRANT_URL is set, use QdrantVectorDBStorage
@@ -96,23 +97,32 @@ INSERT_DONE_EVERY_N = int(os.environ.get("INSERT_DONE_EVERY_N", 1))
 REBUILD_EMBEDDINGS = os.environ.get("REBUILD_EMBEDDINGS", "0") == "1"
 REBUILD_BATCH_SIZE = int(os.environ.get("REBUILD_BATCH_SIZE", 50))
 
-# 5: Structure-aware scientific paper chunker (replaces LightRAG's token chunker)
-from scientific_chunker import ChunkerConfig, make_scientific_chunker
+# 5: Structure-aware chunker (replaces LightRAG's token chunker)
+# CHUNKER_TYPE=book uses BookChunkerConfig; default uses scientific paper chunker.
+_CHUNKER_TYPE = os.environ.get("CHUNKER_TYPE", "scientific").lower()
 
-CHUNKER_CONFIG = ChunkerConfig.from_env()
-
-# Load pre-computed chunk cache if available (from prechunk_all.py).
-# Cache hits are instant dict lookups — no CPU-bound work — so
-# PARALLEL_DOCS > 1 won't block the asyncio event loop.
-_chunk_cache_path = STORAGE_DIR / "chunk_cache.json"
-_CHUNK_CACHE = None
-if _chunk_cache_path.exists():
-    _CHUNK_CACHE = json.loads(_chunk_cache_path.read_text())
-    print(f"[CACHE] Loaded {len(_CHUNK_CACHE)} pre-chunked docs from {_chunk_cache_path.name}")
+if _CHUNKER_TYPE == "book":
+    from book_chunker import BookChunkerConfig, make_book_chunker
+    CHUNKER_CONFIG = BookChunkerConfig.from_env()
+    _chunk_cache_path = STORAGE_DIR / "book_chunk_cache.json"
+    _CHUNK_CACHE = None
+    if _chunk_cache_path.exists():
+        _CHUNK_CACHE = json.loads(_chunk_cache_path.read_text())
+        print(f"[CACHE] Loaded {len(_CHUNK_CACHE)} pre-chunked docs from {_chunk_cache_path.name}")
+    else:
+        print(f"[CACHE] No book chunk cache found — chunking will be computed live")
+    SCIENTIFIC_CHUNKER = make_book_chunker(CHUNKER_CONFIG, chunk_cache=_CHUNK_CACHE)
 else:
-    print(f"[CACHE] No chunk cache found — chunking will be computed live")
-
-SCIENTIFIC_CHUNKER = make_scientific_chunker(CHUNKER_CONFIG, chunk_cache=_CHUNK_CACHE)
+    from scientific_chunker import ChunkerConfig, make_scientific_chunker
+    CHUNKER_CONFIG = ChunkerConfig.from_env()
+    _chunk_cache_path = STORAGE_DIR / "chunk_cache.json"
+    _CHUNK_CACHE = None
+    if _chunk_cache_path.exists():
+        _CHUNK_CACHE = json.loads(_chunk_cache_path.read_text())
+        print(f"[CACHE] Loaded {len(_CHUNK_CACHE)} pre-chunked docs from {_chunk_cache_path.name}")
+    else:
+        print(f"[CACHE] No chunk cache found — chunking will be computed live")
+    SCIENTIFIC_CHUNKER = make_scientific_chunker(CHUNKER_CONFIG, chunk_cache=_CHUNK_CACHE)
 
 # ── Chunker timeout (SIGALRM) ──────────────────────────────────────────────────
 # Some docs trigger an infinite loop in the scientific chunker. SIGALRM is the
@@ -178,15 +188,31 @@ def get_embed_model():
     if _embed_model is None:
         from sentence_transformers import SentenceTransformer
         print(f"Loading embedding model {EMBED_MODEL_ID} on cuda…", flush=True)
-        _embed_model = SentenceTransformer(EMBED_MODEL_ID, device="cuda")
+        import os as _os
+        from pathlib import Path as _Path
+        _hub = _Path(_os.environ.get("HF_HOME", _os.path.expanduser("~/.cache/huggingface"))) / "hub" / f"models--{EMBED_MODEL_ID.replace('/', '--')}"
+        _refs = _hub / "refs" / "main"
+        if _refs.exists():
+            _commit = _refs.read_text().strip()
+            _local_path = str(_hub / "snapshots" / _commit)
+            print(f"Loading embedding model from local snapshot: {_local_path}", flush=True)
+            _embed_model = SentenceTransformer(_local_path, device="cuda")
+        else:
+            _embed_model = SentenceTransformer(EMBED_MODEL_ID, device="cuda")
         print("Embedding model ready.", flush=True)
     return _embed_model
 
+
+_embed_stats = {"calls": 0, "total_s": 0.0, "texts": 0, "concurrent": 0, "max_concurrent": 0}
 
 async def local_embed(texts: list[str]) -> np.ndarray:
     model = get_embed_model()
     prefixed = ["- " + t for t in texts]
     loop = asyncio.get_event_loop()
+    _embed_stats["concurrent"] += 1
+    if _embed_stats["concurrent"] > _embed_stats["max_concurrent"]:
+        _embed_stats["max_concurrent"] = _embed_stats["concurrent"]
+    t0 = time.time()
     embeddings = await loop.run_in_executor(
         None,
         lambda: model.encode(
@@ -196,6 +222,11 @@ async def local_embed(texts: list[str]) -> np.ndarray:
             show_progress_bar=False,
         ),
     )
+    elapsed = time.time() - t0
+    _embed_stats["concurrent"] -= 1
+    _embed_stats["calls"] += 1
+    _embed_stats["total_s"] += elapsed
+    _embed_stats["texts"] += len(texts)
     return np.array(embeddings)
 
 
@@ -258,7 +289,7 @@ def _validate_endpoint_file(filepath: Path) -> str | None:
     return endpoint
 
 
-def discover_endpoints(timeout_s: int = 3600) -> list[str]:
+def discover_endpoints(timeout_s: int = 10800) -> list[str]:
     """Discover and validate vLLM endpoints. Deletes stale endpoint files."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -298,6 +329,9 @@ _live_endpoints: list[str] = []
 _endpoint_lock = asyncio.Lock()
 
 
+_llm_stats = {"calls": 0, "total_s": 0.0}
+
+
 def build_round_robin_llm(endpoints: list[str]):
     """Build an LLM function with retry, exponential backoff, and endpoint failover."""
     from lightrag.llm.openai import openai_complete_if_cache
@@ -335,10 +369,14 @@ def build_round_robin_llm(endpoints: list[str]):
                     history_messages=history_messages,
                     api_key=LLM_API_KEY,
                     base_url=endpoint,
+                    timeout=300,
                     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                     **kwargs,
                 )
-                print(f"[LLM_DEBUG] SUCCESS in {time.time()-t0:.1f}s, result_len={len(str(result))}", flush=True)
+                elapsed_llm = time.time() - t0
+                _llm_stats["calls"] += 1
+                _llm_stats["total_s"] += elapsed_llm
+                print(f"[LLM_DEBUG] SUCCESS in {elapsed_llm:.1f}s, result_len={len(str(result))}", flush=True)
                 return result
             except (ConnectionError, OSError) as e:
                 last_error = e
@@ -387,17 +425,23 @@ def cap_context_document(text: str) -> tuple[str, bool]:
 # ── Live Status Monitor (1C) ──────────────────────────────────────────────────
 
 async def status_monitor(storage_dir: Path, t_start: float):
-    """Background task that prints real extraction status every 30s."""
+    """Background task that prints real extraction status and bottleneck stats every 30s."""
     status_path = storage_dir / "kv_store_doc_status.json"
     last_processed = 0
+    last_llm_calls = 0
+    last_embed_calls = 0
+    last_check_time = t_start
+    INTERVAL = 30
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(INTERVAL)
         try:
             if not status_path.exists():
                 continue
-            raw = json.loads(status_path.read_text())
+            now = time.time()
+            raw = await asyncio.to_thread(status_path.read_text)
+            data = json.loads(raw)
             counts = {}
-            for k, v in raw.items():
+            for k, v in data.items():
                 if not k.startswith("doc-"):
                     continue
                 s = v.get("status", "unknown")
@@ -407,20 +451,45 @@ async def status_monitor(storage_dir: Path, t_start: float):
             processing = counts.get("processing", 0)
             pending = counts.get("pending", 0)
             failed = counts.get("failed", 0)
-            elapsed_h = (time.time() - t_start) / 3600
+            elapsed_h = (now - t_start) / 3600
+            interval_h = (now - last_check_time) / 3600
 
-            # Rate based on newly processed docs
-            rate = processed / elapsed_h if elapsed_h > 0 else 0
-            remaining = processing + pending
-            eta_h = remaining / rate if rate > 0 else float("inf")
+            # Rate: overall and delta (last interval)
+            overall_rate = processed / elapsed_h if elapsed_h > 0 else 0
+            delta_docs = processed - last_processed
+            delta_rate = delta_docs / interval_h if interval_h > 0 else 0
+
+            # LLM stats
+            llm_calls = _llm_stats["calls"]
+            llm_total_s = _llm_stats["total_s"]
+            delta_llm = llm_calls - last_llm_calls
+            avg_llm_s = llm_total_s / llm_calls if llm_calls > 0 else 0
+
+            # Embed stats
+            embed_calls = _embed_stats["calls"]
+            embed_total_s = _embed_stats["total_s"]
+            embed_texts = _embed_stats["texts"]
+            delta_embed = embed_calls - last_embed_calls
+            avg_embed_s = embed_total_s / embed_calls if embed_calls > 0 else 0
+            avg_batch = embed_texts / embed_calls if embed_calls > 0 else 0
 
             print(
-                f"[STATUS] processed: {processed} | processing: {processing} | "
-                f"pending: {pending} | failed: {failed} | "
-                f"elapsed: {elapsed_h:.1f}h | rate: {rate:.0f}/hr | ETA: {eta_h:.1f}h",
+                f"[STATUS] processed={processed} (+{delta_docs}) | processing={processing} | "
+                f"pending={pending} | failed={failed} | "
+                f"rate={delta_rate:.0f}/hr (overall={overall_rate:.0f}/hr)",
                 flush=True,
             )
+            print(
+                f"[STATUS] LLM: {llm_calls} calls (+{delta_llm}) avg={avg_llm_s:.1f}s/call | "
+                f"Embed: {embed_calls} calls (+{delta_embed}) avg={avg_embed_s:.1f}s/call "
+                f"batch={avg_batch:.0f} max_concurrent={_embed_stats['max_concurrent']}",
+                flush=True,
+            )
+
             last_processed = processed
+            last_llm_calls = llm_calls
+            last_embed_calls = embed_calls
+            last_check_time = now
         except Exception:
             pass  # Don't crash on monitor errors
 
@@ -510,11 +579,39 @@ async def rebuild_embeddings_from_cache():
     rag = LightRAG(**rag_kwargs)
     await rag.initialize_storages()
 
+    def _get_existing_ids(vdb) -> set:
+        """Scroll a Qdrant collection and return the set of stored item IDs."""
+        if not USE_QDRANT:
+            return set()
+        existing = set()
+        offset = None
+        while True:
+            points, next_offset = vdb._client.scroll(
+                collection_name=vdb.final_namespace,
+                scroll_filter=None,
+                limit=1000,
+                offset=offset,
+                with_payload=["id"],
+                with_vectors=False,
+            )
+            for pt in points:
+                if pt.payload and "id" in pt.payload:
+                    existing.add(pt.payload["id"])
+            if next_offset is None:
+                break
+            offset = next_offset
+        return existing
+
     # ── Rebuild chunk embeddings ──
     print(f"\nRebuilding chunk embeddings ({len(chunks)} chunks, batch={REBUILD_BATCH_SIZE})...")
+    existing_ids = _get_existing_ids(rag.chunks_vdb)
+    print(f"  Already embedded: {len(existing_ids)} — skipping")
     batch = {}
-    done = 0
+    done = len(existing_ids)
+    embedded = 0
     for chunk_id, chunk_data in chunks.items():
+        if chunk_id in existing_ids:
+            continue
         batch[chunk_id] = {
             "content": chunk_data.get("content", ""),
             "full_doc_id": chunk_data.get("full_doc_id", ""),
@@ -523,22 +620,29 @@ async def rebuild_embeddings_from_cache():
         if len(batch) >= REBUILD_BATCH_SIZE:
             await rag.chunks_vdb.upsert(batch)
             done += len(batch)
+            embedded += len(batch)
             batch = {}
             elapsed = time.time() - t_start
-            rate = done / (elapsed / 60) if elapsed > 0 else 0
+            rate = embedded / (elapsed / 60) if elapsed > 0 else 0
             print(f"  Chunks: {done}/{len(chunks)} ({rate:.0f}/min)", flush=True)
     if batch:
         await rag.chunks_vdb.upsert(batch)
         done += len(batch)
-    print(f"  Chunks: {done}/{len(chunks)} done")
+        embedded += len(batch)
+    print(f"  Chunks: {done}/{len(chunks)} done ({embedded} newly embedded)")
 
     # ── Rebuild entity embeddings ──
     print(f"\nRebuilding entity embeddings ({n_entities} entities, batch={REBUILD_BATCH_SIZE})...")
+    existing_ids = _get_existing_ids(rag.entities_vdb)
+    print(f"  Already embedded: {len(existing_ids)} — skipping")
     batch = {}
-    done = 0
+    done = len(existing_ids)
+    embedded = 0
     for node_name, node_data in graph.nodes(data=True):
         description = node_data.get("description", "")
         entity_vdb_id = compute_mdhash_id(node_name, prefix="ent-")
+        if entity_vdb_id in existing_ids:
+            continue
         batch[entity_vdb_id] = {
             "content": f"{node_name}\n{description}",
             "entity_name": node_name,
@@ -550,23 +654,30 @@ async def rebuild_embeddings_from_cache():
         if len(batch) >= REBUILD_BATCH_SIZE:
             await rag.entities_vdb.upsert(batch)
             done += len(batch)
+            embedded += len(batch)
             batch = {}
             elapsed = time.time() - t_start
-            rate = done / (elapsed / 60) if elapsed > 0 else 0
+            rate = embedded / (elapsed / 60) if elapsed > 0 else 0
             print(f"  Entities: {done}/{n_entities} ({rate:.0f}/min)", flush=True)
     if batch:
         await rag.entities_vdb.upsert(batch)
         done += len(batch)
-    print(f"  Entities: {done}/{n_entities} done")
+        embedded += len(batch)
+    print(f"  Entities: {done}/{n_entities} done ({embedded} newly embedded)")
 
     # ── Rebuild relation embeddings ──
     print(f"\nRebuilding relation embeddings ({n_relations} relations, batch={REBUILD_BATCH_SIZE})...")
+    existing_ids = _get_existing_ids(rag.relationships_vdb)
+    print(f"  Already embedded: {len(existing_ids)} — skipping")
     batch = {}
-    done = 0
+    done = len(existing_ids)
+    embedded = 0
     for src, tgt, edge_data in graph.edges(data=True):
         keywords = edge_data.get("keywords", "")
         description = edge_data.get("description", "")
         rel_vdb_id = compute_mdhash_id(f"{src}_{tgt}", prefix="rel-")
+        if rel_vdb_id in existing_ids:
+            continue
         batch[rel_vdb_id] = {
             "src_id": src,
             "tgt_id": tgt,
@@ -580,14 +691,16 @@ async def rebuild_embeddings_from_cache():
         if len(batch) >= REBUILD_BATCH_SIZE:
             await rag.relationships_vdb.upsert(batch)
             done += len(batch)
+            embedded += len(batch)
             batch = {}
             elapsed = time.time() - t_start
-            rate = done / (elapsed / 60) if elapsed > 0 else 0
+            rate = embedded / (elapsed / 60) if elapsed > 0 else 0
             print(f"  Relations: {done}/{n_relations} ({rate:.0f}/min)", flush=True)
     if batch:
         await rag.relationships_vdb.upsert(batch)
         done += len(batch)
-    print(f"  Relations: {done}/{n_relations} done")
+        embedded += len(batch)
+    print(f"  Relations: {done}/{n_relations} done ({embedded} newly embedded)")
 
     # ── Flush and finalize ──
     await rag._insert_done()
@@ -649,6 +762,29 @@ async def main():
 
     llm_func = build_round_robin_llm(endpoints)
 
+    # 5: Contextual Retrieval is a *wrapper* around the chunker, not a LightRAG patch,
+    # so the nested LightRAG/ stays upgradable (see CLAUDE.md "Why LightRAG is nested").
+    # When enabled, each chunk is prefixed with an LLM-generated situating context before
+    # embedding/extraction; the full-doc text in each prompt is capped to MAX_DOC_TOKENS.
+    context_cap_stats = {"documents": 0, "truncated": 0}
+
+    def _record_context_cap(was_truncated: bool):
+        context_cap_stats["documents"] += 1
+        if was_truncated:
+            context_cap_stats["truncated"] += 1
+
+    if CONTEXTUALIZE_CHUNKS:
+        from contextual_retrieval import make_contextualizing_chunker
+        active_chunker = make_contextualizing_chunker(
+            SCIENTIFIC_CHUNKER,
+            llm_func,
+            max_async=CONTEXT_MAX_ASYNC,
+            cap_doc_content=(cap_context_document if MAX_DOC_TOKENS > 0 else None),
+            on_doc=_record_context_cap,
+        )
+    else:
+        active_chunker = SCIENTIFIC_CHUNKER
+
     # Build LightRAG kwargs — conditionally add Qdrant and batched flush
     rag_kwargs = dict(
         working_dir=str(STORAGE_DIR),
@@ -658,13 +794,12 @@ async def main():
             max_token_size=8192,
             func=local_embed,
         ),
-        chunking_func=SCIENTIFIC_CHUNKER,  # 5: structure-aware chunker
-        contextualize_chunks=CONTEXTUALIZE_CHUNKS,
+        chunking_func=active_chunker,  # 5: structure-aware chunker (+ optional contextualizer)
         llm_model_max_async=LLM_MAX_ASYNC,
-        contextualize_max_async=CONTEXT_MAX_ASYNC,
         embedding_func_max_async=EMBED_FUNC_MAX_ASYNC,
         max_parallel_insert=MAX_PARALLEL_INSERT,
         default_embedding_timeout=300,
+        default_llm_timeout=int(os.environ.get("LLM_TIMEOUT", 1800)),
     )
 
     # 2A: Use Qdrant if QDRANT_URL is set
@@ -673,20 +808,6 @@ async def main():
         print(f"[2A] Using QdrantVectorDBStorage at {QDRANT_URL}")
 
     rag = LightRAG(**rag_kwargs)
-
-    # Keep full-document ingestion, but cap doc context sent into contextualization prompts.
-    context_cap_stats = {"documents": 0, "truncated": 0}
-    if rag.contextualize_chunks and MAX_DOC_TOKENS > 0:
-        original_contextualize_chunks = rag._contextualize_chunks
-
-        async def _contextualize_chunks_with_doc_cap(chunks: dict[str, dict], doc_content: str):
-            capped_doc_content, was_truncated = cap_context_document(doc_content)
-            context_cap_stats["documents"] += 1
-            if was_truncated:
-                context_cap_stats["truncated"] += 1
-            return await original_contextualize_chunks(chunks, capped_doc_content)
-
-        rag._contextualize_chunks = _contextualize_chunks_with_doc_cap
 
     await rag.initialize_storages()
 
@@ -744,7 +865,10 @@ async def main():
 
     async def process_one(idx: int, pdf_path: Path):
         nonlocal succeeded, failed, skipped
+        t_queued = time.time()
         async with sem:
+            t_sem_acquired = time.time()
+            sem_wait_s = t_sem_acquired - t_queued
             try:
                 reader = PdfReader(str(pdf_path))
                 page_texts = [
@@ -752,6 +876,7 @@ async def main():
                     for page in reader.pages
                 ]
                 text = "\n\f\n".join(page for page in page_texts if page).strip()
+                text = text.replace("<|endofprompt|>", "")
                 if not text:
                     print(f"[{idx:04d}/{len(papers)}] {pdf_path.name[:55]} ⚠  Empty — skipping", flush=True)
                     async with counter_lock:
@@ -767,26 +892,62 @@ async def main():
 
                 global _current_pdf_path
                 _current_pdf_path = pdf_path
+                t_ainsert_start = time.time()
                 await rag.ainsert(
                     text,
                     ids=doc_id,
                     file_paths=str(pdf_path),
                 )
                 _current_pdf_path = None
+                t_ainsert_returned = time.time()
+
+                # ainsert() returns early after queuing — hold the semaphore
+                # until LightRAG has actually finished extraction for this doc.
+                # Timeout after DOC_POLL_TIMEOUT seconds to release stuck slots.
+                status_file = STORAGE_DIR / "kv_store_doc_status.json"
+                DOC_POLL_TIMEOUT = int(os.environ.get("DOC_POLL_TIMEOUT", 1800))
+                t_poll_start = time.time()
+                timed_out = False
+                while True:
+                    try:
+                        raw = await asyncio.to_thread(status_file.read_text)
+                        statuses = json.loads(raw)
+                        entry = statuses.get(doc_id, {})
+                        if isinstance(entry, dict) and entry.get("status") in ("processed", "failed"):
+                            break
+                    except Exception:
+                        pass
+                    if time.time() - t_poll_start > DOC_POLL_TIMEOUT:
+                        timed_out = True
+                        print(
+                            f"[POLL_TIMEOUT] {pdf_path.name[:55]} stuck in extraction "
+                            f">{DOC_POLL_TIMEOUT}s, releasing slot",
+                            flush=True,
+                        )
+                        break
+                    await asyncio.sleep(5)
+
+                t_done = time.time()
+                poll_s = t_done - t_poll_start
+                ainsert_s = t_ainsert_returned - t_ainsert_start
+                total_s = t_done - t_sem_acquired
 
                 async with counter_lock:
                     succeeded += 1
                     elapsed = time.time() - t_start
                     rate = succeeded / (elapsed / 3600) if elapsed > 0 else 0
                     eta_h = (len(papers) - idx) / rate if rate > 0 else float("inf")
+                    timeout_tag = " [POLL_TIMEOUT]" if timed_out else ""
                     print(
-                        f"[{idx:04d}/{len(papers)}] {pdf_path.name[:55]} ✓"
-                        + f"  ({rate:.0f}/hr, ETA {eta_h:.1f}h)",
+                        f"[{idx:04d}/{len(papers)}] {pdf_path.name[:55]} [done{timeout_tag}]"
+                        f"  total={total_s:.0f}s (sem_wait={sem_wait_s:.0f}s"
+                        f" ainsert={ainsert_s:.0f}s poll={poll_s:.0f}s)"
+                        f"  {rate:.0f}/hr | ETA {eta_h:.1f}h",
                         flush=True,
                     )
 
             except Exception as e:
-                print(f"[{idx:04d}/{len(papers)}] {pdf_path.name[:55]} ✗  {e}", flush=True)
+                print(f"[{idx:04d}/{len(papers)}] {pdf_path.name[:55]} [ainsert failed]  {e}", flush=True)
                 async with counter_lock:
                     failed += 1
 
