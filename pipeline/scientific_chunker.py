@@ -1344,6 +1344,49 @@ def inject_overlap(
     return results
 
 
+# ── Page-number assignment ─────────────────────────────────────────────────────
+
+_PAGE_WS_RE = re.compile(r"\s+")
+
+
+def _norm_for_match(text: str) -> str:
+    """Whitespace-collapsed, lowercased text for substring matching across the
+    cleaned-chunk vs raw-page boundary (PDF line breaks become single spaces)."""
+    return _PAGE_WS_RE.sub(" ", text or "").strip().lower()
+
+
+def _assign_page_starts(results: list[dict[str, Any]], original_text: str) -> None:
+    """Stamp each chunk with ``page_start`` — the 1-based physical PDF page its text
+    begins on — by matching the chunk's opening text against the form-feed-delimited
+    pages of the original extraction. ``None`` when undeterminable (no form-feeds in
+    the source, or no match). This is a transparent post-pass: it never alters chunk
+    text or the existing chunking decisions.
+    """
+    if not results:
+        return
+    if "\f" not in (original_text or ""):
+        for chunk in results:
+            chunk["page_start"] = None
+        return
+    norm_pages = [_norm_for_match(page) for page in original_text.split("\f")]
+    for chunk in results:
+        probe = _norm_for_match(
+            chunk.get("raw_text_without_overlap") or chunk.get("content") or ""
+        )
+        page = None
+        for width in (90, 45):
+            key = probe[:width]
+            if not key:
+                break
+            for i, page_text in enumerate(norm_pages):
+                if key in page_text:
+                    page = i + 1
+                    break
+            if page is not None:
+                break
+        chunk["page_start"] = page
+
+
 # ── Main chunking pipeline ────────────────────────────────────────────────────
 
 
@@ -1383,7 +1426,7 @@ def chunk_document(
     if not raw_chunks:
         # Fallback: entire text as one chunk
         tok = count_tokens(tokenizer, text.strip())
-        return [
+        results = [
             {
                 "tokens": tok,
                 "content": text.strip(),
@@ -1402,6 +1445,8 @@ def chunk_document(
                 "document_id": document_id,
             }
         ]
+        _assign_page_starts(results, text)
+        return results
 
     # 4. Rebalance to eliminate tiny tails
     raw_chunks = rebalance_chunks(tokenizer, raw_chunks, config)
@@ -1409,9 +1454,10 @@ def chunk_document(
     # 5. Inject overlap and build output dicts
     results = inject_overlap(tokenizer, raw_chunks, config)
 
-    # 6. Stamp document_id
+    # 6. Stamp document_id and the originating PDF page
     for r in results:
         r["document_id"] = document_id
+    _assign_page_starts(results, text)
 
     return results
 
@@ -1449,6 +1495,9 @@ def make_scientific_chunker(
         chunk_overlap_token_size=100,
         chunk_token_size=1200,
     ) -> list[dict[str, Any]]:
+        # NOTE: LightRAG's chunk_overlap_token_size / chunk_token_size are
+        # intentionally ignored — chunk geometry comes from ChunkerConfig
+        # (the CHUNK_* env vars), not LightRAG's settings.
         if chunk_cache is not None:
             content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
             cached = chunk_cache.get(content_hash)

@@ -17,11 +17,61 @@ import json
 import os
 import sys
 
-from . import __version__, client
+from . import __version__, client, references
 from .client import VALID_MODES, APRAGError
 
 
+# ── Metadata filters ─────────────────────────────────────────────────────────
+
+
+def _filters_from_args(args: argparse.Namespace) -> dict | None:
+    """Collect the --author/--year/--journal/... flags into a filter dict (or None)."""
+    f: dict = {}
+    if getattr(args, "author", None):
+        f["authors"] = args.author
+    if getattr(args, "journal", None):
+        f["journals"] = args.journal
+    if getattr(args, "subject", None):
+        f["subjects"] = args.subject
+    if getattr(args, "keyword", None):
+        f["keywords"] = args.keyword
+    if getattr(args, "affiliation", None):
+        f["affiliations"] = args.affiliation
+    if getattr(args, "year", None) is not None:
+        f["year"] = args.year
+    if getattr(args, "year_from", None) is not None:
+        f["year_from"] = args.year_from
+    if getattr(args, "year_to", None) is not None:
+        f["year_to"] = args.year_to
+    return f or None
+
+
 # ── Output formatting ────────────────────────────────────────────────────────
+
+
+def _format_papers(result: dict, index: dict | None) -> str:
+    if result.get("status") != "success":
+        return f"Search failed: {result.get('message', 'no data returned')}"
+    papers = result.get("papers") or []
+    matched = result.get("matched_files")
+    header = f"=== {len(papers)} paper(s)"
+    if matched is not None:
+        header += f"  (from {matched} filter-matched file(s))"
+    header += " ==="
+    out = [header]
+    for i, p in enumerate(papers, 1):
+        out.append(f"\n[{i}] {p.get('apa', '')}  (score {p.get('score')})")
+        ref = {"filename": p.get("filename", ""), "hades_path": p.get("hades_path", "")}
+        locator = references.locator_for(ref, index) if index is not None else p.get("hades_path", "")
+        pages = p.get("pages")
+        line = f"    {locator}"
+        if pages:
+            line += f"  (pp. {', '.join(str(n) for n in pages)})"
+        out.append(line)
+        snippet = (p.get("snippet") or "").strip()
+        if snippet:
+            out.append(f"    {snippet}")
+    return "\n".join(out)
 
 
 def _format_chunks(result: dict, show_entities: bool) -> str:
@@ -70,16 +120,24 @@ def _format_chunks(result: dict, show_entities: bool) -> str:
 
 async def _cmd_ask(args: argparse.Namespace) -> int:
     base_url = client.resolve_base_url(args.server, args.local)
-    answer = await client.query(
+    payload = await client.query_full(
         args.question,
         mode=args.mode,
         base_url=base_url,
         top_k=args.top_k,
         chunk_top_k=args.chunk_top_k,
         user_prompt=args.user_prompt,
+        filters=_filters_from_args(args),
     )
+    answer = payload.get("answer", "No relevant information found.")
+    refs = payload.get("references") or []
+    # Rewrite the references to clickable local file:// links where the PDF is on
+    # this machine (the server only knows the hades fallback path).
+    if refs and not args.no_local:
+        extra = [args.papers_dir] if args.papers_dir else None
+        answer = references.localize_answer(answer, refs, references.build_local_index(extra))
     if args.json:
-        print(json.dumps({"answer": answer, "mode": args.mode}, indent=2))
+        print(json.dumps({"answer": answer, "references": refs, "mode": args.mode}, indent=2))
     else:
         print(answer)
     return 0
@@ -93,11 +151,31 @@ async def _cmd_chunks(args: argparse.Namespace) -> int:
         base_url=base_url,
         top_k=args.top_k,
         chunk_top_k=args.chunk_top_k,
+        filters=_filters_from_args(args),
     )
     if args.json:
         print(json.dumps(result, indent=2))
     else:
         print(_format_chunks(result, show_entities=args.entities))
+    return 0
+
+
+async def _cmd_search(args: argparse.Namespace) -> int:
+    base_url = client.resolve_base_url(args.server, args.local)
+    result = await client.search(
+        args.question,
+        base_url=base_url,
+        top_k=args.top_k,
+        filters=_filters_from_args(args),
+    )
+    index = None
+    if not args.no_local:
+        extra = [args.papers_dir] if args.papers_dir else None
+        index = references.build_local_index(extra)
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(_format_papers(result, index))
     return 0
 
 
@@ -145,6 +223,35 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON.",
     )
 
+    # Metadata filters — shared by ask/chunks/search (scope retrieval to a paper set).
+    filt = argparse.ArgumentParser(add_help=False)
+    filt.add_argument("--author", action="append", metavar="SURNAME",
+                      help="Only papers by this author surname (repeatable).")
+    filt.add_argument("--journal", action="append", metavar="NAME",
+                      help="Only papers in this journal/venue (substring; repeatable).")
+    filt.add_argument("--subject", action="append", metavar="FIELD",
+                      help="Only papers in this subject/field (repeatable).")
+    filt.add_argument("--keyword", action="append", metavar="KW",
+                      help="Only papers with this keyword (repeatable).")
+    filt.add_argument("--affiliation", action="append", metavar="ORG",
+                      help="Only papers from this institution (substring; repeatable).")
+    filt.add_argument("--year", type=int, default=None, help="Only papers from this year.")
+    filt.add_argument("--year-from", type=int, default=None, dest="year_from",
+                      help="Only papers from this year onward.")
+    filt.add_argument("--year-to", type=int, default=None, dest="year_to",
+                      help="Only papers up to this year.")
+
+    # Local-PDF resolution flags — shared by ask/search.
+    localopt = argparse.ArgumentParser(add_help=False)
+    localopt.add_argument(
+        "--papers-dir", default=None,
+        help="Local directory to search for cited PDFs (adds to $APRAG_PAPERS_DIR).",
+    )
+    localopt.add_argument(
+        "--no-local", action="store_true",
+        help="Don't resolve cited PDFs to local file links; show hades paths only.",
+    )
+
     parser = argparse.ArgumentParser(
         prog="aprag",
         description="Query the AP-RAG academic-papers knowledge base.",
@@ -154,7 +261,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_ask = sub.add_parser("ask", parents=[common], help="Synthesized answer (LLM over context).")
+    p_ask = sub.add_parser("ask", parents=[common, filt, localopt],
+                           help="Synthesized answer (LLM over context).")
     p_ask.add_argument("question")
     p_ask.add_argument("--mode", default="hybrid", choices=VALID_MODES)
     p_ask.add_argument("--top-k", type=int, default=None, dest="top_k")
@@ -162,7 +270,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ask.add_argument("--user-prompt", default=None, help="Extra instructions for the answer LLM.")
     p_ask.set_defaults(func=_cmd_ask)
 
-    p_chunks = sub.add_parser("chunks", parents=[common], help="Raw retrieved chunks (no LLM).")
+    p_chunks = sub.add_parser("chunks", parents=[common, filt], help="Raw retrieved chunks (no LLM).")
     p_chunks.add_argument("question")
     p_chunks.add_argument("--mode", default="naive", choices=VALID_MODES)
     p_chunks.add_argument("--top-k", type=int, default=None, dest="top_k")
@@ -171,6 +279,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--entities", action="store_true", help="Also show retrieved entities/relationships."
     )
     p_chunks.set_defaults(func=_cmd_chunks)
+
+    p_search = sub.add_parser(
+        "search", parents=[common, filt, localopt],
+        help="Metadata-filtered semantic search → ranked papers.",
+    )
+    p_search.add_argument("question")
+    p_search.add_argument("--top-k", type=int, default=None, dest="top_k",
+                          help="Chunks pulled before folding into papers (default 40).")
+    p_search.set_defaults(func=_cmd_search)
 
     p_health = sub.add_parser("health", parents=[common], help="Server liveness + capabilities.")
     p_health.set_defaults(func=_cmd_health)

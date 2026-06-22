@@ -10,6 +10,7 @@ from pipeline.scientific_chunker import (
     ChunkerConfig,
     Paragraph,
     RawChunk,
+    _assign_page_starts,
     chunk_document,
     count_tokens,
     detect_sections,
@@ -795,3 +796,62 @@ class TestEvaluation:
     def test_evaluate_empty(self):
         metrics = evaluate_chunks([])
         assert "error" in metrics
+
+
+# ── Page-number assignment ────────────────────────────────────────────────────
+
+
+class TestPageAssignment:
+    """page_start = the 1-based physical PDF page a chunk's text begins on."""
+
+    def test_assign_pages_matches_form_feed_pages(self):
+        # Three pages separated by form-feeds (as pdftotext emits them).
+        original = (
+            "Methods of the study on page one with distinctive opening words here.\n"
+            "\f"
+            "Results were significant across all conditions tested on the second page.\n"
+            "\f"
+            "Discussion of the broader implications appears here on the third page."
+        )
+        results = [
+            {"raw_text_without_overlap": "Discussion of the broader implications appears here"},
+            {"raw_text_without_overlap": "Methods of the study on page one"},
+            {"raw_text_without_overlap": "Results were significant across all conditions"},
+        ]
+        _assign_page_starts(results, original)
+        assert results[0]["page_start"] == 3
+        assert results[1]["page_start"] == 1
+        assert results[2]["page_start"] == 2
+
+    def test_assign_pages_none_without_form_feeds(self):
+        results = [{"raw_text_without_overlap": "some text"}]
+        _assign_page_starts(results, "some text with no page breaks at all")
+        assert results[0]["page_start"] is None
+
+    def test_assign_pages_none_when_no_match(self):
+        results = [{"raw_text_without_overlap": "text that appears on no page"}]
+        _assign_page_starts(results, "page one content\fpage two content")
+        assert results[0]["page_start"] is None
+
+    def test_chunk_document_stamps_page_start_on_every_chunk(self, tokenizer):
+        text = (
+            "Abstract\nThis paper studies humor and incongruity in language carefully.\n"
+            "\f"
+            "Methods\nParticipants rated many words for funniness across several sessions.\n"
+            "\f"
+            "Results\nIncongruity strongly predicted the funniness ratings overall here."
+        )
+        config = ChunkerConfig(target_tokens=6, max_tokens=14, min_tokens=2)
+        chunks = chunk_document(tokenizer, text, config)
+        assert chunks  # produced something
+        n_pages = text.count("\f") + 1
+        for c in chunks:
+            assert "page_start" in c
+            assert c["page_start"] is None or 1 <= c["page_start"] <= n_pages
+
+    def test_chunk_document_page_start_none_without_form_feeds(self, tokenizer):
+        text = "Introduction\nA single page of text with no form feed characters present."
+        config = ChunkerConfig(target_tokens=6, max_tokens=14, min_tokens=2)
+        chunks = chunk_document(tokenizer, text, config)
+        assert chunks
+        assert all(c["page_start"] is None for c in chunks)

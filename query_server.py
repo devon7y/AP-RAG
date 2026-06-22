@@ -12,6 +12,7 @@ Endpoints:
     POST /retrieve        — structured retrieval only (entities/relationships/chunks), no LLM
 """
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -24,7 +25,12 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
 
+import apa_citations as apa     # APA7 rewriting of the answer LLM's numeric citations
+import aprag_search as search   # metadata-filtered semantic search (pure helpers)
+
 # ── Config ────────────────────────────────────────────────────────────────────
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
 
 STORAGE_DIR   = os.environ.get("STORAGE_DIR", r"C:\rag_server\rag_storage_westbury_qwen3_32b")
 EMBED_HOST    = os.environ.get("EMBED_HOST", "http://localhost:8000/v1")
@@ -34,6 +40,12 @@ LLM_MODEL     = os.environ.get("LLM_MODEL", "gpt-5-mini")
 EMBEDDING_DIM = 4096
 HOST          = os.environ.get("HOST", "0.0.0.0")
 PORT          = int(os.environ.get("PORT", 8001))
+
+# APA citations: a filename→bib-record manifest (built by scripts/build_apa_manifest.py),
+# deployed next to this file, and the hades fallback share shown when a reader has no
+# local copy of a cited PDF.
+APA_MANIFEST      = os.environ.get("APA_MANIFEST", os.path.join(_HERE, "papers_metadata.json"))
+HADES_PAPERS_BASE = os.environ.get("HADES_PAPERS_BASE", apa.DEFAULT_HADES_BASE)
 
 # Set QDRANT_URL for LightRAG's Qdrant backend
 os.environ.setdefault("QDRANT_URL", QDRANT_URL)
@@ -102,12 +114,25 @@ app = FastAPI(title="AP-RAG Query Server", lifespan=lifespan)
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 
+class Filters(BaseModel):
+    """Metadata filters resolved against the manifest to scope retrieval to a paper set."""
+    authors: list[str] | None = None       # surname substrings (any-match)
+    year: int | None = None
+    year_from: int | None = None
+    year_to: int | None = None
+    journals: list[str] | None = None      # container-title substrings
+    subjects: list[str] | None = None
+    keywords: list[str] | None = None
+    affiliations: list[str] | None = None
+
+
 class QueryRequest(BaseModel):
     question: str
     mode: str = "hybrid"
     top_k: int | None = None
     chunk_top_k: int | None = None
     user_prompt: str | None = None
+    filters: Filters | None = None
 
 
 class RetrieveRequest(BaseModel):
@@ -115,6 +140,14 @@ class RetrieveRequest(BaseModel):
     mode: str = "naive"
     top_k: int | None = None
     chunk_top_k: int | None = None
+    filters: Filters | None = None
+
+
+class SearchRequest(BaseModel):
+    """Metadata-filtered semantic search → ranked papers."""
+    question: str
+    top_k: int = 40            # chunks pulled from Qdrant before folding into papers
+    filters: Filters | None = None
 
 
 def _build_query_param(req) -> QueryParam:
@@ -128,6 +161,128 @@ def _build_query_param(req) -> QueryParam:
     if user_prompt is not None:
         kwargs["user_prompt"] = user_prompt
     return QueryParam(**kwargs)
+
+
+def _filters_dict(req) -> dict | None:
+    """The request's metadata filters as a plain dict (None if unset)."""
+    f = getattr(req, "filters", None)
+    if f is None:
+        return None
+    return f.model_dump(exclude_none=True) if hasattr(f, "model_dump") else f.dict(exclude_none=True)
+
+
+# ── Page lookups (read page_start from the text-chunks KV; no LightRAG patch) ───
+
+
+async def _pages_for_chunk_ids(chunk_ids: list[str]) -> dict[str, int]:
+    """Map chunk_id → page_start by reading the text-chunks KV store. Empty for a
+    store ingested before page-tracking, or if the lookup isn't available."""
+    if not chunk_ids or not hasattr(_rag, "text_chunks"):
+        return {}
+    try:
+        stored = await _rag.text_chunks.get_by_ids(list(chunk_ids))
+    except Exception as exc:  # never let page lookup break a query
+        print(f"page lookup failed ({exc!r})", flush=True)
+        return {}
+    out: dict[str, int] = {}
+    for cid, rec in zip(chunk_ids, stored):
+        if isinstance(rec, dict) and rec.get("page_start") is not None:
+            out[cid] = rec["page_start"]
+    return out
+
+
+def _group_pages(chunks: list[dict], key: str, page_by_cid: dict[str, int]) -> dict:
+    grouped: dict[str, list[str]] = {}
+    for c in chunks:
+        cid, k = c.get("chunk_id"), str(c.get(key) or "")
+        if cid and k:
+            grouped.setdefault(k, []).append(cid)
+    return {
+        k: sorted({page_by_cid[c] for c in cids if c in page_by_cid})
+        for k, cids in grouped.items()
+        if any(c in page_by_cid for c in cids)
+    }
+
+
+async def _pages_by_reference(data: dict) -> dict:
+    chunks = (data or {}).get("chunks") or []
+    ids = [c.get("chunk_id") for c in chunks if c.get("chunk_id")]
+    return _group_pages(chunks, "reference_id", await _pages_for_chunk_ids(ids))
+
+
+async def _pages_by_file(chunks: list[dict]) -> dict:
+    ids = [c.get("chunk_id") for c in chunks if c.get("chunk_id")]
+    return _group_pages(chunks, "file_path", await _pages_for_chunk_ids(ids))
+
+
+# ── Metadata-filtered vector search (parallel Qdrant path; read-only) ──────────
+
+
+async def _embed_query(text: str) -> list[float]:
+    return np.asarray(await pc_embed([text], context="query"))[0].tolist()
+
+
+async def _vector_chunk_search(question: str, filenames, top_k: int) -> list[dict]:
+    """Semantic chunk search, optionally restricted to a filename set via a Qdrant
+    payload filter. ``filenames``: None = whole corpus; set() = nothing; set = restrict."""
+    if filenames is not None and len(filenames) == 0:
+        return []
+    try:
+        from qdrant_client import models
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=501, detail=f"qdrant_client unavailable: {exc}")
+    vdb = getattr(_rag, "chunks_vdb", None)
+    client = getattr(vdb, "_client", None)
+    collection = getattr(vdb, "final_namespace", None) or getattr(vdb, "namespace", None)
+    if not (vdb is not None and client is not None and collection):
+        raise HTTPException(status_code=501,
+                            detail="filtered search requires the Qdrant chunk store")
+    workspace = getattr(vdb, "effective_workspace", "_")
+    must = [models.FieldCondition(key="workspace_id",
+                                  match=models.MatchValue(value=workspace))]
+    if filenames is not None:
+        must.append(models.FieldCondition(key="file_path",
+                                          match=models.MatchAny(any=list(filenames))))
+    emb = await _embed_query(question)
+    resp = await asyncio.to_thread(
+        client.query_points, collection_name=collection, query=emb,
+        limit=top_k, with_payload=True, query_filter=models.Filter(must=must),
+    )
+    chunks = []
+    for p in resp.points:
+        payload = p.payload or {}
+        chunks.append({
+            "content": payload.get("content", ""),
+            "file_path": payload.get("file_path", ""),
+            "chunk_id": payload.get("id") or str(getattr(p, "id", "")),
+            "score": getattr(p, "score", None),
+        })
+    return chunks
+
+
+async def _filtered_answer(req, filenames: set, manifest: dict) -> dict:
+    """Synthesize an answer restricted to the filtered papers (APA-cited)."""
+    top_k = req.chunk_top_k or req.top_k or 20
+    chunks = await _vector_chunk_search(req.question, filenames, top_k)
+    if not chunks:
+        return {"answer": "No matching passages within the filtered papers.",
+                "references": [], "mode": "filtered"}
+    references = search.assign_reference_ids(chunks)
+    context = search.build_synthesis_context(references, chunks)
+    user_prompt = getattr(req, "user_prompt", None)
+    prompt = f"{req.question}\n\n{context}"
+    if user_prompt:
+        prompt = f"{user_prompt}\n\n{prompt}"
+    content = await openai_llm(prompt, system_prompt=search.SYNTH_SYSTEM_PROMPT)
+    try:
+        id_to_pages = await _pages_by_reference({"chunks": chunks})
+        answer, ref_models = apa.render_answer(
+            content, references, manifest, HADES_PAPERS_BASE, id_to_pages=id_to_pages
+        )
+    except Exception as exc:  # never let citation rewriting break a good answer
+        print(f"APA rewrite (filtered) failed ({exc!r}); raw answer", flush=True)
+        answer, ref_models = content, []
+    return {"answer": answer, "references": ref_models, "mode": "filtered"}
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -148,8 +303,40 @@ def health():
 async def query(req: QueryRequest):
     if _rag is None:
         raise HTTPException(status_code=503, detail="RAG not initialized")
-    result = await _rag.aquery(req.question, param=_build_query_param(req))
-    return {"answer": result or "No relevant information found.", "mode": req.mode}
+    manifest = apa.load_manifest(APA_MANIFEST)
+
+    # Metadata filters → restrict to the matching papers (parallel filtered path).
+    filenames = search.resolve_filter(_filters_dict(req), manifest)
+    if filenames is not None:
+        return await _filtered_answer(req, filenames, manifest)
+
+    param = _build_query_param(req)
+    # Older LightRAG without aquery_llm: keep the legacy answer (no APA rewrite).
+    if not hasattr(_rag, "aquery_llm"):
+        result = await _rag.aquery(req.question, param=param)
+        return {"answer": result or "No relevant information found.",
+                "references": [], "mode": req.mode}
+
+    # aquery_llm returns the answer AND the reference_id→file_path map in one call,
+    # so we can rewrite numeric citations to APA7 without a second retrieval or any
+    # patch to LightRAG.
+    result = await _rag.aquery_llm(req.question, param=param)
+    content = (result.get("llm_response") or {}).get("content") or ""
+    references = (result.get("data") or {}).get("references") or []
+    if not content:
+        return {"answer": "No relevant information found.",
+                "references": [], "mode": req.mode}
+
+    try:
+        id_to_pages = await _pages_by_reference(result.get("data"))
+        answer, ref_models = apa.render_answer(
+            content, references, manifest, HADES_PAPERS_BASE, id_to_pages=id_to_pages
+        )
+    except Exception as exc:  # never let citation rewriting break a good answer
+        print(f"APA rewrite failed ({exc!r}); returning raw answer", flush=True)
+        answer, ref_models = content, []
+
+    return {"answer": answer, "references": ref_models, "mode": req.mode}
 
 
 @app.post("/retrieve")
@@ -157,12 +344,43 @@ async def retrieve(req: RetrieveRequest):
     """Structured retrieval without LLM synthesis — the agentic multi-hop primitive."""
     if _rag is None:
         raise HTTPException(status_code=503, detail="RAG not initialized")
+
+    # Metadata filters → filtered vector search (chunks only), in the aquery_data shape.
+    filenames = search.resolve_filter(_filters_dict(req), apa.load_manifest(APA_MANIFEST))
+    if filenames is not None:
+        top_k = req.chunk_top_k or req.top_k or 20
+        chunks = await _vector_chunk_search(req.question, filenames, top_k)
+        references = search.assign_reference_ids(chunks)
+        return {
+            "status": "success", "message": "filtered retrieval",
+            "data": {"entities": [], "relationships": [], "chunks": chunks,
+                     "references": references},
+            "metadata": {"query_mode": "filtered", "filtered_files": len(filenames),
+                         "final_chunks_count": len(chunks)},
+        }
+
     if not hasattr(_rag, "aquery_data"):
         raise HTTPException(
             status_code=501,
             detail="Installed LightRAG lacks aquery_data; upgrade lightrag_hku for /retrieve.",
         )
     return await _rag.aquery_data(req.question, param=_build_query_param(req))
+
+
+@app.post("/search")
+async def search_papers(req: SearchRequest):
+    """Metadata-filtered semantic search → ranked papers (with APA citation + path)."""
+    if _rag is None:
+        raise HTTPException(status_code=503, detail="RAG not initialized")
+    manifest = apa.load_manifest(APA_MANIFEST)
+    filenames = search.resolve_filter(_filters_dict(req), manifest)  # None = whole corpus
+    if filenames is not None and not filenames:
+        return {"status": "success", "papers": [], "count": 0, "matched_files": 0}
+    chunks = await _vector_chunk_search(req.question, filenames, req.top_k)
+    pages_by_file = await _pages_by_file(chunks)
+    papers = search.rank_papers(chunks, manifest, HADES_PAPERS_BASE, pages_by_file)
+    return {"status": "success", "papers": papers, "count": len(papers),
+            "matched_files": (None if filenames is None else len(filenames))}
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

@@ -28,7 +28,7 @@ Integration:
 Environment variables (used by BookChunkerConfig.from_env()):
     BOOK_CHUNK_TARGET_TOKENS  (default 1000)
     BOOK_CHUNK_MAX_TOKENS     (default 1500)
-    BOOK_CHUNK_MIN_TOKENS     (default 400)
+    BOOK_CHUNK_MIN_TOKENS     (default 250)
     BOOK_CHUNK_OVERLAP_TOKENS (default 200)
 """
 
@@ -49,6 +49,7 @@ from pipeline.scientific_chunker import (
     _NUM_PREFIX_DOT,
     _PAGE_NUMBER_ONLY,
     _TOC_TRAILING_PAGE,
+    _assign_page_starts,
     count_tokens,
     inject_overlap,
     _looks_like_page_furniture,
@@ -1226,7 +1227,7 @@ def chunk_book_document(
 
     if not raw_chunks:
         tok = count_tokens(tokenizer, text.strip())
-        return [
+        results = [
             {
                 "tokens": tok,
                 "content": text.strip(),
@@ -1245,6 +1246,8 @@ def chunk_book_document(
                 "document_id": document_id,
             }
         ]
+        _assign_page_starts(results, text)
+        return results
 
     # 5. Rebalance to eliminate tiny tails
     raw_chunks = rebalance_chunks(tokenizer, raw_chunks, config)
@@ -1252,9 +1255,10 @@ def chunk_book_document(
     # 6. Inject overlap and build output dicts
     results = inject_overlap(tokenizer, raw_chunks, config)
 
-    # 7. Stamp document_id
+    # 7. Stamp document_id and the originating PDF page
     for r in results:
         r["document_id"] = document_id
+    _assign_page_starts(results, text)
 
     return results
 
@@ -1284,6 +1288,9 @@ def make_book_chunker(
         chunk_overlap_token_size=100,
         chunk_token_size=1200,
     ) -> list[dict[str, Any]]:
+        # NOTE: LightRAG's chunk_overlap_token_size / chunk_token_size are
+        # intentionally ignored — chunk geometry comes from BookChunkerConfig
+        # (the BOOK_CHUNK_* env vars), not LightRAG's settings.
         if chunk_cache is not None:
             content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
             cached = chunk_cache.get(content_hash)

@@ -107,6 +107,61 @@ aprag chunks "humor" --json | jq '.data.chunks | length'
 
 ---
 
+## Citations: APA7 + clickable local / hades PDF links
+
+`aprag ask` (and the `aprag_query` MCP tool) return answers with **APA7 in-text citations**
+(`(Westbury & Hollis, 2019)`) and an **APA7 `### References`** list — not the raw file paths the
+underlying engine produces. Each reference resolves to a usable PDF location:
+
+- If the cited PDF is **on your machine**, the reference becomes a clickable `file://` link.
+  Matching is by **filename** (identical across the corpus, hades, and your copy — the path may
+  differ). Set where to look with `APRAG_PAPERS_DIR` (`os.pathsep`-separated; defaults include
+  `~/Zotero`, `~/Documents/papers`, `~/Papers`, `~/Downloads`):
+  ```bash
+  export APRAG_PAPERS_DIR="$HOME/Zotero:$HOME/Documents/papers"
+  aprag ask "humor and incongruity"            # local hits become file:// links
+  aprag ask "…" --papers-dir /Volumes/lab/pdfs # add a dir for this call
+  aprag ask "…" --no-local                     # skip local search; show hades paths
+  ```
+- Otherwise it shows the **hades fallback path**
+  `hades.psych.ualberta.ca:/Users/Shared/aprag_papers/<filename>`.
+
+Local resolution happens entirely client-side (the server can't see your filesystem); the server
+only ever emits APA7 text + the hades path. `aprag chunks` / `aprag_retrieve` are unchanged (raw,
+no citations).
+
+**Page numbers.** Each end-of-answer reference also shows the **PDF page(s)** the cited passages
+came from — `(p. 12)` / `(pp. 3, 12, 19)` — so you can jump there in Preview. (In-text citations
+stay page-less. The page is the physical PDF page, which may differ from a journal's printed page.)
+Pages appear only for corpora ingested with page-tracking; older stores simply omit them.
+
+---
+
+## Metadata-filtered search
+
+Filter the semantic search by the extracted bibliographic metadata — e.g. *papers about meaning,
+but only those authored by Westbury*. Filters available: `--author`, `--year` / `--year-from` /
+`--year-to`, `--journal`, `--subject`, `--keyword`, `--affiliation` (list flags are repeatable).
+
+```bash
+# rank matching PAPERS (a "find papers" tool, not a synthesized answer)
+aprag search "meaning" --author Westbury
+aprag search "incongruity humor" --year-from 2015 --subject "Cognitive Psychology"
+
+# scope a synthesized answer or raw chunks to the same filter
+aprag ask    "what predicts funniness?" --author Westbury --year-from 2010
+aprag chunks "semantic memory" --keyword meaning --journal Cognition
+```
+
+`aprag search` returns each paper as an APA7 citation + a clickable local/hades link + a snippet,
+ranked by semantic relevance within the filter. The MCP equivalents are the **`aprag_search`** tool
+and the same optional filter args on **`aprag_query`** / **`aprag_retrieve`**.
+
+Filtering is resolved against the bibliographic manifest and runs as a parallel Qdrant query
+(semantic search restricted to the matching files) — see the implementation notes below.
+
+---
+
 ## Step 5 — Register the MCP server with your client
 
 The MCP server uses the **stdio transport** — the client launches `aprag-mcp` as a subprocess.
@@ -193,12 +248,48 @@ The PC query server may be down. Bring the stack up from the Mac with
 If an LLM is setting this up autonomously, the precise technical context:
 
 **The client** is the `aprag` package: `aprag.cli` (CLI), `aprag.mcp` (stdio MCP server, tools
-`aprag_query` and `aprag_retrieve`), and `aprag.client` (the shared async HTTP client — the one
-place that knows the wire protocol). Endpoints: `POST /query` → `{"answer", "mode"}`;
-`POST /retrieve` → `LightRAG.aquery_data()` output `{"status","message","data":{entities,
-relationships,chunks,references},"metadata"}` (chunks: `{content,file_path,chunk_id,reference_id}`;
-`naive` mode returns chunks only); `GET /health`. The server URL is `$APRAG_QUERY_URL` (default
-`http://localhost:8001`).
+`aprag_query` and `aprag_retrieve`), `aprag.client` (the shared async HTTP client — the one place
+that knows the wire protocol), and `aprag.references` (client-side local PDF resolution).
+Endpoints: `POST /query` → `{"answer", "references", "mode"}` where `references` is a list of
+`{n, apa, intext, filename, hades_path, pages}`; `POST /retrieve` → `LightRAG.aquery_data()` output
+`{"status","message","data":{entities,relationships,chunks,references},"metadata"}` (chunks:
+`{content,file_path,chunk_id,reference_id}`; `naive` mode returns chunks only); `POST /search` →
+`{"status","papers":[{filename,apa,hades_path,pages,score,n_chunks,snippet}],"count","matched_files"}`;
+`GET /health`. All of `/query`, `/retrieve`, `/search` accept an optional `filters` object
+(`{authors[],year,year_from,year_to,journals[],subjects[],keywords[],affiliations[]}`). The server
+URL is `$APRAG_QUERY_URL` (default `http://localhost:8001`). After a `/query`, the CLI/MCP call
+`aprag.references.localize_answer(...)` to rewrite the `### References` block — cited PDFs found
+under `$APRAG_PAPERS_DIR` become clickable `file://` links, the rest keep their hades path.
+
+**Citation rewriting** is done server-side in `query_server.py` via the root module
+`apa_citations.py`: `/query` calls `LightRAG.aquery_llm()` (returns the answer **and** the
+`reference_id → file_path` map in one call — no LightRAG patch), rewrites numeric `[n]` citations
+to APA7 in-text, and rebuilds the references from a filename→bib-record manifest. **Deploy
+`apa_citations.py` and `papers_metadata.json` alongside `query_server.py` in `C:\rag_server\`.**
+The manifest is built by `scripts/build_apa_manifest.py` (Crossref full records for DOI papers +
+LLM extraction otherwise), keyed by the canonical PDF filename. Server env vars: `APA_MANIFEST`
+(default: next to `query_server.py`), `HADES_PAPERS_BASE` (default
+`hades.psych.ualberta.ca:/Users/Shared/aprag_papers`). A missing manifest entry degrades to a
+filename-derived citation; a missing manifest file leaves answers working with bare-filename
+citations.
+
+**Reference page numbers** come from a `page_start` the structure-aware chunker now stamps on every
+chunk (the physical PDF page, matched from the form-feed-delimited extraction). It is stored in the
+text-chunks KV but not surfaced by `aquery_data`, so `query_server.py` reads it back read-only via
+`_rag.text_chunks.get_by_ids([chunk_id,...])` and groups distinct pages per reference. **Pages only
+appear after a re-ingest** with the page-aware chunker.
+
+**Metadata-filtered search** is a parallel path that does not patch LightRAG: `aprag_search.py`
+resolves the `filters` against the manifest → a set of filenames, then `query_server.py` runs a
+Qdrant query (`_rag.chunks_vdb._client.query_points`) with a `file_path` match-any payload filter +
+the query embedding (`pc_embed(..., context="query")`). `/search` folds the hits into ranked papers;
+filtered `/query` synthesizes an APA-cited answer from them; filtered `/retrieve` returns the chunks.
+These use semi-private LightRAG attributes read-only — never edit `LightRAG/`; if an upgrade renames
+them, fix the server (it 501s if the Qdrant handles are absent).
+
+**hades fallback share:** create `/Users/Shared/aprag_papers` on `hades.psych.ualberta.ca` (user
+`exp`) and populate it with the corpus PDFs under their canonical filenames (these must match the
+names stored in the RAG so client-side filename matching and the fallback paths line up).
 
 **The query server** (`query_server.py`) runs on the PC at `C:\rag_server\` — FastAPI/uvicorn on
 port 8001. It loads LightRAG once at startup from `C:\rag_server\rag_storage_westbury_qwen3_32b\`

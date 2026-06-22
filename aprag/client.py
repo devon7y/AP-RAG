@@ -148,6 +148,38 @@ def _query_param_body(
     return body
 
 
+async def query_full(
+    question: str,
+    mode: str = "hybrid",
+    *,
+    base_url: str | None = None,
+    top_k: int | None = None,
+    chunk_top_k: int | None = None,
+    user_prompt: str | None = None,
+    filters: dict | None = None,
+) -> dict:
+    """Return the full POST /query payload: {"answer", "references", "mode"}.
+
+    ``references`` is a list of structured APA citations
+    ({"n", "apa", "intext", "filename", "hades_path", "pages"}) the frontends use to
+    swap in clickable local file links; it is [] from an older server. ``filters``
+    scopes the answer to papers matching the metadata (authors/year/journal/...).
+    """
+    base_url = base_url or resolve_base_url()
+    body = _query_param_body(question, mode, top_k, chunk_top_k)
+    if user_prompt is not None:
+        body["user_prompt"] = user_prompt
+    if filters:
+        body["filters"] = filters
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            resp = await client.post(f"{base_url}/query", json=body)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:  # noqa: BLE001 — re-raised as a friendly APRAGError
+        raise _raise_friendly(exc, base_url) from exc
+
+
 async def query(
     question: str,
     mode: str = "hybrid",
@@ -156,19 +188,14 @@ async def query(
     top_k: int | None = None,
     chunk_top_k: int | None = None,
     user_prompt: str | None = None,
+    filters: dict | None = None,
 ) -> str:
-    """Return a synthesized answer (LLM over retrieved context) from POST /query."""
-    base_url = base_url or resolve_base_url()
-    body = _query_param_body(question, mode, top_k, chunk_top_k)
-    if user_prompt is not None:
-        body["user_prompt"] = user_prompt
-    try:
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            resp = await client.post(f"{base_url}/query", json=body)
-            resp.raise_for_status()
-            return resp.json().get("answer", "No relevant information found.")
-    except Exception as exc:  # noqa: BLE001 — re-raised as a friendly APRAGError
-        raise _raise_friendly(exc, base_url) from exc
+    """Return just the synthesized answer string (back-compat over ``query_full``)."""
+    payload = await query_full(
+        question, mode, base_url=base_url, top_k=top_k,
+        chunk_top_k=chunk_top_k, user_prompt=user_prompt, filters=filters,
+    )
+    return payload.get("answer", "No relevant information found.")
 
 
 async def retrieve(
@@ -178,18 +205,50 @@ async def retrieve(
     base_url: str | None = None,
     top_k: int | None = None,
     chunk_top_k: int | None = None,
+    filters: dict | None = None,
 ) -> dict:
     """
     Return structured retrieval (no LLM) from POST /retrieve.
 
     Shape: {"status", "message", "data": {entities[], relationships[], chunks[],
-    references[]}, "metadata": {...}}. `naive` mode returns chunks only.
+    references[]}, "metadata": {...}}. `naive` mode returns chunks only. ``filters``
+    scopes retrieval to papers matching the metadata.
     """
     base_url = base_url or resolve_base_url()
     body = _query_param_body(question, mode, top_k, chunk_top_k)
+    if filters:
+        body["filters"] = filters
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
             resp = await client.post(f"{base_url}/retrieve", json=body)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:  # noqa: BLE001 — re-raised as a friendly APRAGError
+        raise _raise_friendly(exc, base_url) from exc
+
+
+async def search(
+    question: str,
+    *,
+    base_url: str | None = None,
+    top_k: int | None = None,
+    filters: dict | None = None,
+) -> dict:
+    """
+    Metadata-filtered semantic search → ranked papers, from POST /search.
+
+    Shape: {"status", "papers": [{filename, apa, hades_path, pages, score, n_chunks,
+    snippet}], "count", "matched_files"}.
+    """
+    base_url = base_url or resolve_base_url()
+    body: dict = {"question": question}
+    if top_k is not None:
+        body["top_k"] = top_k
+    if filters:
+        body["filters"] = filters
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            resp = await client.post(f"{base_url}/search", json=body)
             resp.raise_for_status()
             return resp.json()
     except Exception as exc:  # noqa: BLE001 — re-raised as a friendly APRAGError
