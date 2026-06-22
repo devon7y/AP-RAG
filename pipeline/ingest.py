@@ -68,6 +68,7 @@ import signal
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 
@@ -112,6 +113,39 @@ CONTEXTUALIZE_CHUNKS = os.environ.get("CONTEXTUALIZE_CHUNKS", "1") == "1"
 EMBED_FUNC_MAX_ASYNC = int(os.environ.get("EMBED_FUNC_MAX_ASYNC", 4))
 MAX_PARALLEL_INSERT  = int(os.environ.get("MAX_PARALLEL_INSERT", 2))
 
+# ── Concurrency-optimization knobs (see docs/INGEST_CONCURRENCY_PLAN.md) ─────────
+# All wrapper-side; none patch the nested LightRAG. Defaults preserve prior behavior
+# except the text path, which now defaults to the streaming enqueue/drain model.
+#
+# Fix 4: stream every document through LightRAG's native pipeline (enqueue-all →
+# drain-once) instead of per-doc ainsert()+poll. Real concurrency is LightRAG's
+# MAX_PARALLEL_INSERT either way; this removes the redundant per-doc polling and the
+# PDF reads that used to block the event loop. Set STREAMING_INGEST=0 for the legacy
+# per-doc path (kept as a fallback).
+STREAMING_INGEST = os.environ.get("STREAMING_INGEST", "1") == "1"
+# Fix 2c: gate the per-call [LLM_DEBUG] prints — at high LLM_MAX_ASYNC these are
+# hundreds of flush=True writes/sec that throttle the event loop. Off by default.
+LLM_DEBUG = os.environ.get("LLM_DEBUG", "0") == "1"
+# Fix 3: per-call embedding batch LightRAG hands to the embedder (distinct from
+# EMBED_BATCH, the SentenceTransformer micro-batch). Bigger batches make far better
+# use of a dedicated embedding GPU than extra async concurrency does.
+EMBEDDING_BATCH_NUM = int(os.environ.get("EMBEDDING_BATCH_NUM", 32))
+# Fix 3: if set, embed via an OpenAI-compatible server (scripts/server.py) on its
+# own GPU instead of loading the model in-process. Empty = in-process (default).
+EMBED_ENDPOINT = os.environ.get("EMBED_ENDPOINT", "").strip()
+# Fix 1: opt-in incremental KV backends so LightRAG's per-doc _insert_done() stops
+# rewriting the giant JSON KV stores every document. Empty = LightRAG defaults
+# (JsonKVStorage / JsonDocStatusStorage). Requires the matching sidecar (e.g. Redis).
+KV_STORAGE = os.environ.get("KV_STORAGE", "").strip()
+DOC_STATUS_STORAGE = os.environ.get("DOC_STATUS_STORAGE", "").strip()
+# Fix 2d: dedicated thread pools so blocking IO (PDF reads, doc-status polling) never
+# competes with embedding for the default executor's threads.
+IO_THREADS = int(os.environ.get("IO_THREADS", 8))
+_IO_EXECUTOR = ThreadPoolExecutor(max_workers=IO_THREADS, thread_name_prefix="aprag-io")
+_EMBED_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(2, EMBED_FUNC_MAX_ASYNC), thread_name_prefix="aprag-embed"
+)
+
 # VLM multimodal ingestion (native LightRAG path; figures/tables/equations).
 # When INGEST_VLM=1, ingest via apipeline_enqueue_documents(pending_parse): an
 # external parser service (PARSE_ENGINE: mineru|docling) extracts figures/tables/
@@ -136,7 +170,8 @@ REBUILD_EMBEDDINGS = os.environ.get("REBUILD_EMBEDDINGS", "0") == "1"
 REBUILD_BATCH_SIZE = int(os.environ.get("REBUILD_BATCH_SIZE", 50))
 
 # 5: Structure-aware chunker (replaces LightRAG's token chunker)
-# CHUNKER_TYPE=book uses BookChunkerConfig; default uses scientific paper chunker.
+# CHUNKER_TYPE: "scientific" (default) | "book" | "auto" (per-document structure
+# routing — classify each PDF as book/paper and dispatch; see document_router.py).
 _CHUNKER_TYPE = os.environ.get("CHUNKER_TYPE", "scientific").lower()
 
 if _CHUNKER_TYPE == "book":
@@ -150,6 +185,42 @@ if _CHUNKER_TYPE == "book":
     else:
         print(f"[CACHE] No book chunk cache found — chunking will be computed live")
     SCIENTIFIC_CHUNKER = make_book_chunker(CHUNKER_CONFIG, chunk_cache=_CHUNK_CACHE)
+elif _CHUNKER_TYPE == "auto":
+    # Per-document structure routing: classify each PDF as book/paper from its
+    # structure (TOC, chapter headings, IMRaD sections) and dispatch to the
+    # matching chunker. Page count is only a tie-breaker. See document_router.py.
+    from pipeline.book_chunker import BookChunkerConfig
+    from pipeline.document_router import RouterConfig, make_auto_chunker
+    from pipeline.scientific_chunker import ChunkerConfig
+
+    _SCI_CONFIG = ChunkerConfig.from_env()
+    _BOOK_CONFIG = BookChunkerConfig.from_env()
+    _ROUTER_CONFIG = RouterConfig.from_env()
+    CHUNKER_CONFIG = _SCI_CONFIG  # feeds the startup config print below
+    # Merge both prechunk caches when present (papers/ and papers_large/ are
+    # disjoint corpora, so their MD5 key spaces do not collide).
+    _CHUNK_CACHE = {}
+    for _cache_name in ("chunk_cache.json", "book_chunk_cache.json"):
+        _cache_path = STORAGE_DIR / _cache_name
+        if _cache_path.exists():
+            _loaded = json.loads(_cache_path.read_text())
+            _CHUNK_CACHE.update(_loaded)
+            print(f"[CACHE] Loaded {len(_loaded)} pre-chunked docs from {_cache_name}")
+    if not _CHUNK_CACHE:
+        _CHUNK_CACHE = None
+        print("[CACHE] No chunk caches found — chunking will be computed live")
+    SCIENTIFIC_CHUNKER = make_auto_chunker(
+        sci_config=_SCI_CONFIG,
+        book_config=_BOOK_CONFIG,
+        router_config=_ROUTER_CONFIG,
+        chunk_cache=_CHUNK_CACHE,
+    )
+    print(
+        f"[ROUTER] CHUNKER_TYPE=auto — per-document structure routing "
+        f"(page_threshold={_ROUTER_CONFIG.page_threshold}, "
+        f"min_chapters={_ROUTER_CONFIG.min_chapters}, "
+        f"min_imrad={_ROUTER_CONFIG.min_imrad}, detect_toc={_ROUTER_CONFIG.detect_toc})"
+    )
 else:
     from pipeline.scientific_chunker import ChunkerConfig, make_scientific_chunker
     CHUNKER_CONFIG = ChunkerConfig.from_env()
@@ -245,34 +316,81 @@ def get_embed_model():
 
 _embed_stats = {"calls": 0, "total_s": 0.0, "texts": 0, "concurrent": 0, "max_concurrent": 0}
 
+_http_client = None
+
+
+def _get_http_client():
+    """Lazily-created shared async HTTP client for the remote embedder (Fix 3)."""
+    global _http_client
+    if _http_client is None:
+        import httpx
+        _http_client = httpx.AsyncClient(
+            timeout=float(os.environ.get("EMBED_HTTP_TIMEOUT", 300))
+        )
+    return _http_client
+
+
+async def _remote_embed(texts: list[str], context: str) -> np.ndarray:
+    """Fix 3: embed via an OpenAI-compatible server (scripts/server.py) on a
+    dedicated GPU instead of loading the model in-process. Honors the server's
+    task-aware `context` hook (queries get the instruction, documents don't)."""
+    payload = {"input": texts, "model": EMBED_MODEL_ID, "context": context}
+    url = EMBED_ENDPOINT.rstrip("/") + "/v1/embeddings"
+    resp = await _get_http_client().post(url, json=payload)
+    resp.raise_for_status()
+    data = resp.json()["data"]
+    # OpenAI-compatible responses carry a per-item index; preserve input order.
+    data.sort(key=lambda d: d.get("index", 0))
+    return np.array([d["embedding"] for d in data], dtype=np.float32)
+
+
 async def local_embed(texts: list[str], context: str = "document") -> np.ndarray:
-    model = get_embed_model()
     # Task-aware: queries get the Qwen3 instruction, documents get none. LightRAG
     # passes context="query"/"document" because EmbeddingFunc(supports_asymmetric=True).
     # During ingest/rebuild this is always "document" (chunks, entity/relation
     # descriptions); honored explicitly so the function is correct in any context.
-    prompt = QUERY_PROMPT if context == "query" else None
     loop = asyncio.get_event_loop()
     _embed_stats["concurrent"] += 1
     if _embed_stats["concurrent"] > _embed_stats["max_concurrent"]:
         _embed_stats["max_concurrent"] = _embed_stats["concurrent"]
     t0 = time.time()
-    embeddings = await loop.run_in_executor(
-        None,
-        lambda: model.encode(
-            texts,
-            prompt=prompt,
-            normalize_embeddings=True,
-            batch_size=EMBED_BATCH,
-            show_progress_bar=False,
-        ),
-    )
+    try:
+        if EMBED_ENDPOINT:
+            embeddings = await _remote_embed(texts, context)
+        else:
+            # Fix 2d: use a dedicated executor so embedding never contends with
+            # blocking IO (PDF reads, doc-status polling) on the default pool.
+            model = get_embed_model()
+            prompt = QUERY_PROMPT if context == "query" else None
+            embeddings = await loop.run_in_executor(
+                _EMBED_EXECUTOR,
+                lambda: model.encode(
+                    texts,
+                    prompt=prompt,
+                    normalize_embeddings=True,
+                    batch_size=EMBED_BATCH,
+                    show_progress_bar=False,
+                ),
+            )
+    finally:
+        _embed_stats["concurrent"] -= 1
     elapsed = time.time() - t0
-    _embed_stats["concurrent"] -= 1
     _embed_stats["calls"] += 1
     _embed_stats["total_s"] += elapsed
     _embed_stats["texts"] += len(texts)
     return np.array(embeddings)
+
+
+def _extract_pdf_text(pdf_path: Path) -> str:
+    """Synchronous PDF → text (page boundaries preserved as form-feeds for the
+    chunker). CPU-bound and pure-Python, so callers run it in _IO_EXECUTOR (Fix 2a)
+    to keep it off the event loop."""
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(pdf_path))
+    page_texts = [(page.extract_text() or "").strip() for page in reader.pages]
+    text = "\n\f\n".join(page for page in page_texts if page).strip()
+    return text.replace("<|endofprompt|>", "")
 
 
 # ── Endpoint Discovery & Validation (1A) ──────────────────────────────────────
@@ -389,10 +507,12 @@ def build_round_robin_llm(endpoints: list[str]):
         if history_messages is None:
             history_messages = []
 
-        # Debug: log prompt size and kwargs
+        # Fix 2c: the per-call debug prints are hundreds of flush=True writes/sec at
+        # high LLM_MAX_ASYNC and throttle the event loop — gate them behind LLM_DEBUG.
         prompt_len = len(prompt)
-        kw_keys = [k for k in kwargs if k != "hashing_kv"]
-        print(f"[LLM_DEBUG] llm_func called: prompt_len={prompt_len} chars, extra_kwargs={kw_keys}", flush=True)
+        if LLM_DEBUG:
+            kw_keys = [k for k in kwargs if k != "hashing_kv"]
+            print(f"[LLM_DEBUG] llm_func called: prompt_len={prompt_len} chars, extra_kwargs={kw_keys}", flush=True)
 
         last_error = None
         for attempt in range(3):
@@ -406,7 +526,8 @@ def build_round_robin_llm(endpoints: list[str]):
                 endpoint = _live_endpoints[idx]
 
             try:
-                print(f"[LLM_DEBUG] attempt={attempt+1} sending to {endpoint} prompt_len={prompt_len}", flush=True)
+                if LLM_DEBUG:
+                    print(f"[LLM_DEBUG] attempt={attempt+1} sending to {endpoint} prompt_len={prompt_len}", flush=True)
                 t0 = time.time()
                 result = await openai_complete_if_cache(
                     LLM_MODEL, "/no_think\n" + prompt,
@@ -421,7 +542,8 @@ def build_round_robin_llm(endpoints: list[str]):
                 elapsed_llm = time.time() - t0
                 _llm_stats["calls"] += 1
                 _llm_stats["total_s"] += elapsed_llm
-                print(f"[LLM_DEBUG] SUCCESS in {elapsed_llm:.1f}s, result_len={len(str(result))}", flush=True)
+                if LLM_DEBUG:
+                    print(f"[LLM_DEBUG] SUCCESS in {elapsed_llm:.1f}s, result_len={len(str(result))}", flush=True)
                 return result
             except (ConnectionError, OSError) as e:
                 last_error = e
@@ -483,7 +605,9 @@ async def status_monitor(storage_dir: Path, t_start: float):
             if not status_path.exists():
                 continue
             now = time.time()
-            raw = await asyncio.to_thread(status_path.read_text)
+            raw = await asyncio.get_event_loop().run_in_executor(
+                _IO_EXECUTOR, status_path.read_text
+            )
             data = json.loads(raw)
             counts = {}
             for k, v in data.items():
@@ -598,8 +722,9 @@ async def rebuild_embeddings_from_cache():
         f.unlink()
         print(f"  Removed: {f.name}")
 
-    # ── Pre-load embedding model ──
-    get_embed_model()
+    # ── Pre-load embedding model (skip when served remotely — Fix 3) ──
+    if not EMBED_ENDPOINT:
+        get_embed_model()
 
     # ── Initialize LightRAG (embedding only, no LLM) ──
     async def _dummy_llm(*args, **kwargs):
@@ -615,6 +740,7 @@ async def rebuild_embeddings_from_cache():
             supports_asymmetric=True,  # forward context="query"/"document"
         ),
         embedding_func_max_async=EMBED_FUNC_MAX_ASYNC,
+        embedding_batch_num=EMBEDDING_BATCH_NUM,
     )
     if USE_QDRANT:
         rag_kwargs["vector_storage"] = "QdrantVectorDBStorage"
@@ -808,13 +934,149 @@ async def ingest_native_multimodal(rag, papers):
     print("[VLM] Pipeline drained.", flush=True)
 
 
+async def ingest_streaming_text(rag, papers, known_doc_ids):
+    """Fix 4: stream the text path through LightRAG's native pipeline.
+
+    Instead of per-doc ``ainsert()`` + a per-doc poll loop (each task re-reading the
+    whole growing ``doc_status.json`` every 5 s), read/extract PDFs concurrently in a
+    dedicated IO thread pool, enqueue each as a RAW doc, then drain the pipeline ONCE.
+    LightRAG then streams documents through its parse/extract/merge workers at full
+    ``max_parallel_insert`` concurrency. This uses only LightRAG's public API
+    (``apipeline_enqueue_documents`` + ``apipeline_process_enqueue_documents``) — the
+    same pattern as the VLM path — so the nested LightRAG/ stays patch-free.
+
+    Resume/skip: we keep the text-path ``md5(text) → doc_id`` precompute and the
+    ``known_doc_ids`` filter; LightRAG also dedups by id on enqueue.
+
+    Note: unlike the legacy path this does not set the global ``_current_pdf_path``,
+    so the SIGALRM chunk-timeout still fails a hung document cleanly but no longer
+    moves the offending PDF aside (the producer no longer knows which PDF is being
+    chunked at drain time). This matches the VLM path's behavior.
+
+    Returns ``(enqueued, skipped)``.
+    """
+    loop = asyncio.get_event_loop()
+    read_sem = asyncio.Semaphore(PARALLEL_DOCS)  # bound concurrent PDF reads/enqueues
+    enqueued = skipped = 0
+    counter_lock = asyncio.Lock()
+
+    async def _read_and_enqueue(idx: int, pdf: Path):
+        nonlocal enqueued, skipped
+        async with read_sem:
+            try:
+                text = await loop.run_in_executor(_IO_EXECUTOR, _extract_pdf_text, pdf)
+            except Exception as e:  # noqa: BLE001 — one bad PDF must not abort the batch
+                print(f"[{idx:04d}/{len(papers)}] {pdf.name[:55]} [read failed]  {e}", flush=True)
+                async with counter_lock:
+                    skipped += 1
+                return
+            if not text:
+                async with counter_lock:
+                    skipped += 1
+                return
+            doc_id = "doc-" + hashlib.md5(text.encode("utf-8")).hexdigest()
+            if doc_id in known_doc_ids:
+                async with counter_lock:
+                    skipped += 1
+                return
+            try:
+                await rag.apipeline_enqueue_documents(
+                    text, ids=doc_id, file_paths=str(pdf)
+                )
+                async with counter_lock:
+                    enqueued += 1
+            except Exception as e:  # noqa: BLE001
+                print(f"[{idx:04d}/{len(papers)}] {pdf.name[:55]} [enqueue failed]  {e}", flush=True)
+                async with counter_lock:
+                    skipped += 1
+
+    print(f"Reading + enqueuing {len(papers)} PDFs (read concurrency={PARALLEL_DOCS})…", flush=True)
+    await asyncio.gather(*[_read_and_enqueue(i, p) for i, p in enumerate(papers, 1)])
+    print(
+        f"Enqueued {enqueued} new doc(s) ({skipped} skipped). Draining pipeline "
+        f"(MAX_PARALLEL_INSERT={MAX_PARALLEL_INSERT})…",
+        flush=True,
+    )
+    # Single drain: this call becomes the pipeline driver and processes the whole
+    # queue at MAX_PARALLEL_INSERT concurrency, returning when fully drained.
+    await rag.apipeline_process_enqueue_documents()
+    print("Pipeline drained.", flush=True)
+    return enqueued, skipped
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
+
+def _verify_chunk_method(doc_status_path: Path) -> None:
+    """Post-ingest guard: warn if any *processed* document was chunked by a
+    built-in LightRAG chunker instead of the AP-RAG custom one.
+
+    With no F/R/V/P selector in process_options, the upstream pipeline records
+    ``metadata.chunk_method == "legacy_chunking_func"`` (our chunking_func ran).
+    Any other value (e.g. ``"fixed_token"``) means the custom chunker was
+    bypassed — a silent regression worth shouting about. Docs predating the
+    chunk_method metadata field carry no value and are skipped."""
+    if not doc_status_path.exists():
+        return
+    try:
+        data = json.loads(doc_status_path.read_text())
+    except Exception:
+        return
+    custom = 0
+    bypassed: dict[str, int] = {}
+    for k, v in data.items():
+        if not k.startswith("doc-") or not isinstance(v, dict):
+            continue
+        if v.get("status") != "processed":
+            continue
+        method = (v.get("metadata") or {}).get("chunk_method")
+        if method is None:
+            continue  # pre-dates chunk_method metadata — can't tell
+        if method == "legacy_chunking_func":
+            custom += 1
+        else:
+            bypassed[method] = bypassed.get(method, 0) + 1
+    if bypassed:
+        n = sum(bypassed.values())
+        print(
+            f"\n⚠️  [CHUNKER GUARD] {n} processed doc(s) were chunked by a BUILT-IN "
+            f"LightRAG chunker, NOT the AP-RAG custom chunker: {bypassed}",
+            flush=True,
+        )
+        print(
+            "    The structure-aware chunker was bypassed. Verify process_options "
+            "names no F/R/V/P selector and that chunking_func is wired.",
+            flush=True,
+        )
+    elif custom:
+        print(
+            f"[CHUNKER GUARD] OK — all {custom} processed doc(s) used the custom "
+            f"chunker (chunk_method=legacy_chunking_func).",
+            flush=True,
+        )
+
 
 async def main():
     # ── Rebuild mode: skip full pipeline, only recompute embeddings ──
     if REBUILD_EMBEDDINGS:
         await rebuild_embeddings_from_cache()
         return
+
+    # ── Guard: the custom chunker must not be silently bypassed ──
+    # LightRAG only invokes our injected chunking_func when process_options names
+    # NO chunking selector (F/R/V/P). Any selector makes the upstream dispatcher
+    # route to a built-in chunker and ignore chunking_func — a silent regression
+    # that would chunk the entire corpus with the wrong strategy. Fail fast.
+    try:
+        from lightrag.constants import PROCESS_OPTION_CHUNK_CHARS as _CHUNK_SELECTORS
+    except Exception:
+        _CHUNK_SELECTORS = frozenset("FRVP")
+    _bad_selectors = sorted(set(_CHUNK_SELECTORS) & set(PROCESS_OPTIONS))
+    if _bad_selectors:
+        raise SystemExit(
+            f"PROCESS_OPTIONS={PROCESS_OPTIONS!r} contains chunking selector(s) "
+            f"{_bad_selectors}; this makes LightRAG bypass the AP-RAG structure-aware "
+            f"chunker. Remove {_bad_selectors} from PROCESS_OPTIONS (use only i/t/e)."
+        )
 
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     ENDPOINTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -835,13 +1097,22 @@ async def main():
         print("MAX_DOC_TOKENS (context cap): disabled (contextualization off)")
     print(f"QDRANT_URL    : {QDRANT_URL or '(not set — using NanoVectorDB)'}")
     print(f"INSERT_DONE_N : {INSERT_DONE_EVERY_N}")
-    print(f"Chunker       : scientific (target={CHUNKER_CONFIG.target_tokens}, "
+    print(f"Chunker       : {_CHUNKER_TYPE} (target={CHUNKER_CONFIG.target_tokens}, "
           f"max={CHUNKER_CONFIG.max_tokens}, min={CHUNKER_CONFIG.min_tokens}, "
           f"overlap={CHUNKER_CONFIG.overlap_tokens})")
+    print(f"STREAMING     : {STREAMING_INGEST} (enqueue-all/drain-once text path)")
+    print(f"EMBED         : {'remote ' + EMBED_ENDPOINT if EMBED_ENDPOINT else 'in-process'} "
+          f"(batch_num={EMBEDDING_BATCH_NUM}, func_max_async={EMBED_FUNC_MAX_ASYNC})")
+    if KV_STORAGE or DOC_STATUS_STORAGE:
+        print(f"KV_STORAGE    : {KV_STORAGE or '(default)'} | DOC_STATUS_STORAGE: {DOC_STATUS_STORAGE or '(default)'}")
     print(f"[v2] Endpoint validation, resume support, status monitor, LLM failover\n")
 
-    # Pre-load embedding model now (takes ~1 min) while waiting for vLLM
-    get_embed_model()
+    # Pre-load embedding model now (takes ~1 min) while waiting for vLLM —
+    # skipped when embedding is served remotely on its own GPU (Fix 3).
+    if not EMBED_ENDPOINT:
+        get_embed_model()
+    else:
+        print(f"Embedding served remotely at {EMBED_ENDPOINT} — not loading in-process.", flush=True)
 
     endpoints = discover_endpoints()
 
@@ -886,10 +1157,20 @@ async def main():
         chunking_func=active_chunker,  # 5: structure-aware chunker (+ optional contextualizer)
         llm_model_max_async=LLM_MAX_ASYNC,
         embedding_func_max_async=EMBED_FUNC_MAX_ASYNC,
+        embedding_batch_num=EMBEDDING_BATCH_NUM,  # Fix 3: bigger per-call embed batches
         max_parallel_insert=MAX_PARALLEL_INSERT,
         default_embedding_timeout=300,
         default_llm_timeout=int(os.environ.get("LLM_TIMEOUT", 1800)),
     )
+
+    # Fix 1: opt-in incremental KV/doc-status backends (e.g. Redis) so LightRAG's
+    # per-doc _insert_done() stops rewriting the giant JSON KV stores every document.
+    if KV_STORAGE:
+        rag_kwargs["kv_storage"] = KV_STORAGE
+        print(f"[Fix1] Using kv_storage={KV_STORAGE}")
+    if DOC_STATUS_STORAGE:
+        rag_kwargs["doc_status_storage"] = DOC_STATUS_STORAGE
+        print(f"[Fix1] Using doc_status_storage={DOC_STATUS_STORAGE}")
 
     # 2A: Use Qdrant if QDRANT_URL is set
     if USE_QDRANT:
@@ -1005,9 +1286,9 @@ async def main():
     print(f"Doc status: {status_counts}")
     print(f"Known doc IDs (will skip): {len(known_doc_ids)}")
 
-    print(f"\nFound {len(papers)} papers. Starting ingestion (PARALLEL_DOCS={PARALLEL_DOCS})…\n")
-
-    from pypdf import PdfReader
+    _mode_desc = "streaming enqueue/drain" if STREAMING_INGEST else "per-doc legacy"
+    print(f"\nFound {len(papers)} papers. Starting ingestion "
+          f"({_mode_desc}, PARALLEL_DOCS={PARALLEL_DOCS})…\n")
 
     t_start = time.time()
 
@@ -1021,17 +1302,14 @@ async def main():
     async def process_one(idx: int, pdf_path: Path):
         nonlocal succeeded, failed, skipped
         t_queued = time.time()
+        loop = asyncio.get_event_loop()
         async with sem:
             t_sem_acquired = time.time()
             sem_wait_s = t_sem_acquired - t_queued
             try:
-                reader = PdfReader(str(pdf_path))
-                page_texts = [
-                    (page.extract_text() or "").strip()
-                    for page in reader.pages
-                ]
-                text = "\n\f\n".join(page for page in page_texts if page).strip()
-                text = text.replace("<|endofprompt|>", "")
+                # Fix 2a: PDF extraction is CPU-bound, pure-Python — run it off the
+                # event loop so it can't stall every other in-flight document.
+                text = await loop.run_in_executor(_IO_EXECUTOR, _extract_pdf_text, pdf_path)
                 if not text:
                     print(f"[{idx:04d}/{len(papers)}] {pdf_path.name[:55]} ⚠  Empty — skipping", flush=True)
                     async with counter_lock:
@@ -1065,7 +1343,7 @@ async def main():
                 timed_out = False
                 while True:
                     try:
-                        raw = await asyncio.to_thread(status_file.read_text)
+                        raw = await loop.run_in_executor(_IO_EXECUTOR, status_file.read_text)
                         statuses = json.loads(raw)
                         entry = statuses.get(doc_id, {})
                         if isinstance(entry, dict) and entry.get("status") in ("processed", "failed"):
@@ -1106,8 +1384,14 @@ async def main():
                 async with counter_lock:
                     failed += 1
 
-    tasks = [process_one(i, p) for i, p in enumerate(papers, 1)]
-    await asyncio.gather(*tasks)
+    if STREAMING_INGEST:
+        # Fix 4: enqueue every doc, then drain LightRAG's native pipeline once.
+        # process_one (above) is unused in this mode but kept for the legacy fallback.
+        s_enqueued, s_skipped = await ingest_streaming_text(rag, papers, known_doc_ids)
+        succeeded, skipped = s_enqueued, s_skipped  # failures surface in doc_status below
+    else:
+        tasks = [process_one(i, p) for i, p in enumerate(papers, 1)]
+        await asyncio.gather(*tasks)
 
     # Stop status monitor
     monitor_task.cancel()
@@ -1140,6 +1424,9 @@ async def main():
             print(f"\nFinal doc_status: {final_counts}")
         except Exception:
             pass
+
+    # Post-ingest guard: confirm the custom chunker actually ran (not bypassed).
+    _verify_chunk_method(doc_status_path)
 
 
 if __name__ == "__main__":
