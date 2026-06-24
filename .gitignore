@@ -29,3 +29,18 @@ pdf_name_report.csv
 rename_map.tsv
 rename_review.tsv
 .pytest_cache/
+
+# PDF-renaming / OCR / dedup toolchain: one-off run data, caches, batch I/O (regenerable)
+scripts/*.tsv
+scripts/*.jsonl
+scripts/*_state.json
+scripts/.batch_rename_*.json
+scripts/.llm_cache_*.json
+scripts/.llm_rename_cache.json
+scripts/.gemini_rename_cache.json
+# apa-manifest build caches + smoke-test artifacts (regenerable)
+.crossref_full_cache.json
+.smoke_manifest.json
+.apa_manifest_batch_smoke.json
+*_smoke*.json
+*.log

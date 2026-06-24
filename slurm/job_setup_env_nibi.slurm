@@ -38,7 +38,12 @@ uv pip install vllm --pre --extra-index-url https://wheels.vllm.ai/nightly
 uv pip install git+https://github.com/huggingface/transformers.git
 pip install --quiet pypdf tiktoken numpy
 pip install --quiet "accelerate>=1.1.0" bitsandbytes sentence-transformers
-pip install --quiet "git+https://github.com/devon7y/LightRAG.git"
+# LightRAG: install the nested upstream source shipped alongside this repo.
+# (The devon7y/LightRAG fork URL is private/404 — do not use it here.)
+pip install "$WORKDIR/LightRAG"
+pip install --quiet qdrant-client
+python -c "import lightrag; from lightrag import LightRAG" \
+  || { echo "[$(date)] ERROR: LightRAG import failed after install"; exit 1; }
 echo "[$(date)] Packages installed."
 
 echo "[$(date)] Verifying model weights are present..."

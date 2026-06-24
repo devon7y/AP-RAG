@@ -12,7 +12,8 @@
 WORKDIR=/scratch/devon7y/westbury_rag
 VENV_DIR=$WORKDIR/venv
 ENDPOINTS_DIR=$WORKDIR/vllm_endpoints_westbury_qwen3_32b
-PORT=8001
+# PORT is assigned dynamically (free ephemeral port) after the venv is active,
+# to avoid collisions with other jobs sharing this GPU node.
 
 export HF_HOME=$WORKDIR/hf_cache
 export HF_HUB_OFFLINE=1
@@ -36,6 +37,8 @@ echo "[$(date)] Environment ready (venv activated)."
 
 # Nibi uses all-SSD VAST storage — no NVMe copy needed
 # Model loads directly from scratch at full speed
+PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('0.0.0.0', 0)); print(s.getsockname()[1]); s.close()")
+echo "[$(date)] Selected free port $PORT for vLLM (avoids shared-node collisions)."
 echo "[$(date)] Starting Qwen/Qwen3.6-35B-A3B (BF16, MoE) on 2× H100 (TP=2, 40K context, gpu-util 0.90)..."
 vllm serve Qwen/Qwen3.6-35B-A3B \
   --host 0.0.0.0 \
@@ -60,6 +63,10 @@ for i in $(seq 1 1080); do
   if curl -sf "http://localhost:$PORT/health" > /dev/null 2>&1; then
     echo "[$(date)] vLLM ready after $((i * 10))s"
     break
+  fi
+  if ! kill -0 "$VLLM_PID" 2>/dev/null; then
+    echo "[$(date)] ERROR: vLLM process exited during startup (see .err). Aborting."
+    exit 1
   fi
   if [ $i -eq 1080 ]; then
     echo "[$(date)] ERROR: vLLM did not start within 180 minutes"
