@@ -70,27 +70,50 @@ def test_cr_year_falls_through_date_keys():
     assert b._cr_year({}) == ""
 
 
-def test_finalize_stamps_disambig_and_year_fallback():
+def test_filename_year():
+    assert b._filename_year("Wrathall_2013a.pdf") == "2013"
+    assert b._filename_year("Westbury_Hollis_2019.pdf") == "2019"
+    assert b._filename_year("Agarwal_Etal_2008.pdf") == "2008"
+    assert b._filename_year("no_year_here.pdf") == ""
+
+
+def test_finalize_year_is_authoritative_from_filename():
+    # filename year wins; disambig stamped
     rec = b.finalize_record({"authors": [{"family": "Wrathall"}], "year": ""},
                             "Wrathall_2013a.pdf")
-    assert rec["disambig"] == "a"
-    assert rec["year"] == "2013"  # filled from the filename when missing
+    assert rec["disambig"] == "a" and rec["year"] == "2013"
+    assert "year_flag" not in rec  # nothing to disagree with
 
+    # agreement → no flag
     rec2 = b.finalize_record({"authors": [{"family": "Smith"}], "year": "2020"},
                              "Smith_2020.pdf")
-    assert rec2["disambig"] == "" and rec2["year"] == "2020"
+    assert rec2["year"] == "2020" and "year_flag" not in rec2
+
+    # Crossref/LLM year disagrees with the filename → filename wins + flag recorded
+    rec3 = b.finalize_record({"authors": [{"family": "Smith"}], "year": "2008"},
+                             "Smith_2007.pdf")
+    assert rec3["year"] == "2007"  # filename is authoritative
+    assert rec3["year_flag"] == "filename=2007; document=2008"
+
+    # LLM record (year_on_page, no 'year') still flags against the filename
+    rec4 = b.finalize_record(
+        {"authors": [{"family": "Lee"}], "year_on_page": "2015"}, "Lee_2016.pdf")
+    assert rec4["year"] == "2016" and rec4["year_flag"] == "filename=2016; document=2015"
 
 
-def test_llm_result_to_record_and_rejection():
+def test_llm_result_to_record_verifies_year_not_extracts_it():
     res = {"is_citable_work": True, "type": "book", "title": "T",
            "authors": [{"family": "Martin", "given": "Rod A."}], "editors": [],
-           "year": "2007", "container_title": "", "volume": "", "issue": "",
-           "pages": "", "publisher": "Elsevier", "doi": "",
+           "year_on_page": "2007", "year_matches_filename": True,
+           "container_title": "", "volume": "", "issue": "", "pages": "",
+           "publisher": "Elsevier", "doi": "",
            "keywords": ["humor", "laughter"], "abstract": "An abstract.",
            "subjects": ["Psychology"], "affiliations": ["MIT"], "confidence": "high"}
     rec = b.llm_result_to_record(res)
     assert rec["type"] == "book" and rec["publisher"] == "Elsevier"
     assert rec["source"] == "llm"
+    assert rec["year_on_page"] == "2007" and rec["year_matches_filename"] is True
+    assert "year" not in rec  # year is stamped from the filename in finalize_record
     assert rec["keywords"] == ["humor", "laughter"]
     assert rec["subjects"] == ["Psychology"] and rec["affiliations"] == ["MIT"]
     assert rec["abstract"] == "An abstract."

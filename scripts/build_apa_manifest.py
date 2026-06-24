@@ -1,62 +1,57 @@
 #!/usr/bin/env python3
 """Build ``papers_metadata.json`` — full APA7 bibliographic records keyed by the
-canonical PDF filename.
+canonical PDF filename — using the OpenAI **Batch API** (50% cheaper) for the LLM step.
 
-This is the data behind the APA7 citations the query server emits (see
-``apa_citations.py`` / ``query_server.py``). For every PDF in a corpus directory
-(named ``Author_Year.pdf`` / ``Author1_Author2_Year.pdf`` / ``Author1_Etal_Year.pdf``):
+This is the data behind the APA7 citations + metadata-filtered search the query server
+exposes (see ``apa_citations.py`` / ``aprag_search.py`` / ``query_server.py``). For every
+PDF in a corpus directory (named ``Author_Year.pdf`` / ``Author1_Author2_Year.pdf`` /
+``Author1_Etal_Year.pdf``):
 
-  1. Extract a DOI from the first pages. If found, fetch the **full** Crossref
-     record (all authors, container, volume, issue, pages, type, publisher) — far
-     richer than the ``{family, year}`` that ``verify_pdf_names.py`` caches.
-  2. Otherwise (book, chapter, no-DOI item, or a Crossref miss) ask a multimodal
-     LLM (gpt-5-mini by default, or gemini-2.5-flash) to read the first pages and
-     return the bibliographic fields.
+  1. **Year comes from the filename** — it is canonical and authoritative. Crossref/LLM
+     never *set* the year; they only let us **flag** a disagreement (``year_flag``).
+  2. **DOI present** → fetch the **full** Crossref record synchronously (free): all
+     authors, container, volume, issue, pages, type, subjects, abstract, affiliations.
+  3. **No DOI / Crossref miss** → an LLM call via the **Batch API** reads the first pages
+     and returns the bibliographic fields *and verifies the filename year*.
 
-The disambiguation letter is taken from the canonical filename (``Wrathall_2013a``),
-which is authoritative once the corpus is renamed.
+Three phases (like ``batch_rename.py``):
 
-Both sources are cached so re-running only spends API calls on new papers:
-``.crossref_full_cache.json`` (DOI → record) and ``.apa_llm_cache.json``
-(content-hash → record). Existing entries in the output manifest are kept unless
-``--refresh`` is given.
+    python3 build_apa_manifest.py submit  [DIR]   # Crossref now + submit the LLM batch
+    python3 build_apa_manifest.py status  [DIR]   # poll the batch(es)
+    python3 build_apa_manifest.py collect [DIR]   # merge batch results → papers_metadata.json
 
-Output record shape (consumed by ``apa_citations.load_manifest``):
+State (batch ids + custom_id→filename map) is saved to ``.apa_manifest_batch[_TAG].json``;
+the Crossref portion is written to the manifest at submit time, the LLM portion at collect.
+Re-running ``submit`` skips papers already in the manifest unless ``--refresh``.
 
-    "Westbury_Hollis_2019.pdf": {
-        "type": "article", "authors": [{"family": "...", "given": "..."}],
-        "editors": [], "year": "2019", "title": "...",
-        "container_title": "...", "volume": "...", "issue": "...",
-        "pages": "...", "publisher": "...", "doi": "...",
-        "disambig": "", "source": "crossref"
-    }
-
-Usage:
-    python3 build_apa_manifest.py [DIR] [--out papers_metadata.json]
-    python3 build_apa_manifest.py [DIR] --backend gemini
-    python3 build_apa_manifest.py [DIR] --files Smith_2020.pdf --refresh
-    python3 build_apa_manifest.py [DIR] --no-llm        # Crossref/DOI only
-
-Default DIR is /Users/devon7y/Papers. Crossref + the LLM need internet (run on the
-PC or an HPC login node, never a no-internet compute node).
+Default DIR is /Users/devon7y/Papers. Crossref + the Batch API need internet (run on a
+machine with outbound access; never a no-internet HPC compute node).
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # Only stdlib at import time so the pure transforms below are unit-testable without
-# `requests`/poppler. Heavy helpers are imported lazily inside the functions/main
-# that actually call the network or shell out to poppler.
+# `requests`/poppler. Heavy helpers are imported lazily inside the I/O functions.
 
 DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>)\]]+", re.IGNORECASE)
 _FILENAME_RE = re.compile(r"^.*_(?P<year>\d{4})(?P<dis>[a-z])?\.pdf$", re.IGNORECASE)
+
+OPENAI_FILES_URL = "https://api.openai.com/v1/files"
+OPENAI_BATCHES_URL = "https://api.openai.com/v1/batches"
+MODEL = "gpt-5-mini"
+MAX_BATCH_BYTES = 190_000_000      # OpenAI batch input file limit is 200 MB
+MAX_BATCH_REQUESTS = 40_000        # OpenAI batch request limit is 50k
 
 # Crossref `type` → our coarse type used by the APA formatter.
 _CR_TYPE = {
@@ -79,6 +74,11 @@ _CR_TYPE = {
 
 def _map_type(cr_type: str) -> str:
     return _CR_TYPE.get((cr_type or "").strip().lower(), "other")
+
+
+def _filename_year(name: str) -> str:
+    m = _FILENAME_RE.match(name)
+    return m.group("year") if m else ""
 
 
 def _cr_year(msg: dict) -> str:
@@ -124,7 +124,8 @@ def _str_list(items) -> list[str]:
 
 
 def crossref_to_record(msg: dict, doi: str = "") -> dict:
-    """Map a Crossref ``message`` object to our manifest record schema."""
+    """Map a Crossref ``message`` object to our manifest record schema. The ``year``
+    here is Crossref's own (used only to verify the filename year in finalize_record)."""
     titles = msg.get("title") or []
     containers = msg.get("container-title") or []
     return {
@@ -139,7 +140,6 @@ def crossref_to_record(msg: dict, doi: str = "") -> dict:
         "pages": str(msg.get("page", "")).strip(),
         "publisher": str(msg.get("publisher", "")).strip(),
         "doi": (doi or msg.get("DOI", "")).strip().lower(),
-        # search/filter fields (shared with metadata-filtered search)
         "keywords": [],  # Crossref has no author keywords; the LLM fills these
         "abstract": _strip_jats(msg.get("abstract", "")),
         "subjects": _str_list(msg.get("subject")),
@@ -149,7 +149,11 @@ def crossref_to_record(msg: dict, doi: str = "") -> dict:
 
 
 def llm_result_to_record(res: dict) -> dict | None:
-    """Map an LLM extraction result to our record schema (None if not citable)."""
+    """Map an LLM extraction result to our record schema (None if not citable).
+
+    The LLM no longer supplies the year — it only reports ``year_on_page`` and whether
+    it ``year_matches_filename``; the authoritative year is stamped from the filename in
+    finalize_record."""
     if not res or res.get("_error"):
         return None
     if res.get("is_citable_work") is False:
@@ -158,7 +162,8 @@ def llm_result_to_record(res: dict) -> dict | None:
         "type": (res.get("type") or "other").strip().lower(),
         "authors": _people(res.get("authors")),
         "editors": _people(res.get("editors")),
-        "year": str(res.get("year") or "").strip(),
+        "year_on_page": str(res.get("year_on_page") or "").strip(),
+        "year_matches_filename": res.get("year_matches_filename"),
         "title": (res.get("title") or "").strip(),
         "container_title": (res.get("container_title") or "").strip(),
         "volume": str(res.get("volume") or "").strip(),
@@ -175,19 +180,23 @@ def llm_result_to_record(res: dict) -> dict | None:
 
 
 def finalize_record(record: dict, filename: str) -> dict:
-    """Stamp the filename-authoritative disambiguation letter and a year fallback."""
+    """Stamp the authoritative ``year`` + ``disambig`` from the canonical filename, and
+    flag any disagreement with the year Crossref/the LLM saw (``year_flag``)."""
     m = _FILENAME_RE.match(filename)
-    if m:
-        record["disambig"] = m.group("dis") or ""
-        if not record.get("year"):
-            record["year"] = m.group("year")
-    else:
-        record.setdefault("disambig", "")
+    fy = m.group("year") if m else ""
+    record["disambig"] = (m.group("dis") if m else "") or ""
+    document_year = str(record.get("year") or record.get("year_on_page") or "").strip()[:4]
+    if fy:
+        record["year"] = fy
+        if document_year and document_year != fy:
+            record["year_flag"] = f"filename={fy}; document={document_year}"
+    elif document_year:
+        record["year"] = document_year  # no year in filename → fall back to the document
     return record
 
 
 def has_minimum_fields(record: dict | None) -> bool:
-    """A record is usable if it has at least one author/editor and a year."""
+    """Usable if it has at least one author/editor and a year (year is from the filename)."""
     if not record:
         return False
     if not (record.get("authors") or record.get("editors")):
@@ -195,7 +204,7 @@ def has_minimum_fields(record: dict | None) -> bool:
     return bool(record.get("year"))
 
 
-# ── LLM extraction schemas + prompt ───────────────────────────────────────────
+# ── LLM extraction schema + prompt (year is VERIFIED, not extracted) ──────────
 
 _PERSON_OAI = {
     "type": "object", "additionalProperties": False,
@@ -212,7 +221,8 @@ OPENAI_SCHEMA = {
         "title": {"type": "string"},
         "authors": {"type": "array", "items": _PERSON_OAI},
         "editors": {"type": "array", "items": _PERSON_OAI},
-        "year": {"type": "string"},
+        "year_on_page": {"type": "string"},
+        "year_matches_filename": {"type": "boolean"},
         "container_title": {"type": "string"},
         "volume": {"type": "string"},
         "issue": {"type": "string"},
@@ -225,268 +235,165 @@ OPENAI_SCHEMA = {
         "affiliations": {"type": "array", "items": {"type": "string"}},
         "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
     },
-    "required": ["is_citable_work", "type", "title", "authors", "editors", "year",
-                 "container_title", "volume", "issue", "pages", "publisher", "doi",
-                 "keywords", "abstract", "subjects", "affiliations", "confidence"],
-}
-_PERSON_G = {"type": "OBJECT",
-             "properties": {"family": {"type": "STRING"}, "given": {"type": "STRING"}}}
-GEMINI_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        "is_citable_work": {"type": "BOOLEAN"},
-        "type": {"type": "STRING"},
-        "title": {"type": "STRING"},
-        "authors": {"type": "ARRAY", "items": _PERSON_G},
-        "editors": {"type": "ARRAY", "items": _PERSON_G},
-        "year": {"type": "STRING"},
-        "container_title": {"type": "STRING"},
-        "volume": {"type": "STRING"},
-        "issue": {"type": "STRING"},
-        "pages": {"type": "STRING"},
-        "publisher": {"type": "STRING"},
-        "doi": {"type": "STRING"},
-        "keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
-        "abstract": {"type": "STRING"},
-        "subjects": {"type": "ARRAY", "items": {"type": "STRING"}},
-        "affiliations": {"type": "ARRAY", "items": {"type": "STRING"}},
-        "confidence": {"type": "STRING", "enum": ["high", "medium", "low"]},
-    },
-    "required": ["is_citable_work", "type", "title", "authors", "year", "confidence"],
+    "required": ["is_citable_work", "type", "title", "authors", "editors",
+                 "year_on_page", "year_matches_filename", "container_title", "volume",
+                 "issue", "pages", "publisher", "doi", "keywords", "abstract",
+                 "subjects", "affiliations", "confidence"],
 }
 
-PROMPT = """You are cataloguing a scholarly PDF library. From the document content \
-below, extract the bibliographic facts needed to build a complete APA-7 citation. \
+PROMPT_TEMPLATE = """You are cataloguing a scholarly PDF library. From the document \
+content below, extract the bibliographic facts needed to build a complete APA-7 citation. \
 Rules:
 
-- authors: EVERY author of THIS work, in order, each as {family, given}. `given` \
-is the full given name(s) as printed (e.g. "Chris" or "Geoffrey B."); do not \
-abbreviate to initials. For an edited volume with no authors, leave authors empty \
-and fill editors instead.
-- editors: editors of the containing book (for a book chapter) or of an edited \
-volume; else empty.
-- year: 4-digit publication year of THIS work/edition. Often on the copyright page \
-or journal masthead, not the title page. If truly absent, "".
+- authors: EVERY author of THIS work, in order, each as {{family, given}}. `given` is \
+the full given name(s) as printed (e.g. "Chris" or "Geoffrey B."); do not abbreviate to \
+initials. For an edited volume with no authors, leave authors empty and fill editors.
+- editors: editors of the containing book (for a book chapter) or of an edited volume; \
+else empty.
 - title: the work's own title (article or chapter or book title).
 - container_title: the JOURNAL name for an article, or the BOOK title for a chapter. \
 Empty for a whole book.
 - volume, issue, pages: as printed ("128", "3", "97-123"); "" if absent.
 - publisher: for books/chapters/reports; "" for journal articles.
 - doi: the DOI of THIS work if printed; else "".
-- type: one of article, book, chapter, report, thesis, preprint, other.
-- keywords: the author-supplied keywords/index terms if listed; else a few (3-8) \
-topical terms you infer from the title/abstract. Lowercase noun phrases.
+- year_on_page: the 4-digit publication year of THIS work/edition as printed on the \
+document (copyright page/masthead/journal info); "" if you cannot see it.
+- year_matches_filename: the filename indicates the year is {year_hint}. Set TRUE if the \
+document's publication year matches {year_hint}, FALSE if it clearly differs. If {year_hint} \
+is "unknown" or you cannot tell, set TRUE.
+- keywords: the author-supplied keywords/index terms if listed; else a few (3-8) topical \
+terms you infer from the title/abstract. Lowercase noun phrases.
 - abstract: the work's abstract verbatim if present on these pages; else "".
-- subjects: 1-4 broad field/discipline labels (e.g. "Cognitive Psychology", \
-"Linguistics", "Neuroscience").
-- affiliations: the distinct institutions/universities of the authors as printed; \
-else [].
-- is_citable_work: TRUE for any single scholarly work (article, preprint, thesis, \
-report, book chapter, or whole book). FALSE for a table of contents, index, \
-bibliography, questionnaire, manual, syllabus, cover sheet, or supplementary file.
+- subjects: 1-4 broad field/discipline labels (e.g. "Cognitive Psychology", "Linguistics").
+- affiliations: the distinct institutions/universities of the authors as printed; else [].
+- is_citable_work: TRUE for any single scholarly work (article, preprint, thesis, report, \
+book chapter, or whole book). FALSE for a table of contents, index, bibliography, \
+questionnaire, manual, syllabus, cover sheet, or supplementary file.
 - confidence: high/medium/low for your overall extraction.
 
 Return JSON matching the schema."""
 
 
-def _openai_call(path: Path, model: str, key: str, reasoning: str,
-                 usage: dict, lock: "threading.Lock"):
-    import time
+# ── PDF helpers ────────────────────────────────────────────────────────────────
 
-    import requests
-    from llm_rename import first_pages_text, first_pages_png
 
-    text = first_pages_text(path, pages=4)
+def _first_pages_text(path: Path, pages: int = 2) -> str:
+    """First-pages text via poppler's pdftotext (layout-preserving)."""
+    try:
+        out = subprocess.run(
+            ["pdftotext", "-f", "1", "-l", str(pages), "-layout", str(path), "-"],
+            capture_output=True, timeout=60)
+        return out.stdout.decode("utf-8", "ignore")
+    except Exception:
+        return ""
+
+
+def _jpegs(path: Path, pages: int = 2, dpi: int = 100) -> list[bytes]:
+    """Rasterize the first pages to compact JPEGs (for scanned PDFs in vision mode)."""
+    out: list[bytes] = []
+    with tempfile.TemporaryDirectory() as td:
+        stem = os.path.join(td, "p")
+        try:
+            subprocess.run(
+                ["pdftoppm", "-jpeg", "-jpegopt", "quality=50", "-r", str(dpi),
+                 "-f", "1", "-l", str(pages), str(path), stem],
+                capture_output=True, timeout=120, check=True,
+            )
+        except Exception:
+            return out
+        for f in sorted(Path(td).glob("p*.jpg")):
+            out.append(f.read_bytes())
+    return out
+
+
+def _build_request(custom_id: str, path: Path, text: str) -> dict | None:
+    """Build one Batch-API chat-completion request (text, else page images)."""
+    year_hint = _filename_year(path.name) or "unknown"
+    prompt = PROMPT_TEMPLATE.format(year_hint=year_hint)
     if len(text.strip()) >= 200:
-        content = [{"type": "text", "text": "DOCUMENT TEXT:\n\n" + text[:9000]}]
+        content: list = [{"type": "text", "text": "DOCUMENT TEXT:\n\n" + text[:9000]}]
     else:
-        import base64
-        pngs = first_pages_png(path)
-        if not pngs:
-            return {"_error": "no text and could not rasterize"}
+        imgs = _jpegs(path)
+        if not imgs:
+            return None
         content = [{"type": "text", "text": "The document pages are attached as images."}]
-        for png in pngs[:2]:
-            b64 = base64.b64encode(png).decode()
+        for im in imgs[:2]:
+            b64 = base64.b64encode(im).decode()
             content.append({"type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{b64}"}})
-
-    body = {"model": model,
-            "messages": [{"role": "system", "content": PROMPT},
-                         {"role": "user", "content": content}],
-            "response_format": {"type": "json_schema",
-                                "json_schema": {"name": "apa_biblio", "strict": True,
-                                                "schema": OPENAI_SCHEMA}},
-            "reasoning_effort": reasoning,
-            "max_completion_tokens": 4000}
-    delay = 4.0
-    for attempt in range(5):
-        try:
-            r = requests.post("https://api.openai.com/v1/chat/completions",
-                              headers={"Authorization": f"Bearer {key}"},
-                              json=body, timeout=180)
-        except requests.RequestException:
-            time.sleep(delay)
-            delay *= 2
-            continue
-        if r.status_code == 200:
-            j = r.json()
-            u = j.get("usage", {})
-            with lock:
-                usage["in"] += u.get("prompt_tokens", 0)
-                usage["out"] += u.get("completion_tokens", 0)
-            msg = j.get("choices", [{}])[0].get("message", {})
-            if msg.get("refusal"):
-                return {"_error": "refusal"}
-            try:
-                return json.loads(msg["content"])
-            except (KeyError, TypeError, ValueError):
-                return {"_error": "unparseable response"}
-        if r.status_code == 429:
-            low = r.text.lower()
-            if "insufficient_quota" in low or "billing" in low:
-                raise RuntimeError(f"QUOTA_EXHAUSTED: {r.text[:160]}")
-            if attempt == 4:
-                raise RuntimeError("RATE_LIMITED")
-            time.sleep(delay)
-            delay *= 2
-            continue
-        if r.status_code >= 500:
-            if attempt == 4:
-                return {"_error": f"HTTP {r.status_code}"}
-            time.sleep(delay)
-            delay *= 2
-            continue
-        return {"_error": f"HTTP {r.status_code}: {r.text[:140]}"}
-    return {"_error": "no result"}
+                            "image_url": {"url": "data:image/jpeg;base64," + b64}})
+    body = {
+        "model": MODEL,
+        "messages": [{"role": "system", "content": prompt},
+                     {"role": "user", "content": content}],
+        "response_format": {"type": "json_schema",
+                            "json_schema": {"name": "apa_biblio", "strict": True,
+                                            "schema": OPENAI_SCHEMA}},
+        "reasoning_effort": "low",
+        "max_completion_tokens": 4000,
+    }
+    return {"custom_id": custom_id, "method": "POST",
+            "url": "/v1/chat/completions", "body": body}
 
 
-def _gemini_call(path: Path, model: str, key: str):
-    import base64
-    import time
-    import requests
-    from llm_rename import first_pages_text, first_pages_png
-
-    text = first_pages_text(path, pages=4)
-    if len(text.strip()) >= 200:
-        parts = [{"text": PROMPT + "\n\nDOCUMENT TEXT:\n\n" + text[:9000]}]
-    else:
-        pngs = first_pages_png(path)
-        if not pngs:
-            return {"_error": "no text and could not rasterize"}
-        parts = [{"text": PROMPT + "\n\nThe document pages are attached as images."}]
-        for png in pngs[:2]:
-            parts.append({"inline_data": {"mime_type": "image/png",
-                                          "data": base64.b64encode(png).decode()}})
-    body = {"contents": [{"parts": parts}],
-            "generationConfig": {"responseMimeType": "application/json",
-                                 "responseSchema": GEMINI_SCHEMA, "temperature": 0}}
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    delay = 5.0
-    for attempt in range(4):
-        try:
-            r = requests.post(url, params={"key": key}, json=body, timeout=120)
-        except requests.RequestException:
-            time.sleep(delay)
-            delay *= 2.5
-            continue
-        if r.status_code == 200:
-            try:
-                txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                return json.loads(txt)
-            except (KeyError, IndexError, ValueError):
-                return {"_error": "unparseable response"}
-        if r.status_code == 429:
-            if attempt == 3:
-                raise RuntimeError("RATE_LIMITED")
-            time.sleep(delay)
-            delay *= 2.5
-            continue
-        return {"_error": f"HTTP {r.status_code}: {r.text[:140]}"}
-    return {"_error": "no result"}
-
-
-# ── Crossref (full record) ────────────────────────────────────────────────────
-
-
-def crossref_full(doi: str, mailto: str, cache: dict) -> dict | None:
+def crossref_full(doi: str, mailto: str, cache: dict, lock: "threading.Lock") -> dict | None:
     """Fetch + cache the full Crossref record for a DOI, mapped to our schema."""
     import requests
     doi = doi.rstrip(".,;").lower()
-    if doi in cache:
-        return cache[doi]
+    with lock:
+        if doi in cache:
+            return cache[doi]
     try:
         r = requests.get(f"https://api.crossref.org/works/{doi}",
                          params={"mailto": mailto},
                          headers={"User-Agent": f"aprag-apa/1.0 (mailto:{mailto})"},
                          timeout=25)
-        if r.status_code != 200:
-            cache[doi] = None
-            return None
-        rec = crossref_to_record(r.json().get("message", {}), doi)
-        cache[doi] = rec
-        return rec
+        rec = crossref_to_record(r.json().get("message", {}), doi) if r.status_code == 200 else None
     except Exception:
-        cache[doi] = None
-        return None
+        rec = None
+    with lock:
+        cache[doi] = rec
+    return rec
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── File / state helpers ───────────────────────────────────────────────────────
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("directory", nargs="?", default="/Users/devon7y/Papers")
-    ap.add_argument("--out", default="papers_metadata.json")
-    ap.add_argument("--backend", choices=["openai", "gemini"], default="openai")
-    ap.add_argument("--model", default=None,
-                    help="default: gpt-5-mini (openai) / gemini-2.5-flash (gemini)")
-    ap.add_argument("--files", nargs="*", help="only these basenames")
-    ap.add_argument("--jobs", type=int, default=6)
-    ap.add_argument("--reasoning", choices=["minimal", "low", "medium", "high"],
-                    default="low", help="OpenAI reasoning effort")
-    ap.add_argument("--limit", type=int, default=0, help="cap number of papers processed")
-    ap.add_argument("--refresh", action="store_true",
-                    help="rebuild even papers already present in the output manifest")
-    ap.add_argument("--no-llm", action="store_true",
-                    help="Crossref/DOI only; leave non-DOI papers to the filename fallback")
-    ap.add_argument("--mailto", default=os.environ.get("CROSSREF_MAILTO", "devon7y@gmail.com"))
-    ap.add_argument("--crossref-cache", default=".crossref_full_cache.json")
-    ap.add_argument("--llm-cache", default=".apa_llm_cache.json")
-    args = ap.parse_args()
+def _load(path: str) -> dict:
+    p = Path(path)
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            return {}
+    return {}
 
-    # llm_rename lives next to this script; reuse its PDF helpers.
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from llm_rename import file_hash, first_pages_text  # noqa: F401  (lazy import)
 
-    if not args.model:
-        args.model = "gpt-5-mini" if args.backend == "openai" else "gemini-2.5-flash"
-    key = None
-    if not args.no_llm:
-        key_var = "OPENAI_API_KEY" if args.backend == "openai" else "GEMINI_API_KEY"
-        key = os.environ.get(key_var)
-        if not key:
-            print(f"warning: {key_var} not set — running Crossref/DOI only "
-                  "(non-DOI papers will use the filename fallback)", file=sys.stderr)
-            args.no_llm = True
+def _save(path: str, obj) -> None:
+    Path(path).write_text(json.dumps(obj, indent=1, ensure_ascii=False))
 
+
+def _state_path(tag: str | None) -> Path:
+    return Path(f".apa_manifest_batch{('_' + tag) if tag else ''}.json")
+
+
+# ── submit ───────────────────────────────────────────────────────────────────
+
+
+def submit(args) -> int:
+    import requests
+
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key:
+        print("error: OPENAI_API_KEY not set", file=sys.stderr)
+        return 2
+    headers = {"Authorization": f"Bearer {key}"}
     root = Path(args.directory).expanduser()
     if not root.is_dir():
         print(f"error: {root} is not a directory", file=sys.stderr)
         return 2
 
-    def _load(path):
-        p = Path(path)
-        if p.exists():
-            try:
-                return json.loads(p.read_text())
-            except Exception:
-                return {}
-        return {}
-
     manifest = _load(args.out)
     cr_cache = _load(args.crossref_cache)
-    llm_cache = _load(args.llm_cache)
     lock = threading.Lock()
 
     pdfs = sorted(p for p in root.iterdir()
@@ -497,79 +404,214 @@ def main() -> int:
     todo = [p for p in pdfs if args.refresh or p.name not in manifest]
     if args.limit:
         todo = todo[: args.limit]
-
     print(f"{len(pdfs)} PDFs; {len(pdfs) - len(todo)} already in manifest; "
-          f"building {len(todo)} "
-          f"({'Crossref only' if args.no_llm else args.backend + ' + Crossref'}) ...",
-          file=sys.stderr)
+          f"processing {len(todo)} ...", file=sys.stderr)
 
-    usage = {"in": 0, "out": 0}
+    # Phase A+B: read first pages, resolve DOIs via Crossref (free), queue the rest.
+    cr_hits = 0
 
-    def build_one(p: Path) -> dict:
-        # 1. DOI → full Crossref
-        text = first_pages_text(p, pages=2)
+    def process(p: Path):
+        text = _first_pages_text(p, pages=2)
         doi_m = DOI_RE.search(text)
         if doi_m:
-            rec = crossref_full(doi_m.group(0).rstrip(".,;)"), args.mailto, cr_cache)
-            if has_minimum_fields(rec):
-                return finalize_record(dict(rec), p.name)
-        # 2. LLM (content-hash cached)
-        if not args.no_llm:
-            h = file_hash(p)
-            with lock:
-                cached = llm_cache.get(h) if h else None
-            if cached is None:
-                if args.backend == "openai":
-                    res = _openai_call(p, args.model, key, args.reasoning, usage, lock)
-                else:
-                    res = _gemini_call(p, args.model, key)
-                if h:
-                    with lock:
-                        llm_cache[h] = res
-            else:
-                res = cached
-            rec = llm_result_to_record(res)
-            if has_minimum_fields(rec):
-                return finalize_record(rec, p.name)
-        # 3. nothing usable → leave to the filename fallback at render time
-        return {}
-
-    done = 0
-    quota = ""
-    with ThreadPoolExecutor(max_workers=args.jobs) as ex:
-        futs = {ex.submit(build_one, p): p for p in todo}
-        for fut in as_completed(futs):
-            p = futs[fut]
-            try:
-                rec = fut.result()
-            except RuntimeError as e:
-                quota = quota or str(e)
-                continue
+            rec = crossref_full(doi_m.group(0).rstrip(".,;)"), args.mailto, cr_cache, lock)
             if rec:
-                with lock:
-                    manifest[p.name] = rec
-            done += 1
-            if done % 25 == 0:
-                Path(args.out).write_text(json.dumps(manifest, indent=1, ensure_ascii=False))
-                Path(args.crossref_cache).write_text(json.dumps(cr_cache))
-                Path(args.llm_cache).write_text(json.dumps(llm_cache, ensure_ascii=False))
-                print(f"  ...{done}/{len(todo)}", file=sys.stderr)
+                rec = finalize_record(dict(rec), p.name)
+                if has_minimum_fields(rec):
+                    return ("crossref", p.name, rec)
+        return ("llm", p.name, text, p)
 
-    Path(args.out).write_text(json.dumps(manifest, indent=1, ensure_ascii=False))
-    Path(args.crossref_cache).write_text(json.dumps(cr_cache))
-    Path(args.llm_cache).write_text(json.dumps(llm_cache, ensure_ascii=False))
+    pending: list[tuple] = []
+    done = 0
+    with ThreadPoolExecutor(max_workers=args.jobs) as ex:
+        for fut in as_completed([ex.submit(process, p) for p in todo]):
+            r = fut.result()
+            with lock:
+                if r[0] == "crossref":
+                    manifest[r[1]] = r[2]
+                    cr_hits += 1
+                else:
+                    pending.append((r[1], r[3], r[2]))  # (name, path, text)
+                done += 1
+                if done % 250 == 0:
+                    print(f"  ...scanned {done}/{len(todo)} (crossref {cr_hits})",
+                          file=sys.stderr)
+    _save(args.out, manifest)
+    _save(args.crossref_cache, cr_cache)
+    print(f"Crossref resolved {cr_hits}; {len(pending)} need the LLM batch.", file=sys.stderr)
 
-    n_cr = sum(1 for r in manifest.values() if r.get("source") == "crossref")
-    n_llm = sum(1 for r in manifest.values() if r.get("source") == "llm")
-    print(f"\n=== manifest: {args.out} ({len(manifest)} records: "
-          f"{n_cr} crossref, {n_llm} llm) ===", file=sys.stderr)
-    if usage["in"] or usage["out"]:
-        print(f"  tokens this run: {usage['in']:,} in / {usage['out']:,} out",
-              file=sys.stderr)
-    if quota:
-        print(f"\n!! {quota} — cached what completed; re-run to continue.",
-              file=sys.stderr)
+    if not pending:
+        print("nothing to batch — manifest is complete from Crossref.", file=sys.stderr)
+        _state_path(args.tag).write_text(json.dumps(
+            {"batches": [], "map": {}, "dir": str(root), "out": args.out}))
+        return 0
+
+    # Phase C: build batch JSONL request lines, chunk by size/count, upload + create.
+    cmap: dict[str, str] = {}
+    lines: list[str] = []
+    for i, (name, path, text) in enumerate(pending):
+        cid = f"m{i:06d}"
+        req = _build_request(cid, path, text)
+        if req is None:
+            continue  # unreadable scan; left to the filename fallback at render time
+        cmap[cid] = name
+        lines.append(json.dumps(req))
+
+    batches: list[str] = []
+    chunk: list[str] = []
+    chunk_bytes = 0
+
+    def flush(chunk_lines: list[str]) -> None:
+        if not chunk_lines:
+            return
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as tf:
+            tf.write("\n".join(chunk_lines) + "\n")
+            tmp = tf.name
+        try:
+            with open(tmp, "rb") as fh:
+                up = requests.post(OPENAI_FILES_URL, headers=headers,
+                                   files={"file": (Path(tmp).name, fh)},
+                                   data={"purpose": "batch"}, timeout=600)
+            up.raise_for_status()
+            fid = up.json()["id"]
+            b = requests.post(OPENAI_BATCHES_URL, headers=headers,
+                              json={"input_file_id": fid,
+                                    "endpoint": "/v1/chat/completions",
+                                    "completion_window": "24h"}, timeout=60)
+            b.raise_for_status()
+            batches.append(b.json()["id"])
+        finally:
+            os.unlink(tmp)
+
+    for line in lines:
+        ln = len(line) + 1
+        if chunk and (chunk_bytes + ln > MAX_BATCH_BYTES or len(chunk) >= MAX_BATCH_REQUESTS):
+            flush(chunk)
+            chunk, chunk_bytes = [], 0
+        chunk.append(line)
+        chunk_bytes += ln
+    flush(chunk)
+
+    _state_path(args.tag).write_text(json.dumps(
+        {"batches": batches, "map": cmap, "dir": str(root), "out": args.out}))
+    print(f"submitted {len(lines)} requests across {len(batches)} batch(es): "
+          f"{', '.join(batches)}")
+    print(f"check with:  python3 {Path(__file__).name} status"
+          + (f" --tag {args.tag}" if args.tag else ""))
     return 0
+
+
+# ── status ───────────────────────────────────────────────────────────────────
+
+
+def _batch_info(batch_id: str, headers: dict) -> dict:
+    import requests
+    return requests.get(f"{OPENAI_BATCHES_URL}/{batch_id}", headers=headers, timeout=30).json()
+
+
+def status(args) -> int:
+    key = os.environ.get("OPENAI_API_KEY")
+    headers = {"Authorization": f"Bearer {key}"}
+    st = _load(str(_state_path(args.tag)))
+    if not st.get("batches"):
+        print("no batches in state (Crossref-only run, or not submitted yet).")
+        return 0
+    all_done = True
+    for bid in st["batches"]:
+        j = _batch_info(bid, headers)
+        rc = j.get("request_counts", {})
+        print(f"{bid}  {j.get('status')}  "
+              f"completed={rc.get('completed')}/{rc.get('total')} failed={rc.get('failed')}")
+        if j.get("status") != "completed":
+            all_done = False
+    print("ALL COMPLETE — run `collect`." if all_done else "not all complete yet.")
+    return 0
+
+
+# ── collect ──────────────────────────────────────────────────────────────────
+
+
+def collect(args) -> int:
+    import requests
+    key = os.environ.get("OPENAI_API_KEY")
+    headers = {"Authorization": f"Bearer {key}"}
+    st = _load(str(_state_path(args.tag)))
+    cmap = st.get("map", {})
+    out_path = st.get("out", args.out)
+    manifest = _load(out_path)
+
+    if not st.get("batches"):
+        print("no batches to collect (Crossref-only run).")
+        return 0
+
+    usage = {"in": 0, "out": 0}
+    n_llm = 0
+    flags = 0
+    for bid in st["batches"]:
+        j = _batch_info(bid, headers)
+        if j.get("status") != "completed":
+            print(f"{bid} is {j.get('status')}, not completed — aborting.", file=sys.stderr)
+            return 1
+        out = requests.get(f"{OPENAI_FILES_URL}/{j['output_file_id']}/content",
+                           headers=headers, timeout=600).text
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            o = json.loads(line)
+            name = cmap.get(o["custom_id"])
+            if not name:
+                continue
+            try:
+                body = o["response"]["body"]
+                u = body.get("usage", {})
+                usage["in"] += u.get("prompt_tokens", 0)
+                usage["out"] += u.get("completion_tokens", 0)
+                res = json.loads(body["choices"][0]["message"]["content"])
+            except Exception:
+                res = None
+            rec = llm_result_to_record(res)
+            if rec:
+                rec = finalize_record(rec, name)
+                if has_minimum_fields(rec):
+                    manifest[name] = rec
+                    n_llm += 1
+                    if rec.get("year_flag"):
+                        flags += 1
+
+    _save(out_path, manifest)
+    cost = (usage["in"] / 1e6 * 0.25 + usage["out"] / 1e6 * 2.0) * 0.5  # 50% batch discount
+    n_cr = sum(1 for r in manifest.values() if r.get("source") == "crossref")
+    print(f"\n=== manifest: {out_path} ({len(manifest)} records: {n_cr} crossref, "
+          f"{n_llm} llm this collect) ===")
+    print(f"  year mismatches flagged (year_flag): {flags}")
+    print(f"  batch tokens: {usage['in']:,} in / {usage['out']:,} out  (~${cost:.2f} w/ batch discount)")
+    return 0
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("cmd", choices=["submit", "status", "collect"])
+    ap.add_argument("directory", nargs="?", default="/Users/devon7y/Papers")
+    ap.add_argument("--out", default="papers_metadata.json")
+    ap.add_argument("--files", nargs="*", help="only these basenames")
+    ap.add_argument("--jobs", type=int, default=12)
+    ap.add_argument("--limit", type=int, default=0, help="cap number of papers processed")
+    ap.add_argument("--refresh", action="store_true",
+                    help="rebuild even papers already present in the output manifest")
+    ap.add_argument("--mailto", default=os.environ.get("CROSSREF_MAILTO", "devon7y@gmail.com"))
+    ap.add_argument("--crossref-cache", default=".crossref_full_cache.json")
+    ap.add_argument("--tag", help="namespace for the batch state file (for a 2nd pass)")
+    args = ap.parse_args()
+
+    if args.cmd == "submit":
+        return submit(args)
+    if args.cmd == "status":
+        return status(args)
+    return collect(args)
 
 
 if __name__ == "__main__":
