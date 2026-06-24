@@ -1,0 +1,325 @@
+{
+  "embed_model": "Qwen/Qwen3-Embedding-8B",
+  "dtype": "bfloat16",
+  "query_instruction": "Given a question about scientific literature, retrieve relevant passages from academic papers that answer the question",
+  "n_docs": 67,
+  "n_questions": 153,
+  "chroma_official": {
+    "locator": false,
+    "chunkers": false
+  },
+  "retrieval_ks": [
+    5,
+    10
+  ],
+  "results": [
+    {
+      "config": "sci-256",
+      "kind": "scientific",
+      "size": 256,
+      "overlap": 48,
+      "n_chunks": 4895,
+      "mean_chunk_tokens": 243.9,
+      "locate_miss_pct": 1.6,
+      "metrics": {
+        "@5": {
+          "recall": 0.5228,
+          "precision": 0.0128,
+          "iou": 0.0128
+        },
+        "@10": {
+          "recall": 0.6666,
+          "precision": 0.0082,
+          "iou": 0.0082
+        }
+      },
+      "seconds": 129.4
+    },
+    {
+      "config": "fixed-256",
+      "kind": "fixed",
+      "size": 256,
+      "overlap": 48,
+      "n_chunks": 6695,
+      "mean_chunk_tokens": 254.3,
+      "locate_miss_pct": 0.2,
+      "metrics": {
+        "@5": {
+          "recall": 0.7175,
+          "precision": 0.0206,
+          "iou": 0.0208
+        },
+        "@10": {
+          "recall": 0.8548,
+          "precision": 0.012,
+          "iou": 0.0121
+        }
+      },
+      "seconds": 138.9
+    },
+    {
+      "config": "recursive-256",
+      "kind": "recursive",
+      "size": 256,
+      "overlap": 48,
+      "n_chunks": 5704,
+      "mean_chunk_tokens": 242.4,
+      "locate_miss_pct": 0.0,
+      "metrics": {
+        "@5": {
+          "recall": 0.5823,
+          "precision": 0.0181,
+          "iou": 0.0181
+        },
+        "@10": {
+          "recall": 0.7248,
+          "precision": 0.0109,
+          "iou": 0.0109
+        }
+      },
+      "seconds": 125.0
+    },
+    {
+      "config": "sci-384",
+      "kind": "scientific",
+      "size": 384,
+      "overlap": 72,
+      "n_chunks": 3690,
+      "mean_chunk_tokens": 320.7,
+      "locate_miss_pct": 1.6,
+      "metrics": {
+        "@5": {
+          "recall": 0.5621,
+          "precision": 0.0098,
+          "iou": 0.0098
+        },
+        "@10": {
+          "recall": 0.6863,
+          "precision": 0.0058,
+          "iou": 0.0058
+        }
+      },
+      "seconds": 131.4
+    },
+    {
+      "config": "fixed-384",
+      "kind": "fixed",
+      "size": 384,
+      "overlap": 72,
+      "n_chunks": 4475,
+      "mean_chunk_tokens": 380.3,
+      "locate_miss_pct": 0.2,
+      "metrics": {
+        "@5": {
+          "recall": 0.6265,
+          "precision": 0.012,
+          "iou": 0.012
+        },
+        "@10": {
+          "recall": 0.7859,
+          "precision": 0.0075,
+          "iou": 0.0075
+        }
+      },
+      "seconds": 144.1
+    },
+    {
+      "config": "recursive-384",
+      "kind": "recursive",
+      "size": 384,
+      "overlap": 72,
+      "n_chunks": 3775,
+      "mean_chunk_tokens": 366.5,
+      "locate_miss_pct": 0.0,
+      "metrics": {
+        "@5": {
+          "recall": 0.569,
+          "precision": 0.0114,
+          "iou": 0.0114
+        },
+        "@10": {
+          "recall": 0.7021,
+          "precision": 0.0071,
+          "iou": 0.0071
+        }
+      },
+      "seconds": 126.0
+    },
+    {
+      "config": "sci-512",
+      "kind": "scientific",
+      "size": 512,
+      "overlap": 96,
+      "n_chunks": 3085,
+      "mean_chunk_tokens": 382.1,
+      "locate_miss_pct": 1.2,
+      "metrics": {
+        "@5": {
+          "recall": 0.5359,
+          "precision": 0.0073,
+          "iou": 0.0073
+        },
+        "@10": {
+          "recall": 0.6863,
+          "precision": 0.0045,
+          "iou": 0.0045
+        }
+      },
+      "seconds": 137.1
+    },
+    {
+      "config": "fixed-512",
+      "kind": "fixed",
+      "size": 512,
+      "overlap": 96,
+      "n_chunks": 3362,
+      "mean_chunk_tokens": 505.9,
+      "locate_miss_pct": 0.2,
+      "metrics": {
+        "@5": {
+          "recall": 0.6236,
+          "precision": 0.0089,
+          "iou": 0.0089
+        },
+        "@10": {
+          "recall": 0.781,
+          "precision": 0.0057,
+          "iou": 0.0057
+        }
+      },
+      "seconds": 142.8
+    },
+    {
+      "config": "recursive-512",
+      "kind": "recursive",
+      "size": 512,
+      "overlap": 96,
+      "n_chunks": 2830,
+      "mean_chunk_tokens": 489.0,
+      "locate_miss_pct": 0.0,
+      "metrics": {
+        "@5": {
+          "recall": 0.5898,
+          "precision": 0.0088,
+          "iou": 0.0088
+        },
+        "@10": {
+          "recall": 0.7338,
+          "precision": 0.0056,
+          "iou": 0.0056
+        }
+      },
+      "seconds": 130.4
+    },
+    {
+      "config": "sci-800",
+      "kind": "scientific",
+      "size": 800,
+      "overlap": 150,
+      "n_chunks": 2502,
+      "mean_chunk_tokens": 469.9,
+      "locate_miss_pct": 1.3,
+      "metrics": {
+        "@5": {
+          "recall": 0.5425,
+          "precision": 0.0055,
+          "iou": 0.0055
+        },
+        "@10": {
+          "recall": 0.6928,
+          "precision": 0.0033,
+          "iou": 0.0033
+        }
+      },
+      "seconds": 148.4
+    },
+    {
+      "config": "fixed-800",
+      "kind": "fixed",
+      "size": 800,
+      "overlap": 150,
+      "n_chunks": 2160,
+      "mean_chunk_tokens": 786.3,
+      "locate_miss_pct": 0.2,
+      "metrics": {
+        "@5": {
+          "recall": 0.648,
+          "precision": 0.0062,
+          "iou": 0.0062
+        },
+        "@10": {
+          "recall": 0.8439,
+          "precision": 0.0041,
+          "iou": 0.0041
+        }
+      },
+      "seconds": 143.2
+    },
+    {
+      "config": "recursive-800",
+      "kind": "recursive",
+      "size": 800,
+      "overlap": 150,
+      "n_chunks": 1797,
+      "mean_chunk_tokens": 770.3,
+      "locate_miss_pct": 0.0,
+      "metrics": {
+        "@5": {
+          "recall": 0.6236,
+          "precision": 0.006,
+          "iou": 0.006
+        },
+        "@10": {
+          "recall": 0.7525,
+          "precision": 0.0037,
+          "iou": 0.0037
+        }
+      },
+      "seconds": 141.3
+    },
+    {
+      "config": "sci-512-ov0",
+      "kind": "scientific",
+      "size": 512,
+      "overlap": 0,
+      "n_chunks": 3085,
+      "mean_chunk_tokens": 348.2,
+      "locate_miss_pct": 1.2,
+      "metrics": {
+        "@5": {
+          "recall": 0.5621,
+          "precision": 0.0084,
+          "iou": 0.0084
+        },
+        "@10": {
+          "recall": 0.6797,
+          "precision": 0.0049,
+          "iou": 0.0049
+        }
+      },
+      "seconds": 125.0
+    },
+    {
+      "config": "sci-512-ov51",
+      "kind": "scientific",
+      "size": 512,
+      "overlap": 51,
+      "n_chunks": 3085,
+      "mean_chunk_tokens": 366.1,
+      "locate_miss_pct": 1.2,
+      "metrics": {
+        "@5": {
+          "recall": 0.5229,
+          "precision": 0.0075,
+          "iou": 0.0075
+        },
+        "@10": {
+          "recall": 0.6797,
+          "precision": 0.0047,
+          "iou": 0.0047
+        }
+      },
+      "seconds": 130.1
+    }
+  ]
+}

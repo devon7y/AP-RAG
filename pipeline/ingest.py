@@ -40,10 +40,10 @@ Environment variables (set by job_westbury_ingest_v2.slurm):
     INSERT_DONE_EVERY_N  — flush storage every N docs instead of every 1 (3A, default 1)
     REBUILD_EMBEDDINGS   — if "1", skip LLM pipeline and rebuild vector DBs from cache (4)
     REBUILD_BATCH_SIZE   — records per upsert batch during rebuild (default 50)
-    CHUNK_TARGET_TOKENS  — target chunk size in tokens (5, default 800)
-    CHUNK_MAX_TOKENS     — hard max chunk size in tokens (5, default 1000)
-    CHUNK_MIN_TOKENS     — min chunk size; smaller tails are rebalanced (5, default 300)
-    CHUNK_OVERLAP_TOKENS — sentence-aware overlap between chunks (5, default 150)
+    CHUNK_TARGET_TOKENS  — target chunk size in tokens (5, default 512)
+    CHUNK_MAX_TOKENS     — hard max chunk size in tokens (5, default 640)
+    CHUNK_MIN_TOKENS     — min chunk size; smaller tails are rebalanced (5, default 192)
+    CHUNK_OVERLAP_TOKENS — sentence-aware overlap between chunks (5, default 51)
     CHUNK_EXCLUDE_REFS   — exclude References section from chunks (5, default 1)
     CHUNK_EXCLUDE_ACK    — exclude Acknowledgements section (5, default 1)
     INGEST_VLM           — if "1", ingest via LightRAG's native multimodal pipeline
@@ -730,6 +730,7 @@ async def rebuild_embeddings_from_cache():
     async def _dummy_llm(*args, **kwargs):
         raise RuntimeError("LLM should not be called during REBUILD_EMBEDDINGS")
 
+    os.environ.pop("ENTITY_TYPES", None)  # deprecated in LightRAG >=1.5 (see main ingest path)
     rag_kwargs = dict(
         working_dir=str(STORAGE_DIR),
         llm_model_func=_dummy_llm,
@@ -1144,6 +1145,26 @@ async def main():
     else:
         active_chunker = SCIENTIFIC_CHUNKER
 
+    # LightRAG >= 1.5 removed the ENTITY_TYPES env var (it now fail-fasts if the var
+    # is merely present) and takes entity-type guidance as a prompt string via
+    # addon_params instead. Pop the deprecated var (LightRAG's dotenv loads it from
+    # .env at import) and pass the academic schema through the supported API — this
+    # keeps the nested LightRAG/ patch-free (see CLAUDE.md "Why LightRAG is nested").
+    os.environ.pop("ENTITY_TYPES", None)
+    entity_types_guidance = os.environ.get("ENTITY_TYPES_GUIDANCE") or (
+        "Classify each entity using one of the following types. If no type fits, use `Other`.\n\n"
+        "- Author: Researchers, scholars, or authors of scientific work\n"
+        "- Concept: Abstract ideas, constructs, or principles discussed in the literature\n"
+        "- Method: Procedures, techniques, analyses, models, or experimental paradigms\n"
+        "- Theory: Named theories, frameworks, or formal/computational models\n"
+        "- Dataset: Corpora, datasets, norms, or collections of stimuli or measurements\n"
+        "- Result: Reported quantitative or statistical outcomes\n"
+        "- Experiment: Specific studies, experiments, or empirical investigations\n"
+        "- Finding: Conclusions, effects, or claims established by research\n"
+        "- Institution: Universities, laboratories, organizations, or funding bodies\n"
+        "- Publication: Papers, journals, books, or other cited works"
+    )
+
     # Build LightRAG kwargs — conditionally add Qdrant and batched flush
     rag_kwargs = dict(
         working_dir=str(STORAGE_DIR),
@@ -1161,6 +1182,7 @@ async def main():
         max_parallel_insert=MAX_PARALLEL_INSERT,
         default_embedding_timeout=300,
         default_llm_timeout=int(os.environ.get("LLM_TIMEOUT", 1800)),
+        addon_params={"entity_types_guidance": entity_types_guidance},
     )
 
     # Fix 1: opt-in incremental KV/doc-status backends (e.g. Redis) so LightRAG's

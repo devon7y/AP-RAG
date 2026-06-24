@@ -1,0 +1,7 @@
+# Derived eval data — regenerate with extract_corpus.py + gen_questions.py.
+# Large, and corpus*/qa* contain verbatim copyrighted paper text. results*.json
+# (metrics only) are committed as the record of findings.
+corpus*.jsonl
+qa*.jsonl
+_libs/
+__pycache__/

@@ -10,15 +10,15 @@ Integration:
     from pipeline.scientific_chunker import make_scientific_chunker, ChunkerConfig
 
     rag = LightRAG(
-        chunking_func=make_scientific_chunker(ChunkerConfig(target_tokens=800)),
+        chunking_func=make_scientific_chunker(ChunkerConfig(target_tokens=512)),
         ...
     )
 
 Environment variables (used by ChunkerConfig.from_env()):
-    CHUNK_TARGET_TOKENS  (default 800)
-    CHUNK_MAX_TOKENS     (default 1000)
-    CHUNK_MIN_TOKENS     (default 300)
-    CHUNK_OVERLAP_TOKENS (default 150)
+    CHUNK_TARGET_TOKENS  (default 512)
+    CHUNK_MAX_TOKENS     (default 640)
+    CHUNK_MIN_TOKENS     (default 192)
+    CHUNK_OVERLAP_TOKENS (default 51)
     CHUNK_EXCLUDE_REFS   (default 1)
     CHUNK_EXCLUDE_ACK    (default 1)
 """
@@ -39,10 +39,10 @@ from typing import Any, Callable, Protocol
 class ChunkerConfig:
     """All thresholds for the scientific chunker."""
 
-    target_tokens: int = 800
-    max_tokens: int = 1000
-    min_tokens: int = 300
-    overlap_tokens: int = 150
+    target_tokens: int = 512
+    max_tokens: int = 640
+    min_tokens: int = 192
+    overlap_tokens: int = 51
     respect_sections: bool = True
     respect_paragraphs: bool = True
     split_oversize_paragraphs_by_sentence: bool = True
@@ -54,10 +54,10 @@ class ChunkerConfig:
     @classmethod
     def from_env(cls) -> ChunkerConfig:
         return cls(
-            target_tokens=int(os.environ.get("CHUNK_TARGET_TOKENS", 800)),
-            max_tokens=int(os.environ.get("CHUNK_MAX_TOKENS", 1000)),
-            min_tokens=int(os.environ.get("CHUNK_MIN_TOKENS", 300)),
-            overlap_tokens=int(os.environ.get("CHUNK_OVERLAP_TOKENS", 150)),
+            target_tokens=int(os.environ.get("CHUNK_TARGET_TOKENS", 512)),
+            max_tokens=int(os.environ.get("CHUNK_MAX_TOKENS", 640)),
+            min_tokens=int(os.environ.get("CHUNK_MIN_TOKENS", 192)),
+            overlap_tokens=int(os.environ.get("CHUNK_OVERLAP_TOKENS", 51)),
             exclude_references=os.environ.get("CHUNK_EXCLUDE_REFS", "1") == "1",
             exclude_acknowledgements=os.environ.get("CHUNK_EXCLUDE_ACK", "1") == "1",
             exclusion_safety_valve=os.environ.get("CHUNK_EXCLUSION_SAFETY", "1") == "1",
@@ -1481,7 +1481,7 @@ def make_scientific_chunker(
 
     Usage:
         rag = LightRAG(
-            chunking_func=make_scientific_chunker(ChunkerConfig(target_tokens=800)),
+            chunking_func=make_scientific_chunker(ChunkerConfig(target_tokens=512)),
             ...
         )
     """

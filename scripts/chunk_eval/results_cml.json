@@ -1,0 +1,1123 @@
+{
+  "embed_model": "Qwen/Qwen3-Embedding-8B",
+  "dtype": "bfloat16",
+  "query_instruction": "Given a question about scientific literature, retrieve relevant passages from academic papers that answer the question",
+  "n_docs": 101,
+  "n_questions": 374,
+  "n_factual": 222,
+  "n_conceptual": 152,
+  "chroma_official": {
+    "locator": false,
+    "chunkers": false
+  },
+  "retrieval_ks": [
+    5,
+    10
+  ],
+  "results": [
+    {
+      "config": "sci-128",
+      "kind": "scientific",
+      "size": 128,
+      "overlap": 13,
+      "n_chunks": 11777,
+      "mean_chunk_tokens": 139.8,
+      "locate_miss_pct": 6.5,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.464,
+            "precision": 0.0254,
+            "iou": 0.0254
+          },
+          "conceptual": {
+            "recall": 0.2826,
+            "precision": 0.0432,
+            "iou": 0.0407
+          },
+          "all": {
+            "recall": 0.3902,
+            "precision": 0.0326,
+            "iou": 0.0316
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.6036,
+            "precision": 0.0164,
+            "iou": 0.0164
+          },
+          "conceptual": {
+            "recall": 0.3926,
+            "precision": 0.0303,
+            "iou": 0.0296
+          },
+          "all": {
+            "recall": 0.5178,
+            "precision": 0.0221,
+            "iou": 0.0218
+          }
+        }
+      },
+      "seconds": 169.1
+    },
+    {
+      "config": "fix-128",
+      "kind": "fixed",
+      "size": 128,
+      "overlap": 13,
+      "n_chunks": 17220,
+      "mean_chunk_tokens": 127.6,
+      "locate_miss_pct": 4.5,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4034,
+            "precision": 0.0263,
+            "iou": 0.0262
+          },
+          "conceptual": {
+            "recall": 0.2159,
+            "precision": 0.0364,
+            "iou": 0.0336
+          },
+          "all": {
+            "recall": 0.3272,
+            "precision": 0.0304,
+            "iou": 0.0292
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.538,
+            "precision": 0.0179,
+            "iou": 0.0178
+          },
+          "conceptual": {
+            "recall": 0.3303,
+            "precision": 0.0291,
+            "iou": 0.028
+          },
+          "all": {
+            "recall": 0.4536,
+            "precision": 0.0224,
+            "iou": 0.022
+          }
+        }
+      },
+      "seconds": 178.8
+    },
+    {
+      "config": "rec-128",
+      "kind": "recursive",
+      "size": 128,
+      "overlap": 13,
+      "n_chunks": 17117,
+      "mean_chunk_tokens": 115.2,
+      "locate_miss_pct": 2.8,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.3865,
+            "precision": 0.0272,
+            "iou": 0.027
+          },
+          "conceptual": {
+            "recall": 0.2059,
+            "precision": 0.0382,
+            "iou": 0.0351
+          },
+          "all": {
+            "recall": 0.3131,
+            "precision": 0.0317,
+            "iou": 0.0303
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5455,
+            "precision": 0.019,
+            "iou": 0.0189
+          },
+          "conceptual": {
+            "recall": 0.3181,
+            "precision": 0.0292,
+            "iou": 0.028
+          },
+          "all": {
+            "recall": 0.453,
+            "precision": 0.0231,
+            "iou": 0.0226
+          }
+        }
+      },
+      "seconds": 178.9
+    },
+    {
+      "config": "sci-192",
+      "kind": "scientific",
+      "size": 192,
+      "overlap": 19,
+      "n_chunks": 7762,
+      "mean_chunk_tokens": 210.3,
+      "locate_miss_pct": 6.4,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4157,
+            "precision": 0.0152,
+            "iou": 0.0152
+          },
+          "conceptual": {
+            "recall": 0.3182,
+            "precision": 0.0316,
+            "iou": 0.0304
+          },
+          "all": {
+            "recall": 0.3761,
+            "precision": 0.0219,
+            "iou": 0.0214
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5601,
+            "precision": 0.0104,
+            "iou": 0.0104
+          },
+          "conceptual": {
+            "recall": 0.4717,
+            "precision": 0.0243,
+            "iou": 0.0239
+          },
+          "all": {
+            "recall": 0.5242,
+            "precision": 0.016,
+            "iou": 0.0159
+          }
+        }
+      },
+      "seconds": 164.0
+    },
+    {
+      "config": "fix-192",
+      "kind": "fixed",
+      "size": 192,
+      "overlap": 19,
+      "n_chunks": 11464,
+      "mean_chunk_tokens": 191.1,
+      "locate_miss_pct": 4.7,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.3854,
+            "precision": 0.0168,
+            "iou": 0.0168
+          },
+          "conceptual": {
+            "recall": 0.3047,
+            "precision": 0.0358,
+            "iou": 0.0344
+          },
+          "all": {
+            "recall": 0.3526,
+            "precision": 0.0246,
+            "iou": 0.024
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5382,
+            "precision": 0.0117,
+            "iou": 0.0117
+          },
+          "conceptual": {
+            "recall": 0.4297,
+            "precision": 0.0253,
+            "iou": 0.0248
+          },
+          "all": {
+            "recall": 0.4941,
+            "precision": 0.0172,
+            "iou": 0.0171
+          }
+        }
+      },
+      "seconds": 172.5
+    },
+    {
+      "config": "rec-192",
+      "kind": "recursive",
+      "size": 192,
+      "overlap": 19,
+      "n_chunks": 11025,
+      "mean_chunk_tokens": 178.6,
+      "locate_miss_pct": 0.0,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.3957,
+            "precision": 0.018,
+            "iou": 0.018
+          },
+          "conceptual": {
+            "recall": 0.2899,
+            "precision": 0.0353,
+            "iou": 0.0336
+          },
+          "all": {
+            "recall": 0.3527,
+            "precision": 0.025,
+            "iou": 0.0243
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5276,
+            "precision": 0.012,
+            "iou": 0.0119
+          },
+          "conceptual": {
+            "recall": 0.4109,
+            "precision": 0.0255,
+            "iou": 0.025
+          },
+          "all": {
+            "recall": 0.4802,
+            "precision": 0.0175,
+            "iou": 0.0172
+          }
+        }
+      },
+      "seconds": 170.8
+    },
+    {
+      "config": "sci-256",
+      "kind": "scientific",
+      "size": 256,
+      "overlap": 26,
+      "n_chunks": 5809,
+      "mean_chunk_tokens": 279.4,
+      "locate_miss_pct": 5.5,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4234,
+            "precision": 0.012,
+            "iou": 0.012
+          },
+          "conceptual": {
+            "recall": 0.3378,
+            "precision": 0.0254,
+            "iou": 0.0248
+          },
+          "all": {
+            "recall": 0.3886,
+            "precision": 0.0175,
+            "iou": 0.0172
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.534,
+            "precision": 0.0074,
+            "iou": 0.0074
+          },
+          "conceptual": {
+            "recall": 0.5153,
+            "precision": 0.02,
+            "iou": 0.0198
+          },
+          "all": {
+            "recall": 0.5264,
+            "precision": 0.0126,
+            "iou": 0.0125
+          }
+        }
+      },
+      "seconds": 160.7
+    },
+    {
+      "config": "fix-256",
+      "kind": "fixed",
+      "size": 256,
+      "overlap": 26,
+      "n_chunks": 8639,
+      "mean_chunk_tokens": 254.3,
+      "locate_miss_pct": 4.0,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4209,
+            "precision": 0.0143,
+            "iou": 0.0143
+          },
+          "conceptual": {
+            "recall": 0.2661,
+            "precision": 0.0237,
+            "iou": 0.0228
+          },
+          "all": {
+            "recall": 0.358,
+            "precision": 0.0181,
+            "iou": 0.0178
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5568,
+            "precision": 0.0097,
+            "iou": 0.0096
+          },
+          "conceptual": {
+            "recall": 0.4258,
+            "precision": 0.0191,
+            "iou": 0.0188
+          },
+          "all": {
+            "recall": 0.5036,
+            "precision": 0.0135,
+            "iou": 0.0134
+          }
+        }
+      },
+      "seconds": 171.5
+    },
+    {
+      "config": "rec-256",
+      "kind": "recursive",
+      "size": 256,
+      "overlap": 26,
+      "n_chunks": 8300,
+      "mean_chunk_tokens": 237.4,
+      "locate_miss_pct": 0.0,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4445,
+            "precision": 0.0153,
+            "iou": 0.0153
+          },
+          "conceptual": {
+            "recall": 0.3019,
+            "precision": 0.0285,
+            "iou": 0.0275
+          },
+          "all": {
+            "recall": 0.3865,
+            "precision": 0.0207,
+            "iou": 0.0202
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5623,
+            "precision": 0.0102,
+            "iou": 0.0101
+          },
+          "conceptual": {
+            "recall": 0.4572,
+            "precision": 0.0216,
+            "iou": 0.0213
+          },
+          "all": {
+            "recall": 0.5196,
+            "precision": 0.0148,
+            "iou": 0.0147
+          }
+        }
+      },
+      "seconds": 171.9
+    },
+    {
+      "config": "sci-320",
+      "kind": "scientific",
+      "size": 320,
+      "overlap": 32,
+      "n_chunks": 4738,
+      "mean_chunk_tokens": 340.7,
+      "locate_miss_pct": 6.3,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4234,
+            "precision": 0.0095,
+            "iou": 0.0095
+          },
+          "conceptual": {
+            "recall": 0.3461,
+            "precision": 0.0226,
+            "iou": 0.0221
+          },
+          "all": {
+            "recall": 0.392,
+            "precision": 0.0148,
+            "iou": 0.0146
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.509,
+            "precision": 0.0057,
+            "iou": 0.0057
+          },
+          "conceptual": {
+            "recall": 0.4994,
+            "precision": 0.0159,
+            "iou": 0.0158
+          },
+          "all": {
+            "recall": 0.5051,
+            "precision": 0.0099,
+            "iou": 0.0098
+          }
+        }
+      },
+      "seconds": 163.4
+    },
+    {
+      "config": "fix-320",
+      "kind": "fixed",
+      "size": 320,
+      "overlap": 32,
+      "n_chunks": 6910,
+      "mean_chunk_tokens": 317.4,
+      "locate_miss_pct": 3.6,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4792,
+            "precision": 0.0131,
+            "iou": 0.0131
+          },
+          "conceptual": {
+            "recall": 0.347,
+            "precision": 0.0252,
+            "iou": 0.0245
+          },
+          "all": {
+            "recall": 0.4255,
+            "precision": 0.0181,
+            "iou": 0.0178
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.6042,
+            "precision": 0.008,
+            "iou": 0.008
+          },
+          "conceptual": {
+            "recall": 0.4917,
+            "precision": 0.0176,
+            "iou": 0.0174
+          },
+          "all": {
+            "recall": 0.5585,
+            "precision": 0.0119,
+            "iou": 0.0118
+          }
+        }
+      },
+      "seconds": 173.5
+    },
+    {
+      "config": "rec-320",
+      "kind": "recursive",
+      "size": 320,
+      "overlap": 32,
+      "n_chunks": 6697,
+      "mean_chunk_tokens": 294.3,
+      "locate_miss_pct": 0.0,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4075,
+            "precision": 0.0108,
+            "iou": 0.0108
+          },
+          "conceptual": {
+            "recall": 0.3242,
+            "precision": 0.025,
+            "iou": 0.0243
+          },
+          "all": {
+            "recall": 0.3737,
+            "precision": 0.0166,
+            "iou": 0.0163
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5883,
+            "precision": 0.0081,
+            "iou": 0.0081
+          },
+          "conceptual": {
+            "recall": 0.4796,
+            "precision": 0.0182,
+            "iou": 0.018
+          },
+          "all": {
+            "recall": 0.5441,
+            "precision": 0.0122,
+            "iou": 0.0121
+          }
+        }
+      },
+      "seconds": 172.1
+    },
+    {
+      "config": "sci-384",
+      "kind": "scientific",
+      "size": 384,
+      "overlap": 38,
+      "n_chunks": 4060,
+      "mean_chunk_tokens": 395.8,
+      "locate_miss_pct": 6.4,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.3829,
+            "precision": 0.0076,
+            "iou": 0.0076
+          },
+          "conceptual": {
+            "recall": 0.3588,
+            "precision": 0.0195,
+            "iou": 0.0192
+          },
+          "all": {
+            "recall": 0.3731,
+            "precision": 0.0125,
+            "iou": 0.0123
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.536,
+            "precision": 0.0051,
+            "iou": 0.0051
+          },
+          "conceptual": {
+            "recall": 0.5302,
+            "precision": 0.0143,
+            "iou": 0.0142
+          },
+          "all": {
+            "recall": 0.5337,
+            "precision": 0.0088,
+            "iou": 0.0088
+          }
+        }
+      },
+      "seconds": 167.3
+    },
+    {
+      "config": "fix-384",
+      "kind": "fixed",
+      "size": 384,
+      "overlap": 38,
+      "n_chunks": 5760,
+      "mean_chunk_tokens": 380.2,
+      "locate_miss_pct": 4.1,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4018,
+            "precision": 0.0092,
+            "iou": 0.0092
+          },
+          "conceptual": {
+            "recall": 0.3827,
+            "precision": 0.0235,
+            "iou": 0.023
+          },
+          "all": {
+            "recall": 0.394,
+            "precision": 0.015,
+            "iou": 0.0148
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5267,
+            "precision": 0.006,
+            "iou": 0.006
+          },
+          "conceptual": {
+            "recall": 0.5134,
+            "precision": 0.0156,
+            "iou": 0.0155
+          },
+          "all": {
+            "recall": 0.5213,
+            "precision": 0.0099,
+            "iou": 0.0099
+          }
+        }
+      },
+      "seconds": 172.0
+    },
+    {
+      "config": "rec-384",
+      "kind": "recursive",
+      "size": 384,
+      "overlap": 38,
+      "n_chunks": 5429,
+      "mean_chunk_tokens": 363.2,
+      "locate_miss_pct": 0.0,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4237,
+            "precision": 0.0097,
+            "iou": 0.0097
+          },
+          "conceptual": {
+            "recall": 0.3612,
+            "precision": 0.0227,
+            "iou": 0.0223
+          },
+          "all": {
+            "recall": 0.3983,
+            "precision": 0.015,
+            "iou": 0.0148
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5266,
+            "precision": 0.0062,
+            "iou": 0.0062
+          },
+          "conceptual": {
+            "recall": 0.496,
+            "precision": 0.0156,
+            "iou": 0.0155
+          },
+          "all": {
+            "recall": 0.5142,
+            "precision": 0.01,
+            "iou": 0.01
+          }
+        }
+      },
+      "seconds": 173.7
+    },
+    {
+      "config": "sci-512",
+      "kind": "scientific",
+      "size": 512,
+      "overlap": 51,
+      "n_chunks": 3179,
+      "mean_chunk_tokens": 502.1,
+      "locate_miss_pct": 5.4,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4056,
+            "precision": 0.0063,
+            "iou": 0.0063
+          },
+          "conceptual": {
+            "recall": 0.4025,
+            "precision": 0.0179,
+            "iou": 0.0175
+          },
+          "all": {
+            "recall": 0.4044,
+            "precision": 0.011,
+            "iou": 0.0108
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5092,
+            "precision": 0.0039,
+            "iou": 0.0039
+          },
+          "conceptual": {
+            "recall": 0.6167,
+            "precision": 0.0136,
+            "iou": 0.0135
+          },
+          "all": {
+            "recall": 0.5529,
+            "precision": 0.0079,
+            "iou": 0.0078
+          }
+        }
+      },
+      "seconds": 173.0
+    },
+    {
+      "config": "fix-512",
+      "kind": "fixed",
+      "size": 512,
+      "overlap": 51,
+      "n_chunks": 4344,
+      "mean_chunk_tokens": 504.4,
+      "locate_miss_pct": 4.4,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4083,
+            "precision": 0.0072,
+            "iou": 0.0072
+          },
+          "conceptual": {
+            "recall": 0.3877,
+            "precision": 0.0179,
+            "iou": 0.0176
+          },
+          "all": {
+            "recall": 0.3999,
+            "precision": 0.0115,
+            "iou": 0.0114
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5663,
+            "precision": 0.0049,
+            "iou": 0.0049
+          },
+          "conceptual": {
+            "recall": 0.5967,
+            "precision": 0.0136,
+            "iou": 0.0135
+          },
+          "all": {
+            "recall": 0.5786,
+            "precision": 0.0084,
+            "iou": 0.0084
+          }
+        }
+      },
+      "seconds": 173.1
+    },
+    {
+      "config": "rec-512",
+      "kind": "recursive",
+      "size": 512,
+      "overlap": 51,
+      "n_chunks": 4054,
+      "mean_chunk_tokens": 486.6,
+      "locate_miss_pct": 0.0,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4394,
+            "precision": 0.0075,
+            "iou": 0.0075
+          },
+          "conceptual": {
+            "recall": 0.3864,
+            "precision": 0.0184,
+            "iou": 0.0181
+          },
+          "all": {
+            "recall": 0.4178,
+            "precision": 0.0119,
+            "iou": 0.0118
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5716,
+            "precision": 0.0051,
+            "iou": 0.0051
+          },
+          "conceptual": {
+            "recall": 0.5425,
+            "precision": 0.013,
+            "iou": 0.0129
+          },
+          "all": {
+            "recall": 0.5598,
+            "precision": 0.0083,
+            "iou": 0.0083
+          }
+        }
+      },
+      "seconds": 179.3
+    },
+    {
+      "config": "sci-256-ov0",
+      "kind": "scientific",
+      "size": 256,
+      "overlap": 0,
+      "n_chunks": 5809,
+      "mean_chunk_tokens": 260.9,
+      "locate_miss_pct": 5.5,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4054,
+            "precision": 0.0124,
+            "iou": 0.0124
+          },
+          "conceptual": {
+            "recall": 0.3318,
+            "precision": 0.027,
+            "iou": 0.0263
+          },
+          "all": {
+            "recall": 0.3755,
+            "precision": 0.0183,
+            "iou": 0.018
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5225,
+            "precision": 0.008,
+            "iou": 0.008
+          },
+          "conceptual": {
+            "recall": 0.4902,
+            "precision": 0.0206,
+            "iou": 0.0204
+          },
+          "all": {
+            "recall": 0.5094,
+            "precision": 0.0131,
+            "iou": 0.013
+          }
+        }
+      },
+      "seconds": 152.3
+    },
+    {
+      "config": "sci-256-ov64",
+      "kind": "scientific",
+      "size": 256,
+      "overlap": 64,
+      "n_chunks": 5809,
+      "mean_chunk_tokens": 299.5,
+      "locate_miss_pct": 5.5,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.3874,
+            "precision": 0.0103,
+            "iou": 0.0103
+          },
+          "conceptual": {
+            "recall": 0.2981,
+            "precision": 0.0214,
+            "iou": 0.0208
+          },
+          "all": {
+            "recall": 0.3511,
+            "precision": 0.0148,
+            "iou": 0.0146
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5198,
+            "precision": 0.0069,
+            "iou": 0.0069
+          },
+          "conceptual": {
+            "recall": 0.4985,
+            "precision": 0.0185,
+            "iou": 0.0183
+          },
+          "all": {
+            "recall": 0.5111,
+            "precision": 0.0116,
+            "iou": 0.0116
+          }
+        }
+      },
+      "seconds": 174.0
+    },
+    {
+      "config": "sci-256-ov128",
+      "kind": "scientific",
+      "size": 256,
+      "overlap": 128,
+      "n_chunks": 5809,
+      "mean_chunk_tokens": 342.3,
+      "locate_miss_pct": 5.5,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.3514,
+            "precision": 0.0083,
+            "iou": 0.0083
+          },
+          "conceptual": {
+            "recall": 0.2708,
+            "precision": 0.0177,
+            "iou": 0.0172
+          },
+          "all": {
+            "recall": 0.3186,
+            "precision": 0.0121,
+            "iou": 0.0119
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.455,
+            "precision": 0.0053,
+            "iou": 0.0053
+          },
+          "conceptual": {
+            "recall": 0.4502,
+            "precision": 0.0145,
+            "iou": 0.0143
+          },
+          "all": {
+            "recall": 0.453,
+            "precision": 0.0091,
+            "iou": 0.009
+          }
+        }
+      },
+      "seconds": 203.3
+    },
+    {
+      "config": "fix-256-ov0",
+      "kind": "fixed",
+      "size": 256,
+      "overlap": 0,
+      "n_chunks": 7767,
+      "mean_chunk_tokens": 254.3,
+      "locate_miss_pct": 4.1,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4495,
+            "precision": 0.0147,
+            "iou": 0.0147
+          },
+          "conceptual": {
+            "recall": 0.3081,
+            "precision": 0.0268,
+            "iou": 0.0258
+          },
+          "all": {
+            "recall": 0.392,
+            "precision": 0.0196,
+            "iou": 0.0192
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5498,
+            "precision": 0.0092,
+            "iou": 0.0092
+          },
+          "conceptual": {
+            "recall": 0.4342,
+            "precision": 0.0196,
+            "iou": 0.0193
+          },
+          "all": {
+            "recall": 0.5028,
+            "precision": 0.0134,
+            "iou": 0.0133
+          }
+        }
+      },
+      "seconds": 154.4
+    },
+    {
+      "config": "fix-256-ov64",
+      "kind": "fixed",
+      "size": 256,
+      "overlap": 64,
+      "n_chunks": 10341,
+      "mean_chunk_tokens": 254.3,
+      "locate_miss_pct": 4.2,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4497,
+            "precision": 0.015,
+            "iou": 0.015
+          },
+          "conceptual": {
+            "recall": 0.2851,
+            "precision": 0.0255,
+            "iou": 0.0246
+          },
+          "all": {
+            "recall": 0.3828,
+            "precision": 0.0193,
+            "iou": 0.0189
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5628,
+            "precision": 0.0094,
+            "iou": 0.0094
+          },
+          "conceptual": {
+            "recall": 0.4516,
+            "precision": 0.0204,
+            "iou": 0.0202
+          },
+          "all": {
+            "recall": 0.5176,
+            "precision": 0.0139,
+            "iou": 0.0138
+          }
+        }
+      },
+      "seconds": 205.0
+    },
+    {
+      "config": "fix-256-ov128",
+      "kind": "fixed",
+      "size": 256,
+      "overlap": 128,
+      "n_chunks": 15486,
+      "mean_chunk_tokens": 254.3,
+      "locate_miss_pct": 4.2,
+      "metrics": {
+        "@5": {
+          "factual": {
+            "recall": 0.4653,
+            "precision": 0.0153,
+            "iou": 0.0153
+          },
+          "conceptual": {
+            "recall": 0.3204,
+            "precision": 0.0283,
+            "iou": 0.0273
+          },
+          "all": {
+            "recall": 0.4064,
+            "precision": 0.0206,
+            "iou": 0.0202
+          }
+        },
+        "@10": {
+          "factual": {
+            "recall": 0.5742,
+            "precision": 0.0095,
+            "iou": 0.0095
+          },
+          "conceptual": {
+            "recall": 0.4639,
+            "precision": 0.0204,
+            "iou": 0.0202
+          },
+          "all": {
+            "recall": 0.5293,
+            "precision": 0.0139,
+            "iou": 0.0138
+          }
+        }
+      },
+      "seconds": 305.1
+    }
+  ]
+}

@@ -175,8 +175,9 @@ Behavior is driven by environment variables (no code edits needed):
 
 | Variable | Purpose |
 |---|---|
-| `CHUNKER_TYPE` | `scientific` (default) or `book`. |
-| `CHUNK_TARGET_TOKENS` / `CHUNK_MAX_TOKENS` / `CHUNK_MIN_TOKENS` / `CHUNK_OVERLAP_TOKENS` | Chunk sizing (defaults 800 / 1000 / 300 / 150). |
+| `CHUNKER_TYPE` | `scientific` (default), `book`, or `auto` (per-document structure routing — classify each PDF as book/paper via TOC + chapter/IMRaD detection and dispatch to the matching chunker; see `pipeline/document_router.py`). |
+| `ROUTER_PAGE_THRESHOLD` / `ROUTER_MIN_CHAPTERS` / `ROUTER_MIN_IMRAD` / `ROUTER_DETECT_TOC` / `ROUTER_TOC_SCAN_PAGES` | `CHUNKER_TYPE=auto` thresholds (defaults 50 / 3 / 3 / 1 / 15). Page count is only a tie-breaker; structure (TOC, chapters, IMRaD) decides first. |
+| `CHUNK_TARGET_TOKENS` / `CHUNK_MAX_TOKENS` / `CHUNK_MIN_TOKENS` / `CHUNK_OVERLAP_TOKENS` | Chunk sizing (defaults 512 / 640 / 192 / 51; lowered from 800/1000/300/150 per the chunk-size eval — see scripts/chunk_eval/). |
 | `CHUNK_EXCLUDE_REFS` / `CHUNK_EXCLUDE_ACK` | Drop References / Acknowledgements sections. |
 | `CONTEXTUALIZE_CHUNKS` | `1` (default) enables contextual retrieval via the chunker wrapper. |
 | `CONTEXT_MAX_ASYNC`, `LLM_MAX_ASYNC`, `EMBED_FUNC_MAX_ASYNC`, `PARALLEL_DOCS`, `MAX_PARALLEL_INSERT` | Concurrency tuning (see `docs/CANONICAL_INGEST_PARAMS.md`). |

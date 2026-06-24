@@ -7,11 +7,15 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=32G
-#SBATCH --gpus=nvidia_h100_80gb_hbm3_2g.20gb:1
+#SBATCH --gpus=h100:1
 
 WORKDIR=/scratch/devon7y/westbury_rag
 VENV_DIR=$WORKDIR/venv
 
+# Persistent data dirs — westbury->aprag rebrand; fresh run, April data left untouched.
+export WORKDIR
+export STORAGE_SUBDIR="${STORAGE_SUBDIR:-rag_storage_aprag}"
+QDRANT_SUBDIR="${QDRANT_SUBDIR:-qdrant_storage_aprag}"
 
 export HF_HOME=$WORKDIR/hf_cache
 export HF_HUB_OFFLINE=1
@@ -23,7 +27,7 @@ export FLASHINFER_CACHE_DIR=$WORKDIR/cache/flashinfer
 export BNB_CUDA_VERSION=126
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-mkdir -p "$WORKDIR/logs" "$WORKDIR/rag_storage_westbury_qwen3_32b" "$WORKDIR/cache" "$WORKDIR/cache/flashinfer"
+mkdir -p "$WORKDIR/logs" "$WORKDIR/$STORAGE_SUBDIR" "$WORKDIR/cache" "$WORKDIR/cache/flashinfer"
 
 module load python/3.11 gcc/12.3 cuda/12.6 opencv
 
@@ -37,9 +41,10 @@ echo "[$(date)] Environment ready (venv activated)."
 echo "[$(date)] Current doc status:"
 python3 - <<'PYEOF'
 import json
+import os
 from pathlib import Path
 
-storage = Path("/scratch/devon7y/westbury_rag/rag_storage_westbury_qwen3_32b")
+storage = Path(os.environ["WORKDIR"]) / os.environ["STORAGE_SUBDIR"]
 status_path = storage / "kv_store_doc_status.json"
 
 if not status_path.exists():
@@ -61,7 +66,7 @@ PYEOF
 
 # ── Qdrant sidecar via Apptainer (Nibi: SSD scratch, use scratch directly) ──
 QDRANT_SIF="$WORKDIR/qdrant_latest.sif"
-QDRANT_LUSTRE="$WORKDIR/qdrant_storage_westbury"
+QDRANT_LUSTRE="$WORKDIR/$QDRANT_SUBDIR"
 QDRANT_LOCAL="$SLURM_TMPDIR/qdrant_storage"
 QDRANT_PID=""
 
@@ -76,13 +81,17 @@ if [ -f "$QDRANT_SIF" ]; then
     fi
 
     module load apptainer/1.4.5 2>/dev/null || true
-    echo "[$(date)] Starting Qdrant sidecar on local NVMe ($QDRANT_LOCAL)..."
+    # Qdrant 1.17 panics at startup if it cannot load a CA bundle. Nibi compute
+    # nodes have no valid /etc/ssl/certs/ca-bundle.crt (host files are stubs), so
+    # bind the venv's certifi bundle into the path Qdrant reads.
+    CACERT=$(python -c "import certifi; print(certifi.where())" 2>/dev/null)
+    echo "[$(date)] Binding CA bundle into Qdrant: $CACERT"
     apptainer run --writable-tmpfs --pwd /qdrant \
     --env QDRANT__TELEMETRY_DISABLED=true \
     --env SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt \
     --env SSL_CERT_DIR=/etc/ssl/certs \
     --env QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=256 \
-    --bind /etc/ssl/certs:/etc/ssl/certs \
+    --bind "$CACERT:/etc/ssl/certs/ca-bundle.crt" \
     --bind "$QDRANT_LOCAL:/qdrant/storage" "$QDRANT_SIF" &
     QDRANT_PID=$!
     for i in $(seq 1 72); do
@@ -116,14 +125,14 @@ REBUILD_EMBEDDINGS=${REBUILD_EMBEDDINGS:-0}
 if [ "$REBUILD_EMBEDDINGS" = "1" ]; then
     echo "[$(date)] REBUILD EMBEDDINGS MODE — no vLLM needed, recomputing vectors from cache..."
 else
-    echo "[$(date)] Starting ingestion v2 (rag_storage_westbury_qwen3_32b, 2g.20gb MIG)..."
+    echo "[$(date)] Starting ingestion v2 ($STORAGE_SUBDIR, 1x H100)..."
 fi
 
 WORKDIR=$WORKDIR \
-N_VLLM=${N_VLLM:-2} \
+N_VLLM=${N_VLLM:-1} \
 ENDPOINTS_SUBDIR=${ENDPOINTS_SUBDIR:-vllm_endpoints_westbury_qwen3_32b} \
 PAPERS_SUBDIR=${PAPERS_SUBDIR:-papers} \
-STORAGE_SUBDIR=${STORAGE_SUBDIR:-rag_storage_westbury_qwen3_32b} \
+STORAGE_SUBDIR=${STORAGE_SUBDIR:-rag_storage_aprag} \
 LLM_MODEL=${LLM_MODEL:-Qwen/Qwen3.6-35B-A3B} \
 PARALLEL_DOCS=${PARALLEL_DOCS:-4} \
 LLM_MAX_ASYNC=${LLM_MAX_ASYNC:-16} \
@@ -134,10 +143,10 @@ MAX_PARALLEL_INSERT=${MAX_PARALLEL_INSERT:-4} \
 QDRANT_URL=$QDRANT_URL \
 INSERT_DONE_EVERY_N=${INSERT_DONE_EVERY_N:-1} \
 REBUILD_EMBEDDINGS=$REBUILD_EMBEDDINGS \
-CHUNK_TARGET_TOKENS=${CHUNK_TARGET_TOKENS:-800} \
-CHUNK_MAX_TOKENS=${CHUNK_MAX_TOKENS:-1000} \
-CHUNK_MIN_TOKENS=${CHUNK_MIN_TOKENS:-300} \
-CHUNK_OVERLAP_TOKENS=${CHUNK_OVERLAP_TOKENS:-150} \
+CHUNK_TARGET_TOKENS=${CHUNK_TARGET_TOKENS:-512} \
+CHUNK_MAX_TOKENS=${CHUNK_MAX_TOKENS:-640} \
+CHUNK_MIN_TOKENS=${CHUNK_MIN_TOKENS:-192} \
+CHUNK_OVERLAP_TOKENS=${CHUNK_OVERLAP_TOKENS:-51} \
 CHUNK_EXCLUDE_REFS=${CHUNK_EXCLUDE_REFS:-1} \
 CHUNK_EXCLUDE_ACK=${CHUNK_EXCLUDE_ACK:-1} \
   PYTHONPATH="$WORKDIR" python -m pipeline.ingest
