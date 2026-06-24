@@ -101,6 +101,13 @@ def _filename_year(name: str) -> str:
     return m.group("year") if m else ""
 
 
+def _filename_author(name: str) -> str:
+    """First-author surname hint from a canonical filename (the leading token)."""
+    base = name[:-4] if name.lower().endswith(".pdf") else name
+    tok = base.split("_")[0].strip()
+    return tok if tok[:1].isalpha() else ""
+
+
 def _cr_year(msg: dict) -> str:
     for key in ("published-print", "published-online", "issued", "published", "created"):
         parts = (msg.get(key) or {}).get("date-parts") or []
@@ -294,6 +301,43 @@ questionnaire, manual, syllabus, cover sheet, or supplementary file.
 Return JSON matching the schema."""
 
 
+PROMPT_DEEP_TEMPLATE = """You are cataloguing a scholarly PDF library. Extract the \
+bibliographic facts for a single TARGET work to build a complete APA-7 citation.
+
+IMPORTANT — pick the RIGHT work:
+- This file is named for a work whose FIRST AUTHOR surname is approximately \
+"{author_hint}" and whose year is "{year_hint}". Extract the facts for THAT target work.
+- Some PDFs begin with the end matter or REFERENCE LIST of a DIFFERENT article before \
+the target work starts. IGNORE any such leading reference list or fragment of another \
+paper — do not extract a cited reference. Use the title page / byline / running head of \
+the TARGET work (the one matching "{author_hint}" ~{year_hint}).
+- The target may be a BOOK or BOOK CHAPTER whose key facts (title, year, publisher, \
+editors) are on the title and copyright pages. Books absolutely count as citable.
+
+Fields:
+- authors: EVERY author of the TARGET work, in order, each {{family, given}} (full given \
+names as printed). For an edited volume with no authors, leave authors empty, fill editors.
+- editors: editors of the containing book (chapter) or edited volume; else empty.
+- title: the TARGET work's own title.
+- container_title: the JOURNAL name (article) or the BOOK title (chapter); empty for a \
+whole book.
+- volume, issue, pages, publisher: as printed; "" if absent.
+- doi: the TARGET work's own DOI if printed; else "".
+- year_on_page: the TARGET work's 4-digit year as printed; "" if not visible.
+- year_matches_filename: the filename says {year_hint}; TRUE if the target's year matches \
+it, FALSE if it clearly differs, TRUE if {year_hint} is "unknown" or you cannot tell.
+- keywords: author keywords if listed, else 3-8 inferred topical terms (lowercase).
+- abstract: the target's abstract verbatim if present; else "".
+- subjects: 1-4 broad field/discipline labels.
+- affiliations: distinct author institutions as printed; else [].
+- is_citable_work: TRUE for any single scholarly work (article, preprint, thesis, report, \
+book chapter, or whole book). FALSE only for a pure table of contents, index, standalone \
+bibliography, questionnaire, or cover sheet.
+- confidence: high/medium/low.
+
+Return JSON matching the schema."""
+
+
 # ── PDF helpers ────────────────────────────────────────────────────────────────
 
 
@@ -326,18 +370,30 @@ def _jpegs(path: Path, pages: int = 2, dpi: int = 100) -> list[bytes]:
     return out
 
 
-def _build_request(custom_id: str, path: Path, text: str) -> dict | None:
-    """Build one Batch-API chat-completion request (text, else page images)."""
+def _build_request(custom_id: str, path: Path, text: str, deep: bool = False) -> dict | None:
+    """Build one Batch-API chat-completion request (text, else page images).
+
+    ``deep`` uses the disambiguating prompt (filename author+year hint, ignore a leading
+    reference list, handle books) and more context — for the second-pass retry.
+    """
     year_hint = _filename_year(path.name) or "unknown"
-    prompt = PROMPT_TEMPLATE.format(year_hint=year_hint)
-    if len(text.strip()) >= 200:
-        content: list = [{"type": "text", "text": "DOCUMENT TEXT:\n\n" + text[:8000]}]
+    if deep:
+        prompt = PROMPT_DEEP_TEMPLATE.format(
+            author_hint=_filename_author(path.name) or "unknown", year_hint=year_hint)
+        # Higher text threshold in deep mode so partial-OCR scans (a few hundred chars
+        # of garbage) fall through to vision instead of failing on the text path.
+        text_budget, vision_pages, text_min = 16000, 4, 1500
     else:
-        imgs = _jpegs(path)
+        prompt = PROMPT_TEMPLATE.format(year_hint=year_hint)
+        text_budget, vision_pages, text_min = 8000, 2, 200
+    if len(text.strip()) >= text_min:
+        content: list = [{"type": "text", "text": "DOCUMENT TEXT:\n\n" + text[:text_budget]}]
+    else:
+        imgs = _jpegs(path, pages=vision_pages)
         if not imgs:
             return None
         content = [{"type": "text", "text": "The document pages are attached as images."}]
-        for im in imgs[:2]:
+        for im in imgs[:vision_pages]:
             b64 = base64.b64encode(im).decode()
             content.append({"type": "image_url",
                             "image_url": {"url": "data:image/jpeg;base64," + b64}})
@@ -525,14 +581,18 @@ def submit(args) -> int:
     cr_hits = 0
 
     def process(p: Path):
-        text = _first_pages_text(p, pages=2)
-        doi_m = DOI_RE.search(text)
-        if doi_m:
-            rec = crossref_full(doi_m.group(0).rstrip(".,;)"), args.mailto, cr_cache, lock)
-            if rec:
-                rec = finalize_record(dict(rec), p.name)
-                if has_minimum_fields(rec):
-                    return ("crossref", p.name, rec)
+        text = _first_pages_text(p, pages=args.pages)
+        # Deep retry skips Crossref: these already failed it, and feeding more pages for
+        # a DOI risks grabbing a stray DOI from a leading reference list. Go straight to
+        # the disambiguating LLM prompt instead.
+        if not args.deep:
+            doi_m = DOI_RE.search(text)
+            if doi_m:
+                rec = crossref_full(doi_m.group(0).rstrip(".,;)"), args.mailto, cr_cache, lock)
+                if rec:
+                    rec = finalize_record(dict(rec), p.name)
+                    if has_minimum_fields(rec):
+                        return ("crossref", p.name, rec)
         return ("llm", p.name, text, p)
 
     pending: list[tuple] = []
@@ -565,7 +625,7 @@ def submit(args) -> int:
     cmap: dict[str, str] = {}
     reqs: list[tuple[str, int]] = []  # (json line, est tokens)
     for i, (name, path, text) in enumerate(pending):
-        req = _build_request(f"m{i:06d}", path, text)
+        req = _build_request(f"m{i:06d}", path, text, deep=args.deep)
         if req is None:
             continue  # unreadable scan; left to the filename fallback at render time
         cmap[req["custom_id"]] = name
@@ -712,6 +772,12 @@ def main() -> int:
     ap.add_argument("--tag", help="namespace for the batch state file (for a 2nd pass)")
     ap.add_argument("--poll", type=int, default=90,
                     help="seconds between drive poll rounds")
+    ap.add_argument("--pages", type=int, default=2,
+                    help="first-pages of text to read per PDF (use more with --deep)")
+    ap.add_argument("--deep", action="store_true",
+                    help="retry mode: skip Crossref, use the disambiguating prompt "
+                         "(filename author+year hint, ignore leading reference lists, "
+                         "handle books) + more pages")
     args = ap.parse_args()
 
     return {"submit": submit, "status": status,
