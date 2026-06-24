@@ -50,8 +50,28 @@ _FILENAME_RE = re.compile(r"^.*_(?P<year>\d{4})(?P<dis>[a-z])?\.pdf$", re.IGNORE
 OPENAI_FILES_URL = "https://api.openai.com/v1/files"
 OPENAI_BATCHES_URL = "https://api.openai.com/v1/batches"
 MODEL = "gpt-5-mini"
-MAX_BATCH_BYTES = 190_000_000      # OpenAI batch input file limit is 200 MB
-MAX_BATCH_REQUESTS = 40_000        # OpenAI batch request limit is 50k
+MAX_BATCH_BYTES = 190_000_000        # OpenAI batch input file limit is 200 MB
+MAX_BATCH_REQUESTS = 40_000          # OpenAI batch request limit is 50k
+# The org's enqueued-token cap is 20M for gpt-5-mini batches; pack chunks under it and
+# only keep this many tokens in flight at once (rolling submission).
+ENQUEUED_TOKEN_BUDGET = 18_000_000
+
+
+def _est_tokens(req: dict) -> int:
+    """Rough enqueued-token estimate for one batch request (input chars/4 + max output)."""
+    body = req["body"]
+    chars = 0
+    for m in body.get("messages", []):
+        content = m.get("content", "")
+        if isinstance(content, str):
+            chars += len(content)
+        else:
+            for part in content:
+                if part.get("type") == "text":
+                    chars += len(part.get("text", ""))
+                elif part.get("type") == "image_url":
+                    chars += 4000  # ~1k tokens for a low-detail page image
+    return chars // 4 + int(body.get("max_completion_tokens", 2500)) + 200
 
 # Crossref `type` → our coarse type used by the APA formatter.
 _CR_TYPE = {
@@ -311,7 +331,7 @@ def _build_request(custom_id: str, path: Path, text: str) -> dict | None:
     year_hint = _filename_year(path.name) or "unknown"
     prompt = PROMPT_TEMPLATE.format(year_hint=year_hint)
     if len(text.strip()) >= 200:
-        content: list = [{"type": "text", "text": "DOCUMENT TEXT:\n\n" + text[:9000]}]
+        content: list = [{"type": "text", "text": "DOCUMENT TEXT:\n\n" + text[:8000]}]
     else:
         imgs = _jpegs(path)
         if not imgs:
@@ -329,7 +349,7 @@ def _build_request(custom_id: str, path: Path, text: str) -> dict | None:
                             "json_schema": {"name": "apa_biblio", "strict": True,
                                             "schema": OPENAI_SCHEMA}},
         "reasoning_effort": "low",
-        "max_completion_tokens": 4000,
+        "max_completion_tokens": 2500,
     }
     return {"custom_id": custom_id, "method": "POST",
             "url": "/v1/chat/completions", "body": body}
@@ -376,12 +396,106 @@ def _state_path(tag: str | None) -> Path:
     return Path(f".apa_manifest_batch{('_' + tag) if tag else ''}.json")
 
 
+def _chunk_path(tag: str | None, idx: int) -> str:
+    return f".apa_batch{('_' + tag) if tag else ''}_chunk_{idx:03d}.jsonl"
+
+
+# ── Batch HTTP helpers ─────────────────────────────────────────────────────────
+
+
+def _batch_info(batch_id: str, headers: dict) -> dict:
+    import requests
+    return requests.get(f"{OPENAI_BATCHES_URL}/{batch_id}", headers=headers, timeout=30).json()
+
+
+def _upload_and_create(jsonl_path: str, headers: dict) -> str:
+    """Upload a JSONL request file and create a 24h batch; return the batch id."""
+    import requests
+    with open(jsonl_path, "rb") as fh:
+        up = requests.post(OPENAI_FILES_URL, headers=headers,
+                           files={"file": (Path(jsonl_path).name, fh)},
+                           data={"purpose": "batch"}, timeout=600)
+    up.raise_for_status()
+    fid = up.json()["id"]
+    b = requests.post(OPENAI_BATCHES_URL, headers=headers,
+                      json={"input_file_id": fid, "endpoint": "/v1/chat/completions",
+                            "completion_window": "24h"}, timeout=60)
+    b.raise_for_status()
+    return b.json()["id"]
+
+
+def _submit_pending(state: dict, headers: dict) -> int:
+    """Submit pending chunks while keeping in-flight tokens under the enqueued cap."""
+    inflight = sum(c["tokens"] for c in state["chunks"] if c["status"] == "submitted")
+    submitted = 0
+    for c in state["chunks"]:
+        if c["status"] != "pending":
+            continue
+        if inflight > 0 and inflight + c["tokens"] > ENQUEUED_TOKEN_BUDGET:
+            break  # no room yet; wait for an in-flight batch to finish
+        c["batch_id"] = _upload_and_create(c["file"], headers)
+        c["status"] = "submitted"
+        inflight += c["tokens"]
+        submitted += 1
+    return submitted
+
+
+def _collect_completed(state: dict, headers: dict) -> tuple[int, int, dict]:
+    """Poll submitted chunks; merge completed ones into the manifest; mark failures."""
+    import requests
+    manifest = _load(state["out"])
+    cmap = state["cmap"]
+    usage = {"in": 0, "out": 0}
+    n_llm = 0
+    flags = 0
+    for c in state["chunks"]:
+        if c["status"] != "submitted":
+            continue
+        j = _batch_info(c["batch_id"], headers)
+        s = j.get("status")
+        if s == "completed":
+            out = requests.get(f"{OPENAI_FILES_URL}/{j['output_file_id']}/content",
+                               headers=headers, timeout=600).text
+            for line in out.splitlines():
+                if not line.strip():
+                    continue
+                o = json.loads(line)
+                name = cmap.get(o["custom_id"])
+                if not name:
+                    continue
+                try:
+                    body = o["response"]["body"]
+                    u = body.get("usage", {})
+                    usage["in"] += u.get("prompt_tokens", 0)
+                    usage["out"] += u.get("completion_tokens", 0)
+                    res = json.loads(body["choices"][0]["message"]["content"])
+                except Exception:
+                    res = None
+                rec = llm_result_to_record(res)
+                if rec:
+                    rec = finalize_record(rec, name)
+                    if has_minimum_fields(rec):
+                        manifest[name] = rec
+                        n_llm += 1
+                        if rec.get("year_flag"):
+                            flags += 1
+            c["status"] = "completed"
+            try:
+                os.unlink(c["file"])
+            except OSError:
+                pass
+        elif s in ("failed", "expired", "cancelled"):
+            c["status"] = "failed"
+            c["error"] = str((j.get("errors") or {}).get("data"))[:200]
+    if n_llm:
+        _save(state["out"], manifest)
+    return n_llm, flags, usage
+
+
 # ── submit ───────────────────────────────────────────────────────────────────
 
 
 def submit(args) -> int:
-    import requests
-
     key = os.environ.get("OPENAI_API_KEY")
     if not key:
         print("error: OPENAI_API_KEY not set", file=sys.stderr)
@@ -404,8 +518,8 @@ def submit(args) -> int:
     todo = [p for p in pdfs if args.refresh or p.name not in manifest]
     if args.limit:
         todo = todo[: args.limit]
-    print(f"{len(pdfs)} PDFs; {len(pdfs) - len(todo)} already in manifest; "
-          f"processing {len(todo)} ...", file=sys.stderr)
+    print(f"{len(pdfs)} PDFs; {len(todo)} to process "
+          f"({len(pdfs) - len(todo)} already in manifest or capped) ...", file=sys.stderr)
 
     # Phase A+B: read first pages, resolve DOIs via Crossref (free), queue the rest.
     cr_hits = 0
@@ -440,151 +554,142 @@ def submit(args) -> int:
     _save(args.crossref_cache, cr_cache)
     print(f"Crossref resolved {cr_hits}; {len(pending)} need the LLM batch.", file=sys.stderr)
 
+    state_path = str(_state_path(args.tag))
     if not pending:
+        _save(state_path, {"dir": str(root), "out": args.out, "cmap": {}, "chunks": []})
         print("nothing to batch — manifest is complete from Crossref.", file=sys.stderr)
-        _state_path(args.tag).write_text(json.dumps(
-            {"batches": [], "map": {}, "dir": str(root), "out": args.out}))
         return 0
 
-    # Phase C: build batch JSONL request lines, chunk by size/count, upload + create.
+    # Phase C: build requests, pack into token-budgeted chunks (≤ enqueued cap), write
+    # each chunk's JSONL to disk. `drive` uploads/creates them in a rolling fashion.
     cmap: dict[str, str] = {}
-    lines: list[str] = []
+    reqs: list[tuple[str, int]] = []  # (json line, est tokens)
     for i, (name, path, text) in enumerate(pending):
-        cid = f"m{i:06d}"
-        req = _build_request(cid, path, text)
+        req = _build_request(f"m{i:06d}", path, text)
         if req is None:
             continue  # unreadable scan; left to the filename fallback at render time
-        cmap[cid] = name
-        lines.append(json.dumps(req))
+        cmap[req["custom_id"]] = name
+        reqs.append((json.dumps(req), _est_tokens(req)))
 
-    batches: list[str] = []
-    chunk: list[str] = []
-    chunk_bytes = 0
+    chunks: list[dict] = []
+    cur: list[str] = []
+    cur_tok = cur_bytes = 0
 
-    def flush(chunk_lines: list[str]) -> None:
-        if not chunk_lines:
+    def flush():
+        nonlocal cur, cur_tok, cur_bytes
+        if not cur:
             return
-        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as tf:
-            tf.write("\n".join(chunk_lines) + "\n")
-            tmp = tf.name
-        try:
-            with open(tmp, "rb") as fh:
-                up = requests.post(OPENAI_FILES_URL, headers=headers,
-                                   files={"file": (Path(tmp).name, fh)},
-                                   data={"purpose": "batch"}, timeout=600)
-            up.raise_for_status()
-            fid = up.json()["id"]
-            b = requests.post(OPENAI_BATCHES_URL, headers=headers,
-                              json={"input_file_id": fid,
-                                    "endpoint": "/v1/chat/completions",
-                                    "completion_window": "24h"}, timeout=60)
-            b.raise_for_status()
-            batches.append(b.json()["id"])
-        finally:
-            os.unlink(tmp)
+        path = _chunk_path(args.tag, len(chunks))
+        Path(path).write_text("\n".join(cur) + "\n")
+        chunks.append({"file": path, "tokens": cur_tok, "n": len(cur),
+                       "batch_id": None, "status": "pending"})
+        cur, cur_tok, cur_bytes = [], 0, 0
 
-    for line in lines:
+    for line, tok in reqs:
         ln = len(line) + 1
-        if chunk and (chunk_bytes + ln > MAX_BATCH_BYTES or len(chunk) >= MAX_BATCH_REQUESTS):
-            flush(chunk)
-            chunk, chunk_bytes = [], 0
-        chunk.append(line)
-        chunk_bytes += ln
-    flush(chunk)
+        if cur and (cur_tok + tok > ENQUEUED_TOKEN_BUDGET
+                    or cur_bytes + ln > MAX_BATCH_BYTES
+                    or len(cur) >= MAX_BATCH_REQUESTS):
+            flush()
+        cur.append(line)
+        cur_tok += tok
+        cur_bytes += ln
+    flush()
 
-    _state_path(args.tag).write_text(json.dumps(
-        {"batches": batches, "map": cmap, "dir": str(root), "out": args.out}))
-    print(f"submitted {len(lines)} requests across {len(batches)} batch(es): "
-          f"{', '.join(batches)}")
-    print(f"check with:  python3 {Path(__file__).name} status"
-          + (f" --tag {args.tag}" if args.tag else ""))
+    state = {"dir": str(root), "out": args.out, "cmap": cmap, "chunks": chunks}
+    n0 = _submit_pending(state, headers)
+    _save(state_path, state)
+    print(f"packed {len(reqs)} requests into {len(chunks)} chunk(s) "
+          f"(~{ENQUEUED_TOKEN_BUDGET // 1_000_000}M tokens each); submitted {n0} now.")
+    print(f"run:  python3 {Path(__file__).name} drive"
+          + (f" --tag {args.tag}" if args.tag else "")
+          + "   (rolling submit + collect until done)")
     return 0
 
 
 # ── status ───────────────────────────────────────────────────────────────────
 
 
-def _batch_info(batch_id: str, headers: dict) -> dict:
-    import requests
-    return requests.get(f"{OPENAI_BATCHES_URL}/{batch_id}", headers=headers, timeout=30).json()
-
-
 def status(args) -> int:
-    key = os.environ.get("OPENAI_API_KEY")
-    headers = {"Authorization": f"Bearer {key}"}
-    st = _load(str(_state_path(args.tag)))
-    if not st.get("batches"):
-        print("no batches in state (Crossref-only run, or not submitted yet).")
+    headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
+    state = _load(str(_state_path(args.tag)))
+    chunks = state.get("chunks") or []
+    if not chunks:
+        print("no chunks (submit not run, or Crossref-only).")
         return 0
-    all_done = True
-    for bid in st["batches"]:
-        j = _batch_info(bid, headers)
-        rc = j.get("request_counts", {})
-        print(f"{bid}  {j.get('status')}  "
-              f"completed={rc.get('completed')}/{rc.get('total')} failed={rc.get('failed')}")
-        if j.get("status") != "completed":
-            all_done = False
-    print("ALL COMPLETE — run `collect`." if all_done else "not all complete yet.")
+    for i, c in enumerate(chunks):
+        line = (f"chunk{i:03d} [{c['status']:<9}] n={c['n']:<5} ~{c['tokens'] // 1000}k tok")
+        if c.get("batch_id") and c["status"] == "submitted":
+            j = _batch_info(c["batch_id"], headers)
+            rc = j.get("request_counts", {})
+            line += f"  {j.get('status')} {rc.get('completed')}/{rc.get('total')}"
+        if c.get("error"):
+            line += f"  ERR {c['error'][:80]}"
+        print(line)
+    done = sum(1 for c in chunks if c["status"] == "completed")
+    print(f"{done}/{len(chunks)} chunks collected.")
     return 0
 
 
-# ── collect ──────────────────────────────────────────────────────────────────
+# ── collect (one-shot) ─────────────────────────────────────────────────────────
 
 
 def collect(args) -> int:
-    import requests
-    key = os.environ.get("OPENAI_API_KEY")
-    headers = {"Authorization": f"Bearer {key}"}
-    st = _load(str(_state_path(args.tag)))
-    cmap = st.get("map", {})
-    out_path = st.get("out", args.out)
-    manifest = _load(out_path)
-
-    if not st.get("batches"):
-        print("no batches to collect (Crossref-only run).")
+    headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
+    state = _load(str(_state_path(args.tag)))
+    if not state.get("chunks"):
+        print("nothing to collect.")
         return 0
-
-    usage = {"in": 0, "out": 0}
-    n_llm = 0
-    flags = 0
-    for bid in st["batches"]:
-        j = _batch_info(bid, headers)
-        if j.get("status") != "completed":
-            print(f"{bid} is {j.get('status')}, not completed — aborting.", file=sys.stderr)
-            return 1
-        out = requests.get(f"{OPENAI_FILES_URL}/{j['output_file_id']}/content",
-                           headers=headers, timeout=600).text
-        for line in out.splitlines():
-            if not line.strip():
-                continue
-            o = json.loads(line)
-            name = cmap.get(o["custom_id"])
-            if not name:
-                continue
-            try:
-                body = o["response"]["body"]
-                u = body.get("usage", {})
-                usage["in"] += u.get("prompt_tokens", 0)
-                usage["out"] += u.get("completion_tokens", 0)
-                res = json.loads(body["choices"][0]["message"]["content"])
-            except Exception:
-                res = None
-            rec = llm_result_to_record(res)
-            if rec:
-                rec = finalize_record(rec, name)
-                if has_minimum_fields(rec):
-                    manifest[name] = rec
-                    n_llm += 1
-                    if rec.get("year_flag"):
-                        flags += 1
-
-    _save(out_path, manifest)
-    cost = (usage["in"] / 1e6 * 0.25 + usage["out"] / 1e6 * 2.0) * 0.5  # 50% batch discount
+    n_llm, flags, usage = _collect_completed(state, headers)
+    _submit_pending(state, headers)  # free budget → submit any now-eligible chunk
+    _save(str(_state_path(args.tag)), state)
+    cost = (usage["in"] / 1e6 * 0.25 + usage["out"] / 1e6 * 2.0) * 0.5
+    manifest = _load(state["out"])
     n_cr = sum(1 for r in manifest.values() if r.get("source") == "crossref")
-    print(f"\n=== manifest: {out_path} ({len(manifest)} records: {n_cr} crossref, "
-          f"{n_llm} llm this collect) ===")
-    print(f"  year mismatches flagged (year_flag): {flags}")
-    print(f"  batch tokens: {usage['in']:,} in / {usage['out']:,} out  (~${cost:.2f} w/ batch discount)")
+    print(f"collected {n_llm} llm records ({flags} year_flag). manifest now {len(manifest)} "
+          f"({n_cr} crossref). ~${cost:.2f} this batch.")
+    return 0
+
+
+# ── drive (rolling submit + collect until done) ────────────────────────────────
+
+
+def drive(args) -> int:
+    import time
+    headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
+    sp = str(_state_path(args.tag))
+    state = _load(sp)
+    if not state.get("chunks"):
+        print("no chunks in state — run submit first.", file=sys.stderr)
+        return 1
+    total_llm = total_flags = 0
+    total_usage = {"in": 0, "out": 0}
+    rnd = 0
+    while True:
+        n_llm, flags, usage = _collect_completed(state, headers)
+        _submit_pending(state, headers)
+        _save(sp, state)
+        total_llm += n_llm
+        total_flags += flags
+        total_usage["in"] += usage["in"]
+        total_usage["out"] += usage["out"]
+        counts: dict[str, int] = {}
+        for c in state["chunks"]:
+            counts[c["status"]] = counts.get(c["status"], 0) + 1
+        print(f"{time.strftime('%H:%M')} round {rnd}: {counts}  +{n_llm} records "
+              f"(total {total_llm})", flush=True)
+        if not any(c["status"] in ("pending", "submitted") for c in state["chunks"]):
+            break
+        rnd += 1
+        time.sleep(args.poll)
+    cost = (total_usage["in"] / 1e6 * 0.25 + total_usage["out"] / 1e6 * 2.0) * 0.5
+    manifest = _load(state["out"])
+    n_cr = sum(1 for r in manifest.values() if r.get("source") == "crossref")
+    failed = [c for c in state["chunks"] if c["status"] == "failed"]
+    print(f"\n=== DONE: {state['out']} ({len(manifest)} records: {n_cr} crossref, "
+          f"{total_llm} llm) ===")
+    print(f"  year_flag mismatches: {total_flags} | failed chunks: {len(failed)} "
+          f"| ~${cost:.2f} (batch discount)")
     return 0
 
 
@@ -594,7 +699,7 @@ def collect(args) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["submit", "status", "collect"])
+    ap.add_argument("cmd", choices=["submit", "status", "collect", "drive"])
     ap.add_argument("directory", nargs="?", default="/Users/devon7y/Papers")
     ap.add_argument("--out", default="papers_metadata.json")
     ap.add_argument("--files", nargs="*", help="only these basenames")
@@ -605,13 +710,12 @@ def main() -> int:
     ap.add_argument("--mailto", default=os.environ.get("CROSSREF_MAILTO", "devon7y@gmail.com"))
     ap.add_argument("--crossref-cache", default=".crossref_full_cache.json")
     ap.add_argument("--tag", help="namespace for the batch state file (for a 2nd pass)")
+    ap.add_argument("--poll", type=int, default=90,
+                    help="seconds between drive poll rounds")
     args = ap.parse_args()
 
-    if args.cmd == "submit":
-        return submit(args)
-    if args.cmd == "status":
-        return status(args)
-    return collect(args)
+    return {"submit": submit, "status": status,
+            "collect": collect, "drive": drive}[args.cmd](args)
 
 
 if __name__ == "__main__":
