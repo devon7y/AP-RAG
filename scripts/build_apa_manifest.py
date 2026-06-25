@@ -150,6 +150,99 @@ def _str_list(items) -> list[str]:
     return [s.strip() for s in (items or []) if isinstance(s, str) and s.strip()]
 
 
+# ── Field normalizers (shared with scripts/clean_manifest.py) ─────────────────
+
+_NAME_PARTICLES = {"van", "von", "de", "der", "den", "del", "della", "di", "da",
+                   "la", "le", "du", "dos", "das", "ten", "ter", "zur", "zum"}
+
+
+def _recase_token(tok: str) -> str:
+    out = []
+    for seg in tok.split("-"):
+        if not seg:
+            out.append(seg)
+            continue
+        low = seg.lower()
+        if low.startswith("mc") and len(seg) > 2:
+            out.append("Mc" + seg[2:].capitalize())
+        elif low.startswith("mac") and len(seg) > 3:
+            out.append("Mac" + seg[3:].capitalize())
+        elif "'" in seg:
+            out.append("'".join(p.capitalize() for p in seg.split("'")))
+        else:
+            out.append(seg.capitalize())
+    return "-".join(out)
+
+
+def fix_name_case(name: str) -> str:
+    """Re-case an ALL-UPPERCASE surname (WESTBURY → Westbury, MCGAUGH → McGaugh,
+    LONGUET-HIGGINS → Longuet-Higgins, O'REILLY → O'Reilly). Leaves already-mixed-case
+    names and anything with digits/symbols (e.g. GPT-5.42) untouched."""
+    name = (name or "").strip()
+    if not name or name != name.upper() or name == name.lower():
+        return name
+    if re.search(r"[^A-Za-z .'\-]", name):  # digits/other → not a plain surname
+        return name
+    toks = name.split()
+    return " ".join(t.lower() if i and t.lower() in _NAME_PARTICLES else _recase_token(t)
+                    for i, t in enumerate(toks))
+
+
+def dedup_subjects(subjects) -> list[str]:
+    """Dedup case-insensitively, preferring a variant with an uppercase letter."""
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for s in subjects or []:
+        s = re.sub(r"\s+", " ", (s or "").strip())
+        if not s:
+            continue
+        k = s.lower()
+        if k not in seen:
+            seen[k] = len(out)
+            out.append(s)
+        elif out[seen[k]] == out[seen[k]].lower() and s != s.lower():
+            out[seen[k]] = s  # upgrade lowercase-only to a capitalized variant
+    return out
+
+
+def clean_affiliations(affs) -> list[str]:
+    """Conservative cleanup: strip leading affiliation-marker digits (2Brown → Brown,
+    '1 University' → 'University'), trailing punctuation/whitespace, and dedup."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for a in affs or []:
+        a = re.sub(r"^\s*\d{1,2}\s*(?=[A-Z][a-z])", "", a or "")  # 1-2 digit marker, not '3T'/street #
+        a = re.sub(r"\s+", " ", a).strip().strip(",;").strip()
+        if a and a.lower() not in seen:
+            seen.add(a.lower())
+            out.append(a)
+    return out
+
+
+def clean_keywords(kws) -> list[str]:
+    """Lowercase, trim, dedup keywords (they are meant to be lowercase noun phrases)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for k in kws or []:
+        k = re.sub(r"\s+", " ", (k or "").strip().lower())
+        if k and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
+def normalize_record(record: dict) -> dict:
+    """Apply the field normalizers in place (author/editor case, subjects, affiliations,
+    keywords). Run at build time so the manifest is clean; re-applied by clean_manifest.py."""
+    for who in ("authors", "editors"):
+        for p in record.get(who) or []:
+            p["family"] = fix_name_case(p.get("family", ""))
+    record["subjects"] = dedup_subjects(record.get("subjects"))
+    record["affiliations"] = clean_affiliations(record.get("affiliations"))
+    record["keywords"] = clean_keywords(record.get("keywords"))
+    return record
+
+
 def crossref_to_record(msg: dict, doi: str = "") -> dict:
     """Map a Crossref ``message`` object to our manifest record schema. The ``year``
     here is Crossref's own (used only to verify the filename year in finalize_record)."""
@@ -219,7 +312,7 @@ def finalize_record(record: dict, filename: str) -> dict:
             record["year_flag"] = f"filename={fy}; document={document_year}"
     elif document_year:
         record["year"] = document_year  # no year in filename → fall back to the document
-    return record
+    return normalize_record(record)
 
 
 def has_minimum_fields(record: dict | None) -> bool:
@@ -278,7 +371,8 @@ initials. For an edited volume with no authors, leave authors empty and fill edi
 - editors: editors of the containing book (for a book chapter) or of an edited volume; \
 else empty.
 - title: the work's own title (article or chapter or book title).
-- container_title: the JOURNAL name for an article, or the BOOK title for a chapter. \
+- container_title: the FULL journal name for an article (NOT an abbreviation like \
+'Cogn Neurodyn' — write 'Cognitive Neurodynamics'), or the BOOK title for a chapter. \
 Empty for a whole book.
 - volume, issue, pages: as printed ("128", "3", "97-123"); "" if absent.
 - publisher: for books/chapters/reports; "" for journal articles.
@@ -319,7 +413,7 @@ Fields:
 names as printed). For an edited volume with no authors, leave authors empty, fill editors.
 - editors: editors of the containing book (chapter) or edited volume; else empty.
 - title: the TARGET work's own title.
-- container_title: the JOURNAL name (article) or the BOOK title (chapter); empty for a \
+- container_title: the FULL journal name (article; not abbreviated) or the BOOK title (chapter); empty for a \
 whole book.
 - volume, issue, pages, publisher: as printed; "" if absent.
 - doi: the TARGET work's own DOI if printed; else "".
