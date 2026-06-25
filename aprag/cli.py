@@ -61,8 +61,10 @@ def _format_papers(result: dict, index: dict | None) -> str:
     out = [header]
     for i, p in enumerate(papers, 1):
         out.append(f"\n[{i}] {p.get('apa', '')}  (score {p.get('score')})")
-        ref = {"filename": p.get("filename", ""), "hades_path": p.get("hades_path", "")}
-        locator = references.locator_for(ref, index) if index is not None else p.get("hades_path", "")
+        ref = {"filename": p.get("filename", ""), "drive_url": p.get("drive_url", ""),
+               "hades_path": p.get("hades_path", "")}
+        locator = (references.locator_for(ref, index) if index is not None
+                   else (p.get("drive_url") or p.get("hades_path", "")))
         pages = p.get("pages")
         line = f"    {locator}"
         if pages:
@@ -118,6 +120,45 @@ def _format_chunks(result: dict, show_entities: bool) -> str:
 # ── Command handlers ─────────────────────────────────────────────────────────
 
 
+def _allow_file_links() -> None:
+    """markdown-it (rich's markdown parser) rejects ``file://`` URLs by default for
+    safety, so the reference "open PDF" links render as raw ``[open PDF](file://…)``
+    text. Relax ``validateLink`` to also accept ``file://`` (still blocking
+    javascript:/data:) — the CLI only renders our own trusted server output, and
+    clickable local PDFs are the whole point."""
+    from markdown_it import MarkdownIt
+    if getattr(MarkdownIt, "_aprag_file_links", False):
+        return
+    _orig = MarkdownIt.validateLink
+    MarkdownIt.validateLink = lambda self, url: url.lower().lstrip().startswith("file:") or _orig(self, url)
+    MarkdownIt._aprag_file_links = True
+
+
+def _print_answer(text: str, plain: bool = False) -> None:
+    """Render the markdown answer for the terminal with ``rich`` when interactive;
+    otherwise print it raw (piped output, ``--plain``, or ``rich`` not installed).
+    ``rich`` emits OSC-8 hyperlinks, so the reference ``file://`` links stay clickable
+    in iTerm2."""
+    if not plain and sys.stdout.isatty():
+        try:
+            from rich.console import Console
+            from rich.markdown import Markdown
+            from rich.theme import Theme
+
+            _allow_file_links()
+            # rich's default link style is a dim "underline blue" (markdown.link_url),
+            # hard to read on dark backgrounds. Use a brighter default and let the user
+            # retune it without editing code via APRAG_LINK_STYLE — any rich style
+            # string, e.g. "bold magenta", "green underline", "#ffaa00 underline".
+            link_style = os.environ.get("APRAG_LINK_STYLE", "bold bright_cyan underline")
+            theme = Theme({"markdown.link": link_style, "markdown.link_url": link_style})
+            Console(theme=theme).print(Markdown(text))
+            return
+        except Exception:
+            pass
+    print(text)
+
+
 async def _cmd_ask(args: argparse.Namespace) -> int:
     base_url = client.resolve_base_url(args.server, args.local)
     payload = await client.query_full(
@@ -127,6 +168,7 @@ async def _cmd_ask(args: argparse.Namespace) -> int:
         top_k=args.top_k,
         chunk_top_k=args.chunk_top_k,
         user_prompt=args.user_prompt,
+        reasoning=args.reasoning,
         filters=_filters_from_args(args),
     )
     answer = payload.get("answer", "No relevant information found.")
@@ -139,7 +181,7 @@ async def _cmd_ask(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps({"answer": answer, "references": refs, "mode": args.mode}, indent=2))
     else:
-        print(answer)
+        _print_answer(answer, getattr(args, "plain", False))
     return 0
 
 
@@ -268,6 +310,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ask.add_argument("--top-k", type=int, default=None, dest="top_k")
     p_ask.add_argument("--chunk-top-k", type=int, default=None, dest="chunk_top_k")
     p_ask.add_argument("--user-prompt", default=None, help="Extra instructions for the answer LLM.")
+    p_ask.add_argument("--reasoning", choices=["minimal", "low", "medium", "high"], default="minimal",
+                       help="Answer LLM reasoning effort (default minimal; higher = slower, more careful).")
+    p_ask.add_argument("--plain", action="store_true",
+                       help="Print raw markdown instead of rendering it in the terminal.")
     p_ask.set_defaults(func=_cmd_ask)
 
     p_chunks = sub.add_parser("chunks", parents=[common, filt], help="Raw retrieved chunks (no LLM).")

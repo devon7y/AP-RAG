@@ -14,6 +14,7 @@ Endpoints:
 
 import asyncio
 import os
+import time
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -46,6 +47,10 @@ PORT          = int(os.environ.get("PORT", 8001))
 # local copy of a cited PDF.
 APA_MANIFEST      = os.environ.get("APA_MANIFEST", os.path.join(_HERE, "papers_metadata.json"))
 HADES_PAPERS_BASE = os.environ.get("HADES_PAPERS_BASE", apa.DEFAULT_HADES_BASE)
+# filename → Google Drive webViewLink map (built by scripts/build_drive_map.py). When
+# present, references fall back to the Drive link before hades. Set HADES_PAPERS_BASE=""
+# to drop hades entirely once the Drive map covers the corpus.
+APRAG_DRIVE_MAP   = os.environ.get("APRAG_DRIVE_MAP", os.path.join(_HERE, "drive_links.json"))
 
 # Set QDRANT_URL for LightRAG's Qdrant backend
 os.environ.setdefault("QDRANT_URL", QDRANT_URL)
@@ -60,18 +65,46 @@ _embed_client = AsyncOpenAI(base_url=EMBED_HOST, api_key="ignored")
 async def pc_embed(texts: list[str], context: str = "query") -> np.ndarray:
     # Forward LightRAG's task-aware context to the embedding server (extra_body adds
     # it to the request JSON). "query" → instruction applied, "document" → none.
+    _t0 = time.perf_counter()
     resp = await _embed_client.embeddings.create(
         model="qwen3-embedding-8b",
         input=texts,
         extra_body={"context": context},
     )
+    print(f"[TIMING] embed {time.perf_counter()-_t0:.2f}s ({len(texts)} text(s), ctx={context})", flush=True)
     return np.array([d.embedding for d in resp.data])
 
 
 # ── LLM via OpenAI ────────────────────────────────────────────────────────────
 
+# Reasoning effort for gpt-5-mini. Defaults to "minimal" everywhere; the answer
+# synthesis level is overridable per request (CLI/MCP/API). Keyword extraction and
+# any other structured/JSON call stay "minimal" — they are mechanical, so reasoning
+# only adds latency. Set per-request via a ContextVar so concurrent requests don't
+# interfere (it propagates through the awaited LightRAG calls in the same task).
+VALID_REASONING = ("minimal", "low", "medium", "high")
+# Per-request answer-synthesis effort. A process-global holder (not a ContextVar):
+# LightRAG dispatches LLM calls through a worker pool that captures the async context
+# early, so a ContextVar set per request never reaches the synthesis call. Serving is
+# single-user/serial so this is safe; truly concurrent callers at different levels
+# could race (acceptable for this use).
+_REASONING = {"effort": "minimal"}
+
+
+def _valid_reasoning(value) -> str:
+    v = (value or "minimal").strip().lower()
+    return v if v in VALID_REASONING else "minimal"
+
+
 async def openai_llm(prompt, system_prompt=None, history_messages=None, **kwargs):
-    return await openai_complete_if_cache(
+    if "reasoning_effort" not in kwargs:
+        # Structured calls (keyword extraction passes response_format=json_object)
+        # never need reasoning; the free-text answer synthesis uses the request level.
+        kwargs["reasoning_effort"] = (
+            "minimal" if kwargs.get("response_format") is not None else _REASONING["effort"]
+        )
+    _t0 = time.perf_counter()
+    _r = await openai_complete_if_cache(
         LLM_MODEL, prompt,
         system_prompt=system_prompt,
         history_messages=history_messages or [],
@@ -79,6 +112,10 @@ async def openai_llm(prompt, system_prompt=None, history_messages=None, **kwargs
         base_url="https://api.openai.com/v1",
         **kwargs,
     )
+    _pl = len(prompt) if isinstance(prompt, str) else -1
+    print(f"[TIMING] llm {time.perf_counter()-_t0:.2f}s effort={kwargs['reasoning_effort']} "
+          f"(prompt {_pl} chars -> out {len(_r or '')} chars)", flush=True)
+    return _r
 
 
 # ── RAG (loaded once at startup) ──────────────────────────────────────────────
@@ -132,6 +169,7 @@ class QueryRequest(BaseModel):
     top_k: int | None = None
     chunk_top_k: int | None = None
     user_prompt: str | None = None
+    reasoning: str | None = None    # answer-synthesis reasoning: minimal|low|medium|high (default minimal)
     filters: Filters | None = None
 
 
@@ -150,6 +188,21 @@ class SearchRequest(BaseModel):
     filters: Filters | None = None
 
 
+# Always-on citation-style instruction fed to LightRAG's answer prompt (its
+# {user_prompt} slot). The LLM cites by bracketed reference number; apa_citations
+# rewrites [n] → (Author, Year). Keeping the brackets clean yields proper APA7
+# in-text citations with no "see"/"Supported by" wrappers or doubled parentheses.
+CITATION_STYLE_PROMPT = (
+    "Citation style (APA7): cite each supporting source by placing its bracketed "
+    "reference number directly after the statement it supports, e.g. \"Lexical "
+    "decision times fall as word frequency rises [2].\" Use the bracket only — do NOT "
+    "add words such as \"see\", \"cf.\", \"e.g.\", or \"Supported by\" before it, do NOT "
+    "wrap it in extra parentheses, and do NOT cite the same source more than once in a "
+    "sentence. When several sources support one statement, group them in adjacent "
+    "brackets, e.g. \"… as widely reported [1][3].\""
+)
+
+
 def _build_query_param(req) -> QueryParam:
     """Build a QueryParam, leaving LightRAG defaults intact for unset optionals."""
     kwargs = {"mode": req.mode}
@@ -157,9 +210,15 @@ def _build_query_param(req) -> QueryParam:
         kwargs["top_k"] = req.top_k
     if req.chunk_top_k is not None:
         kwargs["chunk_top_k"] = req.chunk_top_k
+    # Always apply the citation style. Fold the reasoning level into user_prompt too:
+    # LightRAG's answer cache keys on query_param.user_prompt (operate.py), so this makes
+    # the cache distinguish effort levels without patching LightRAG — a `high` answer
+    # won't be served a cached `minimal` one. The bracketed marker is inert to the LLM.
+    parts = [CITATION_STYLE_PROMPT, f"[answer-effort: {_valid_reasoning(getattr(req, 'reasoning', None))}]"]
     user_prompt = getattr(req, "user_prompt", None)
-    if user_prompt is not None:
-        kwargs["user_prompt"] = user_prompt
+    if user_prompt:
+        parts.append(user_prompt)
+    kwargs["user_prompt"] = "\n\n".join(parts)
     return QueryParam(**kwargs)
 
 
@@ -277,7 +336,8 @@ async def _filtered_answer(req, filenames: set, manifest: dict) -> dict:
     try:
         id_to_pages = await _pages_by_reference({"chunks": chunks})
         answer, ref_models = apa.render_answer(
-            content, references, manifest, HADES_PAPERS_BASE, id_to_pages=id_to_pages
+            content, references, manifest, HADES_PAPERS_BASE, id_to_pages=id_to_pages,
+            drive_map=apa.load_drive_map(APRAG_DRIVE_MAP),
         )
     except Exception as exc:  # never let citation rewriting break a good answer
         print(f"APA rewrite (filtered) failed ({exc!r}); raw answer", flush=True)
@@ -303,6 +363,7 @@ def health():
 async def query(req: QueryRequest):
     if _rag is None:
         raise HTTPException(status_code=503, detail="RAG not initialized")
+    _REASONING["effort"] = _valid_reasoning(req.reasoning)  # answer-synthesis effort for this request
     manifest = apa.load_manifest(APA_MANIFEST)
 
     # Metadata filters → restrict to the matching papers (parallel filtered path).
@@ -320,7 +381,9 @@ async def query(req: QueryRequest):
     # aquery_llm returns the answer AND the reference_id→file_path map in one call,
     # so we can rewrite numeric citations to APA7 without a second retrieval or any
     # patch to LightRAG.
+    _tq = time.perf_counter()
     result = await _rag.aquery_llm(req.question, param=param)
+    print(f"[TIMING] aquery_llm TOTAL {time.perf_counter()-_tq:.2f}s (mode={req.mode})", flush=True)
     content = (result.get("llm_response") or {}).get("content") or ""
     references = (result.get("data") or {}).get("references") or []
     if not content:
@@ -328,10 +391,15 @@ async def query(req: QueryRequest):
                 "references": [], "mode": req.mode}
 
     try:
+        _tp = time.perf_counter()
         id_to_pages = await _pages_by_reference(result.get("data"))
+        print(f"[TIMING] pages {time.perf_counter()-_tp:.2f}s", flush=True)
+        _tr = time.perf_counter()
         answer, ref_models = apa.render_answer(
-            content, references, manifest, HADES_PAPERS_BASE, id_to_pages=id_to_pages
+            content, references, manifest, HADES_PAPERS_BASE, id_to_pages=id_to_pages,
+            drive_map=apa.load_drive_map(APRAG_DRIVE_MAP),
         )
+        print(f"[TIMING] render {time.perf_counter()-_tr:.2f}s", flush=True)
     except Exception as exc:  # never let citation rewriting break a good answer
         print(f"APA rewrite failed ({exc!r}); returning raw answer", flush=True)
         answer, ref_models = content, []
@@ -378,7 +446,8 @@ async def search_papers(req: SearchRequest):
         return {"status": "success", "papers": [], "count": 0, "matched_files": 0}
     chunks = await _vector_chunk_search(req.question, filenames, req.top_k)
     pages_by_file = await _pages_by_file(chunks)
-    papers = search.rank_papers(chunks, manifest, HADES_PAPERS_BASE, pages_by_file)
+    papers = search.rank_papers(chunks, manifest, HADES_PAPERS_BASE, pages_by_file,
+                                drive_map=apa.load_drive_map(APRAG_DRIVE_MAP))
     return {"status": "success", "papers": papers, "count": len(papers),
             "matched_files": (None if filenames is None else len(filenames))}
 

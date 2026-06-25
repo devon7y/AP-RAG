@@ -62,7 +62,8 @@ def _format_papers(result: dict) -> str:
     index = references.build_local_index()
     lines = [f"{len(papers)} paper(s) found:"]
     for i, p in enumerate(papers, 1):
-        ref = {"filename": p.get("filename", ""), "hades_path": p.get("hades_path", "")}
+        ref = {"filename": p.get("filename", ""), "drive_url": p.get("drive_url", ""),
+               "hades_path": p.get("hades_path", "")}
         locator = references.locator_for(ref, index)
         pages = p.get("pages")
         head = f"\n[{i}] {p.get('apa', '')}"
@@ -122,6 +123,7 @@ def _format_retrieval(result: dict) -> str:
 async def aprag_query(
     question: str,
     mode: str = "hybrid",
+    reasoning: str = "minimal",
     authors: list[str] | None = None,
     year: int | None = None,
     year_from: int | None = None,
@@ -147,6 +149,8 @@ async def aprag_query(
     Args:
         question: The research question.
         mode: Retrieval strategy — "hybrid" (default), "local", "global", "mix", "naive".
+        reasoning: answer LLM effort — "minimal" (default, fastest), "low", "medium", or
+            "high". Higher is slower but more careful; raise it only for hard questions.
         authors: restrict to these author surnames.
         year / year_from / year_to: restrict by publication year (exact or range).
         journals: restrict to these journals/venues (substring).
@@ -157,7 +161,7 @@ async def aprag_query(
     filters = _build_filters(authors, year, year_from, year_to, journals,
                              subjects, keywords, affiliations)
     try:
-        payload = await client.query_full(question, mode=mode, filters=filters)
+        payload = await client.query_full(question, mode=mode, reasoning=reasoning, filters=filters)
     except APRAGError as exc:
         return f"Query failed: {exc}"
     answer = payload.get("answer", "No relevant information found.")

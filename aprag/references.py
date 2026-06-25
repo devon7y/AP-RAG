@@ -93,12 +93,19 @@ def _strip_references(text: str) -> str:
 
 
 def locator_for(ref: dict, index: dict[str, str]) -> str:
-    """A display locator for a cited paper: a clickable local file:// link when the
-    PDF is found on this machine, else the hades fallback path."""
+    """A display locator for a cited paper, in fallback order:
+
+    local file:// link (PDF found on this machine — including a Google Drive for Desktop
+    mount under $APRAG_PAPERS_DIR) → the Google Drive web link → the hades path (if the
+    server still sets one) → the bare filename so the file is always identified.
+    """
     local = find_local(ref.get("filename", ""), index)
     if local:
         return f"[open PDF]({_file_url(local)})"
-    return ref.get("hades_path", "")
+    drive = ref.get("drive_url")
+    if drive:
+        return f"[open in Drive]({drive})"
+    return ref.get("hades_path") or ref.get("filename", "")
 
 
 def localize_answer(answer: str, references: list[dict],

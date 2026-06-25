@@ -144,7 +144,7 @@ def build_synthesis_context(references: list[dict], chunks: list[dict]) -> str:
 
 
 def rank_papers(chunks: list[dict], manifest: dict, hades_base: str,
-                pages_by_file: dict | None = None) -> list[dict]:
+                pages_by_file: dict | None = None, drive_map: dict | None = None) -> list[dict]:
     """Fold filtered chunks into ranked papers (best score + snippet per file)."""
     pages_by_file = pages_by_file or {}
     best: dict[str, dict] = {}
@@ -161,10 +161,12 @@ def rank_papers(chunks: list[dict], manifest: dict, hades_base: str,
 
     papers = []
     for fp, info in best.items():
-        rm = apa.build_ref_model("", fp, manifest, hades_base, pages=pages_by_file.get(fp))
+        rm = apa.build_ref_model("", fp, manifest, hades_base,
+                                 pages=pages_by_file.get(fp), drive_map=drive_map)
         papers.append({
             "filename": rm["filename"],
             "apa": rm["apa"],
+            "drive_url": rm["drive_url"],
             "hades_path": rm["hades_path"],
             "pages": rm["pages"],
             "score": round(info["score"], 4),

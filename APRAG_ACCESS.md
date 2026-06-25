@@ -123,12 +123,29 @@ underlying engine produces. Each reference resolves to a usable PDF location:
   aprag ask "…" --papers-dir /Volumes/lab/pdfs # add a dir for this call
   aprag ask "…" --no-local                     # skip local search; show hades paths
   ```
-- Otherwise it shows the **hades fallback path**
-  `hades.psych.ualberta.ca:/Users/Shared/aprag_papers/<filename>`.
+- Otherwise it shows a **Google Drive link** to that exact PDF (`[open in Drive]`), when a Drive
+  map is configured (see below) — then the **hades path** as a last resort, then the bare filename.
+  Fallback order: **local → Drive → hades → filename**.
 
 Local resolution happens entirely client-side (the server can't see your filesystem); the server
-only ever emits APA7 text + the hades path. `aprag chunks` / `aprag_retrieve` are unchanged (raw,
-no citations).
+emits the APA7 text + the Drive/hades locator, and the client swaps in a `file://` link when it
+finds the PDF locally. `aprag chunks` / `aprag_retrieve` are unchanged (raw, no citations).
+
+**Google Drive fallback (private, internal).** Put the corpus in a shared Drive folder, then build
+a `filename → Drive link` map and point the server at it — references to papers a reader doesn't
+have locally become one-click `[open in Drive]` links (which only open for accounts the folder is
+shared with; nothing is exposed publicly):
+
+```bash
+# enumerate the Drive folder once (rclone remote, or the Drive API) → drive_links.json
+python3 scripts/build_drive_map.py rclone gdrive:aprag_papers --out drive_links.json
+# deploy drive_links.json next to query_server.py; the server finds it via APRAG_DRIVE_MAP
+```
+
+Bonus: a user who runs **Google Drive for Desktop** and adds the synced folder to
+`APRAG_PAPERS_DIR` gets instant local `file://` opening for *every* paper (Drive streams it on
+click) — no per-file links needed for them. Set `HADES_PAPERS_BASE=""` on the server to drop the
+hades fallback once the Drive map covers the corpus.
 
 **Page numbers.** Each end-of-answer reference also shows the **PDF page(s)** the cited passages
 came from — `(p. 12)` / `(pp. 3, 12, 19)` — so you can jump there in Preview. (In-text citations

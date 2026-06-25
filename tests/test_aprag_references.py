@@ -81,6 +81,30 @@ def test_localize_links_local_and_falls_back_to_hades(tmp_path):
     assert out.count("### References") == 1
 
 
+def test_locator_precedence_local_drive_hades_filename(tmp_path):
+    # local copy present → file:// link wins over everything
+    d = tmp_path / "p"
+    d.mkdir()
+    _pdf(d / "A_2020.pdf")
+    idx = refs.build_local_index([str(d)])
+    ref = {"filename": "A_2020.pdf", "drive_url": "https://drive/x", "hades_path": "h:/A_2020.pdf"}
+    assert "[open PDF](file://" in refs.locator_for(ref, idx)
+    # no local → Drive link wins over hades
+    empty = {}
+    assert refs.locator_for(ref, empty) == "[open in Drive](https://drive/x)"
+    # no local, no drive → hades
+    assert refs.locator_for({"filename": "A_2020.pdf", "hades_path": "h:/A_2020.pdf"}, empty) == "h:/A_2020.pdf"
+    # nothing → bare filename
+    assert refs.locator_for({"filename": "A_2020.pdf"}, empty) == "A_2020.pdf"
+
+
+def test_localize_uses_drive_link_when_not_local(tmp_path):
+    rlist = [{"apa": "Smith, J. (2020). T.", "filename": "Smith_2020.pdf",
+              "drive_url": "https://drive.google.com/file/d/Q/view", "hades_path": "h", "pages": []}]
+    out = refs.localize_answer("ans\n\n### References\n- z", rlist, {})  # empty index = no local
+    assert "[open in Drive](https://drive.google.com/file/d/Q/view)" in out
+
+
 def test_localize_shows_pdf_pages(tmp_path):
     d = tmp_path / "p"
     d.mkdir()

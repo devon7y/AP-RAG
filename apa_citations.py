@@ -8,7 +8,9 @@ that output, server-side, into proper APA7:
 
   * in-text ``[1]`` / ``([1], [3])`` → ``(Author, Year)`` / ``(A et al., 2018; B, 2020)``
   * the references section → a real APA7 list, alphabetised by author, each entry
-    followed by a usable PDF path (the hades fallback share).
+    followed by a usable PDF locator: a Google Drive link (``drive_links.json``) when
+    available, else the hades fallback share. The aprag clients upgrade this to a local
+    ``file://`` link when the reader has the PDF on their machine.
 
 Bibliographic facts come from a per-filename manifest (``papers_metadata.json``)
 keyed by the canonical PDF basename — the same name stored in the RAG, on hades,
@@ -30,6 +32,7 @@ from functools import lru_cache
 __all__ = [
     "DEFAULT_HADES_BASE",
     "load_manifest",
+    "load_drive_map",
     "format_apa7",
     "format_intext",
     "build_ref_model",
@@ -51,6 +54,24 @@ def load_manifest(path: str | None) -> dict:
     """Load ``papers_metadata.json`` (filename → bib record). Missing/bad → {}.
 
     Cached by path; the manifest is read-mostly and reloaded only on restart.
+    """
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+@lru_cache(maxsize=8)
+def load_drive_map(path: str | None) -> dict:
+    """Load ``drive_links.json`` (filename → Google Drive webViewLink). Missing/bad → {}.
+
+    Built by ``scripts/build_drive_map.py`` after the corpus is uploaded to a (private,
+    shared) Drive folder; deployed next to the manifest. Used as the reference fallback
+    when a reader has no local copy of the cited PDF. Cached by path.
     """
     if not path:
         return {}
@@ -127,8 +148,10 @@ def _join_authors_ref(authors: list[dict]) -> str:
         return parts[0]
     if len(parts) <= 20:
         return ", ".join(parts[:-1]) + ", & " + parts[-1]
-    # APA7: 21+ authors → first 19, ellipsis, final author.
-    return ", ".join(parts[:19]) + ", ... " + parts[-1]
+    # APA7: 21+ authors → first 19, ellipsis, final author. Use the real ellipsis
+    # character (…), NOT "...", so _tidy()'s period-collapsing never mangles it into
+    # ",." (the "Mojsoska, B.,. Neubig, G." bug).
+    return ", ".join(parts[:19]) + ", … " + parts[-1]
 
 
 def _editor_ref(editor: dict) -> str:
@@ -151,6 +174,17 @@ def _join_editors(editors: list[dict]) -> str:
 
 def _surnames(authors: list[dict]) -> list[str]:
     return [s for s in ((a.get("family") or "").strip() for a in authors) if s]
+
+
+_TAG_RE = re.compile(r"<[^>]+>")  # JATS/HTML markup Crossref sometimes returns (<scp>, <i>, <sub>…)
+
+
+def _clean_title(title: str | None) -> str:
+    """Strip JATS/HTML tags and collapse whitespace/newlines from a manifest title
+    (Crossref returns markup like ``<scp>LLM</scp>`` and embedded newlines)."""
+    if not title:
+        return ""
+    return re.sub(r"\s+", " ", _TAG_RE.sub("", title)).strip()
 
 
 # ── APA7 formatting ───────────────────────────────────────────────────────────
@@ -190,9 +224,9 @@ def format_apa7(record: dict) -> str:
     yr = f"({year}{record.get('disambig') or ''})."
     prefix = f"{authors_str} {yr}".strip() if authors_str else yr
 
-    title = (record.get("title") or "").strip().rstrip(".")
+    title = _clean_title(record.get("title")).rstrip(".")
     typ = (record.get("type") or "").strip().lower()
-    container = (record.get("container_title") or "").strip()
+    container = _clean_title(record.get("container_title"))
     publisher = (record.get("publisher") or "").strip()
     volume = (record.get("volume") or "").strip()
     issue = (record.get("issue") or "").strip()
@@ -284,11 +318,13 @@ def _fallback_record(filename: str) -> dict:
 
 def build_ref_model(reference_id, file_path: str, manifest: dict,
                     hades_base: str = DEFAULT_HADES_BASE,
-                    pages=None) -> dict:
-    """One structured reference: {n, filename, apa, intext, hades_path, pages}.
+                    pages=None, drive_map: dict | None = None) -> dict:
+    """One structured reference: {n, filename, apa, intext, drive_url, hades_path, pages}.
 
     ``pages`` is the list of PDF pages the cited passages came from (empty if
-    unknown, e.g. a store ingested before page-tracking).
+    unknown, e.g. a store ingested before page-tracking). ``drive_map`` (filename →
+    Google Drive URL) supplies ``drive_url`` — the preferred fallback when a reader has
+    no local copy. ``hades_path`` is empty when ``hades_base`` is falsy (drop hades).
     """
     filename = _basename(file_path)
     record = manifest.get(filename)
@@ -301,7 +337,8 @@ def build_ref_model(reference_id, file_path: str, manifest: dict,
         "filename": filename,
         "apa": format_apa7(record),
         "intext": format_intext(record),
-        "hades_path": f"{hades_base.rstrip('/')}/{filename}",
+        "drive_url": (drive_map or {}).get(filename, ""),
+        "hades_path": f"{hades_base.rstrip('/')}/{filename}" if hades_base else "",
         "pages": page_nums,
     }
 
@@ -362,7 +399,9 @@ def strip_references_section(text: str) -> str:
 
 
 def _default_path_for(ref: dict) -> str:
-    return ref.get("hades_path", "")
+    # Server-side answer has no client filesystem to check, so prefer the Drive link,
+    # then hades (if still configured), then the bare filename so the file is always named.
+    return ref.get("drive_url") or ref.get("hades_path") or ref.get("filename", "")
 
 
 def build_references_block(ref_models: list[dict], path_for=None) -> str:
@@ -387,9 +426,34 @@ def build_references_block(ref_models: list[dict], path_for=None) -> str:
     return "\n".join(lines)
 
 
+# A parenthetical that contains a 4-digit year — i.e. an APA in-text citation.
+_PAREN_CITE = r"\([^()]*\b\d{4}[a-z]?\b[^()]*\)"
+
+
+def _collapse_redundant_citations(text: str) -> str:
+    """Defensive cleanup for citation prose the answer LLM may add despite the style
+    instruction: undo double parentheses and ``see``/``Supported by`` wrappers
+    (``(see (Smith, 2020))`` → ``(Smith, 2020)``) and immediate duplicate citations
+    (``(Smith, 2020). (Smith, 2020)`` → ``(Smith, 2020)``)."""
+    if not text:
+        return text
+    # "(see (Smith, 2020))" / "((Smith, 2020))" / "(Supported by (Smith, 2020))" → "(Smith, 2020)"
+    wrap = re.compile(
+        r"\(\s*(?:see|cf\.?|e\.g\.?,?|supported by|sources?:?)?\s*(" + _PAREN_CITE + r")\s*\)",
+        re.IGNORECASE,
+    )
+    prev = None
+    while prev != text:
+        prev, text = text, wrap.sub(r"\1", text)
+    # immediate duplicate of the same citation → keep one
+    text = re.sub(r"(" + _PAREN_CITE + r")\s*\.?\s*\1", r"\1", text)
+    return text
+
+
 def render_answer(content: str, references: list[dict], manifest: dict,
                   hades_base: str = DEFAULT_HADES_BASE,
-                  id_to_pages: dict | None = None) -> tuple[str, list[dict]]:
+                  id_to_pages: dict | None = None,
+                  drive_map: dict | None = None) -> tuple[str, list[dict]]:
     """Rewrite a LightRAG answer into APA7 and return (answer, ref_models).
 
     ``references`` is the ``data.references`` list from ``aquery_llm`` (each
@@ -403,18 +467,27 @@ def render_answer(content: str, references: list[dict], manifest: dict,
         return content or "", []
 
     id_to_pages = id_to_pages or {}
+    body_src = strip_references_section(content)
+
+    # Only keep references the answer ACTUALLY cites. LightRAG hands us every
+    # retrieved source, but the answer usually cites only a few; listing the rest
+    # reads as if they were used. Collect the in-text [n] ids from the body (after
+    # dropping the LLM's own reference list, whose [n] entries would otherwise count).
+    cited_ids = {n for m in re.finditer(_BRACKET, body_src)
+                 for n in _NUM_RE.findall(m.group(0))}
+
     ref_models: list[dict] = []
     id_to_intext: dict[str, str] = {}
     for ref in references or []:
         rid = str(ref.get("reference_id") or "").strip()
-        if not rid:
+        if not rid or rid not in cited_ids:
             continue
         model = build_ref_model(rid, ref.get("file_path") or "", manifest,
-                                hades_base, pages=id_to_pages.get(rid))
+                                hades_base, pages=id_to_pages.get(rid), drive_map=drive_map)
         ref_models.append(model)
         id_to_intext[rid] = model["intext"]
 
-    body = rewrite_intext(strip_references_section(content), id_to_intext)
+    body = _collapse_redundant_citations(rewrite_intext(body_src, id_to_intext))
 
     # APA references are alphabetised by author; the numeric ids are now gone.
     ref_models.sort(key=lambda r: r["intext"].lower())

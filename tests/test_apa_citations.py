@@ -242,6 +242,33 @@ def test_render_answer_with_pages_in_references_not_intext():
     assert models[0]["pages"] == [3, 12]
 
 
+def test_build_ref_model_drive_url_and_empty_hades():
+    dmap = {"Westbury_Hollis_2019.pdf": "https://drive.google.com/file/d/ABC/view"}
+    rm = apa.build_ref_model("1", "/x/Westbury_Hollis_2019.pdf", {}, drive_map=dmap)
+    assert rm["drive_url"] == "https://drive.google.com/file/d/ABC/view"
+    assert rm["hades_path"].endswith("/Westbury_Hollis_2019.pdf")
+    # empty hades_base drops the hades path entirely
+    rm2 = apa.build_ref_model("1", "Smith_2020.pdf", {}, hades_base="", drive_map=dmap)
+    assert rm2["hades_path"] == "" and rm2["drive_url"] == ""  # not in map
+
+
+def test_default_path_for_precedence():
+    # drive preferred over hades over filename
+    assert apa._default_path_for({"drive_url": "D", "hades_path": "H", "filename": "F"}) == "D"
+    assert apa._default_path_for({"drive_url": "", "hades_path": "H", "filename": "F"}) == "H"
+    assert apa._default_path_for({"drive_url": "", "hades_path": "", "filename": "F"}) == "F"
+
+
+def test_render_answer_uses_drive_link_in_references():
+    manifest = {"Martin_2007.pdf": BOOK}
+    content = "Claim [1].\n\n### References\n* [1] /x/Martin_2007.pdf"
+    references = [{"reference_id": "1", "file_path": "/x/Martin_2007.pdf"}]
+    dmap = {"Martin_2007.pdf": "https://drive.google.com/file/d/XYZ/view"}
+    answer, models = apa.render_answer(content, references, manifest, drive_map=dmap)
+    assert "https://drive.google.com/file/d/XYZ/view" in answer  # drive link shown
+    assert models[0]["drive_url"] == "https://drive.google.com/file/d/XYZ/view"
+
+
 def test_render_answer_no_references_passthrough():
     answer, models = apa.render_answer("Just an answer, no citations.", [], {})
     assert answer == "Just an answer, no citations."
