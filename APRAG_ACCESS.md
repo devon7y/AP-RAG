@@ -129,7 +129,10 @@ underlying engine produces. Each reference resolves to a usable PDF location:
 
 Local resolution happens entirely client-side (the server can't see your filesystem); the server
 emits the APA7 text + the Drive/hades locator, and the client swaps in a `file://` link when it
-finds the PDF locally. `aprag chunks` / `aprag_retrieve` are unchanged (raw, no citations).
+finds the PDF locally. `aprag chunks` renders the same way — each chunk gets a bold markdown header
+with its paper's full APA citation + an "open PDF"/"open in Drive" link, then the chunk text (the
+server now enriches `/retrieve` references with the APA citation; `aprag_retrieve` labels each chunk
+with it too).
 
 **Google Drive fallback (private, internal).** Put the corpus in a shared Drive folder, then build
 a `filename → Drive link` map and point the server at it — references to papers a reader doesn't

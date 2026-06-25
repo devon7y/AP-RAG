@@ -407,6 +407,23 @@ async def query(req: QueryRequest):
     return {"answer": answer, "references": ref_models, "mode": req.mode}
 
 
+def _enrich_references(refs: list[dict]) -> list[dict]:
+    """Add APA citation + Drive/hades locator fields to each {reference_id, file_path}
+    so /retrieve consumers (the `aprag chunks` CLI, the MCP) can show a readable,
+    cited source per chunk instead of a bare filename. Keeps the original keys."""
+    manifest = apa.load_manifest(APA_MANIFEST)
+    drive_map = apa.load_drive_map(APRAG_DRIVE_MAP)
+    out = []
+    for r in refs or []:
+        rid = str(r.get("reference_id") or "")
+        rm = apa.build_ref_model(rid, r.get("file_path") or "", manifest,
+                                 HADES_PAPERS_BASE, drive_map=drive_map)
+        out.append({**r, "apa": rm["apa"], "intext": rm["intext"],
+                    "filename": rm["filename"], "drive_url": rm["drive_url"],
+                    "hades_path": rm["hades_path"]})
+    return out
+
+
 @app.post("/retrieve")
 async def retrieve(req: RetrieveRequest):
     """Structured retrieval without LLM synthesis — the agentic multi-hop primitive."""
@@ -418,7 +435,7 @@ async def retrieve(req: RetrieveRequest):
     if filenames is not None:
         top_k = req.chunk_top_k or req.top_k or 20
         chunks = await _vector_chunk_search(req.question, filenames, top_k)
-        references = search.assign_reference_ids(chunks)
+        references = _enrich_references(search.assign_reference_ids(chunks))
         return {
             "status": "success", "message": "filtered retrieval",
             "data": {"entities": [], "relationships": [], "chunks": chunks,
@@ -432,7 +449,14 @@ async def retrieve(req: RetrieveRequest):
             status_code=501,
             detail="Installed LightRAG lacks aquery_data; upgrade lightrag_hku for /retrieve.",
         )
-    return await _rag.aquery_data(req.question, param=_build_query_param(req))
+    result = await _rag.aquery_data(req.question, param=_build_query_param(req))
+    try:
+        data = result.get("data") or {}
+        if data.get("references"):
+            data["references"] = _enrich_references(data["references"])
+    except Exception as exc:  # never let enrichment break raw retrieval
+        print(f"reference enrichment failed ({exc!r})", flush=True)
+    return result
 
 
 @app.post("/search")

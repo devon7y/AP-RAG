@@ -93,11 +93,12 @@ def _format_retrieval(result: dict) -> str:
 
     lines: list[str] = [f"Retrieved {len(chunks)} chunk(s) in mode={meta.get('query_mode', '?')}."]
 
+    # The server enriches references with the APA citation; label each chunk with it.
+    refs_by_id = {str(r.get("reference_id")): r for r in (data.get("references") or [])}
     for i, ch in enumerate(chunks, 1):
-        lines.append(
-            f"\n[chunk {i}] ref={ch.get('reference_id', '?')} "
-            f"source={ch.get('file_path', 'unknown')}"
-        )
+        rm = refs_by_id.get(str(ch.get("reference_id") or ""))
+        source = (rm.get("apa") if rm and rm.get("apa") else ch.get("file_path", "unknown"))
+        lines.append(f"\n[chunk {i}] {source}")
         lines.append((ch.get("content") or "").strip())
 
     if entities:

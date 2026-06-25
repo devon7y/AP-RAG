@@ -76,41 +76,48 @@ def _format_papers(result: dict, index: dict | None) -> str:
     return "\n".join(out)
 
 
-def _format_chunks(result: dict, show_entities: bool) -> str:
+def _format_chunks(result: dict, show_entities: bool, index: dict | None = None) -> str:
+    """Render retrieved chunks as readable markdown: a bold header per chunk with the
+    full APA citation + an 'open PDF' link (the server enriches /retrieve references),
+    then the chunk text. ``index`` is the local-PDF index for file:// links."""
     data = result.get("data") or {}
     chunks = data.get("chunks") or []
     meta = result.get("metadata") or {}
     mode = meta.get("query_mode", "?")
 
-    out: list[str] = []
     if result.get("status") != "success":
         msg = result.get("message", "no data returned")
         return f"No results (status={result.get('status')}, mode={mode}): {msg}"
 
-    out.append(f"=== {len(chunks)} chunk(s)  (mode={mode}) ===")
+    refs_by_id = {str(r.get("reference_id")): r for r in (data.get("references") or [])}
+    out: list[str] = [f"## {len(chunks)} chunk(s) — mode `{mode}`", ""]
     for i, ch in enumerate(chunks, 1):
-        ref = ch.get("reference_id", "?")
-        path = ch.get("file_path", "unknown source")
-        cid = ch.get("chunk_id", "")
-        header = f"\n[{i}] ref={ref}  {path}"
-        if cid:
-            header += f"  ({cid})"
-        out.append(header)
-        out.append((ch.get("content") or "").strip())
+        rm = refs_by_id.get(str(ch.get("reference_id") or ""))
+        if rm and rm.get("apa"):
+            label = rm["apa"]
+            locator = references.locator_for(rm, index or {})
+        else:  # older server / no manifest entry → fall back to the filename
+            label = ch.get("file_path", "unknown source")
+            locator = ""
+        header = f"**Chunk {i}: {label}" + (f" — {locator}" if locator else "") + "**"
+        out.extend([header, "", (ch.get("content") or "").strip(), ""])
 
     if show_entities:
         entities = data.get("entities") or []
         relationships = data.get("relationships") or []
-        out.append(f"\n=== {len(entities)} entity(ies) ===")
+        out.append(f"## Entities ({len(entities)})")
+        out.append("")
         for e in entities:
             out.append(
-                f"- {e.get('entity_name', '?')} "
+                f"- **{e.get('entity_name', '?')}** "
                 f"[{e.get('entity_type', '?')}]: {(e.get('description') or '').strip()}"
             )
-        out.append(f"\n=== {len(relationships)} relationship(s) ===")
+        out.append("")
+        out.append(f"## Relationships ({len(relationships)})")
+        out.append("")
         for r in relationships:
             out.append(
-                f"- {r.get('src_id', '?')} -> {r.get('tgt_id', '?')}: "
+                f"- **{r.get('src_id', '?')} → {r.get('tgt_id', '?')}**: "
                 f"{(r.get('description') or '').strip()}"
             )
 
@@ -195,10 +202,14 @@ async def _cmd_chunks(args: argparse.Namespace) -> int:
         chunk_top_k=args.chunk_top_k,
         filters=_filters_from_args(args),
     )
+    index = {}
+    if not getattr(args, "no_local", False):
+        extra = [args.papers_dir] if getattr(args, "papers_dir", None) else None
+        index = references.build_local_index(extra)
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print(_format_chunks(result, show_entities=args.entities))
+        _print_answer(_format_chunks(result, args.entities, index), getattr(args, "plain", False))
     return 0
 
 
@@ -316,7 +327,8 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="Print raw markdown instead of rendering it in the terminal.")
     p_ask.set_defaults(func=_cmd_ask)
 
-    p_chunks = sub.add_parser("chunks", parents=[common, filt], help="Raw retrieved chunks (no LLM).")
+    p_chunks = sub.add_parser("chunks", parents=[common, filt, localopt],
+                              help="Retrieved chunks (no LLM), as cited markdown.")
     p_chunks.add_argument("question")
     p_chunks.add_argument("--mode", default="naive", choices=VALID_MODES)
     p_chunks.add_argument("--top-k", type=int, default=None, dest="top_k")
@@ -324,6 +336,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_chunks.add_argument(
         "--entities", action="store_true", help="Also show retrieved entities/relationships."
     )
+    p_chunks.add_argument("--plain", action="store_true", help="Raw markdown (no rich rendering).")
     p_chunks.set_defaults(func=_cmd_chunks)
 
     p_search = sub.add_parser(
