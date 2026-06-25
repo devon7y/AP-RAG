@@ -34,7 +34,8 @@ async function SidebarShell({ children }: { children: React.ReactNode }) {
     redirect(`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/login`);
   }
 
-  const isCollapsed = cookieStore.get("sidebar_state")?.value !== "true";
+  // Open by default; collapse only when the user has explicitly collapsed it.
+  const isCollapsed = cookieStore.get("sidebar_state")?.value === "false";
 
   return (
     <SidebarProvider defaultOpen={!isCollapsed}>

@@ -10,6 +10,7 @@ import {
 } from "@/lib/ai/models";
 import type { RagFilters } from "@/lib/aprag/types";
 import { cn } from "@/lib/utils";
+import { FacetInput, useFacets } from "./facet-input";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -38,10 +39,11 @@ const MODE_HINT: Record<RetrievalMode, string> = {
 };
 
 const REASONING_HINT: Record<ReasoningEffort, string> = {
-  minimal: "Fastest",
-  low: "A little more careful",
+  none: "Fastest (no reasoning)",
+  low: "A little reasoning",
   medium: "More careful",
-  high: "Most careful (slowest)",
+  high: "Very careful",
+  xhigh: "Most careful (slowest)",
 };
 
 function countActiveFilters(f: RagFilters | null): number {
@@ -204,6 +206,8 @@ function FiltersForm({
   filters: RagFilters | null;
   setFilters: (f: RagFilters | null) => void;
 }) {
+  const facets = useFacets();
+
   const update = (patch: Partial<RagFilters>) => {
     const next: RagFilters = { ...(filters ?? {}), ...patch };
     // Drop empty fields so countActiveFilters stays honest.
@@ -216,13 +220,8 @@ function FiltersForm({
     setFilters(Object.keys(next).length > 0 ? next : null);
   };
 
-  const csv = (value: string): string[] | undefined => {
-    const parts = value
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    return parts.length > 0 ? parts : undefined;
-  };
+  const setList = (key: keyof RagFilters) => (next: string[]) =>
+    update({ [key]: next.length > 0 ? next : undefined } as Partial<RagFilters>);
 
   const num = (value: string): number | undefined => {
     const n = Number.parseInt(value, 10);
@@ -230,7 +229,10 @@ function FiltersForm({
   };
 
   return (
-    <PopoverContent align="start" className="w-80 space-y-3">
+    <PopoverContent
+      align="start"
+      className="max-h-[70vh] w-80 space-y-3 overflow-y-auto"
+    >
       <div className="flex items-center justify-between">
         <p className="font-medium text-sm">Filter papers</p>
         <Button
@@ -243,18 +245,13 @@ function FiltersForm({
           Clear
         </Button>
       </div>
-      <div className="space-y-1">
-        <Label className="text-xs" htmlFor="filter-authors">
-          Authors (surnames, comma-separated)
-        </Label>
-        <Input
-          className="h-8 text-sm"
-          defaultValue={filters?.authors?.join(", ") ?? ""}
-          id="filter-authors"
-          onChange={(e) => update({ authors: csv(e.target.value) })}
-          placeholder="Westbury, Yanitski"
-        />
-      </div>
+      <FacetInput
+        label="Authors"
+        onChange={setList("authors")}
+        options={facets.authors}
+        placeholder="Type a surname…"
+        selected={filters?.authors ?? []}
+      />
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
           <Label className="text-xs" htmlFor="filter-year-from">
@@ -283,30 +280,34 @@ function FiltersForm({
           />
         </div>
       </div>
-      <div className="space-y-1">
-        <Label className="text-xs" htmlFor="filter-journals">
-          Journals / venues (comma-separated)
-        </Label>
-        <Input
-          className="h-8 text-sm"
-          defaultValue={filters?.journals?.join(", ") ?? ""}
-          id="filter-journals"
-          onChange={(e) => update({ journals: csv(e.target.value) })}
-          placeholder="Cognition"
-        />
-      </div>
-      <div className="space-y-1">
-        <Label className="text-xs" htmlFor="filter-keywords">
-          Keywords (comma-separated)
-        </Label>
-        <Input
-          className="h-8 text-sm"
-          defaultValue={filters?.keywords?.join(", ") ?? ""}
-          id="filter-keywords"
-          onChange={(e) => update({ keywords: csv(e.target.value) })}
-          placeholder="semantics, humor"
-        />
-      </div>
+      <FacetInput
+        label="Journals / venues"
+        onChange={setList("journals")}
+        options={facets.journals}
+        placeholder="Type a journal…"
+        selected={filters?.journals ?? []}
+      />
+      <FacetInput
+        label="Subjects"
+        onChange={setList("subjects")}
+        options={facets.subjects}
+        placeholder="Type a subject…"
+        selected={filters?.subjects ?? []}
+      />
+      <FacetInput
+        label="Keywords"
+        onChange={setList("keywords")}
+        options={facets.keywords}
+        placeholder="Type a keyword…"
+        selected={filters?.keywords ?? []}
+      />
+      <FacetInput
+        label="Affiliations"
+        onChange={setList("affiliations")}
+        options={facets.affiliations}
+        placeholder="Type an institution…"
+        selected={filters?.affiliations ?? []}
+      />
     </PopoverContent>
   );
 }

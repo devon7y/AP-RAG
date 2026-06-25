@@ -1,6 +1,10 @@
 "use client";
 import type { UseChatHelpers } from "@ai-sdk/react";
-import { rewriteIntext } from "@/lib/aprag/citations";
+import {
+  citedIds,
+  rewriteIntext,
+  stripReferencesSection,
+} from "@/lib/aprag/citations";
 import type { RagRetrieval } from "@/lib/aprag/types";
 import type { Vote } from "@/lib/db/schema";
 import type { ChatMessage } from "@/lib/types";
@@ -76,6 +80,22 @@ const PurePreviewMessage = ({
     }
   }
 
+  // The answer text with any LLM-written reference list removed (the app renders the
+  // real one). Used to detect which references are actually cited in-text.
+  const cleanedAnswer = isAssistant
+    ? stripReferencesSection(
+        message.parts
+          ?.filter((p) => p.type === "text")
+          .map((p) => (p as { text?: string }).text ?? "")
+          .join("") ?? ""
+      )
+    : "";
+  const cited = isAssistant && retrieval ? citedIds(cleanedAnswer) : null;
+  // Only list references the answer actually cites (matches the CLI), in cite order.
+  const citedReferences = retrieval
+    ? retrieval.references.filter((r) => !cited || cited.has(r.reference_id))
+    : [];
+
   const hasText = message.parts?.some(
     (part) => part.type === "text" && part.text?.trim().length > 0
   );
@@ -141,11 +161,12 @@ const PurePreviewMessage = ({
     }
 
     if (type === "text") {
-      // Rewrite the answer's bracketed [n] citations into clickable APA in-text cites
-      // using the retrieval references (no-op for user messages / no references). Safe
-      // on partial text while streaming — an unterminated "[1" simply isn't matched yet.
+      // Strip any reference list the LLM wrote itself, then rewrite the answer's
+      // bracketed [n] citations into clickable APA in-text cites (no-op for user
+      // messages / no references). Safe on partial text while streaming — an
+      // unterminated "[1" simply isn't matched yet.
       const text = isAssistant
-        ? rewriteIntext(sanitizeText(part.text), citeById)
+        ? rewriteIntext(stripReferencesSection(sanitizeText(part.text)), citeById)
         : sanitizeText(part.text);
       return (
         <MessageContent
@@ -363,7 +384,7 @@ const PurePreviewMessage = ({
   );
 
   // Answer-mode extras: a "synthesizing" indicator between retrieval and the first
-  // token, then the references list once the answer (or its sources) is available.
+  // token, then (only once streaming has finished) the list of cited references.
   const ragExtras = isAssistant && retrieval && !retrieval.chunkMode && (
     <>
       {!hasText && isLoading && (
@@ -375,7 +396,7 @@ const PurePreviewMessage = ({
           </Shimmer>
         </div>
       )}
-      <RagReferences references={retrieval.references} />
+      {!isLoading && <RagReferences references={citedReferences} />}
     </>
   );
 

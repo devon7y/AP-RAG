@@ -23,28 +23,55 @@ const CITATION_STYLE_PROMPT =
 
 export const SYNTH_SYSTEM_PROMPT =
   "You are a research assistant answering questions from a corpus of academic papers. " +
-  "Answer the user's question using ONLY the information in the provided Document " +
-  "Chunks; do not rely on outside knowledge and do not invent sources. Cite by the " +
-  "bracketed reference_id from the Reference Document List. If the chunks do not " +
-  "address the question, say so plainly. Do NOT write a 'References' section yourself " +
-  "— the application renders the reference list. Keep the answer focused and well " +
-  "structured (use markdown).\n\n" +
+  "Answer the user's question using ONLY the information in the provided Sources; do " +
+  "not rely on outside knowledge and do not invent sources. After each statement, cite " +
+  "its supporting source(s) by the bracketed number, e.g. [2] or [1][3]. Use ONLY the " +
+  "bracket numbers from the Sources list. IMPORTANT: ignore and NEVER reproduce any " +
+  "bracketed numbers that appear inside the source text itself (e.g. a passage's own " +
+  "[11] or [12]) — those are the papers' internal citations, not your sources. Do NOT " +
+  "output a 'References', 'Sources', or bibliography section, and do NOT restate the " +
+  "list of sources anywhere — the application renders the reference list itself. If the " +
+  "sources do not address the question, say so plainly. Write clear markdown prose.\n\n" +
   CITATION_STYLE_PROMPT;
 
-// The [n]-tagged context block handed to the synthesis model. Mirrors
-// aprag_search.build_synthesis_context.
+// The [n]-tagged context handed to the synthesis model. We deliberately do NOT include a
+// separate "Reference Document List" (LLMs tend to echo it verbatim into the answer):
+// each passage is just prefixed with its source number, and multiple passages may share
+// a number (same paper). The app renders the actual reference list from the metadata.
 export function buildContext(
   references: RagReference[],
   chunks: RagChunk[]
 ): string {
-  const refLines = references
-    .map((r) => `[${r.reference_id}] ${r.filename || r.file_path}`)
-    .join("\n");
-  const chunkLines = chunks
-    .filter((c) => c.content)
-    .map((c) => `[${c.reference_id ?? ""}] ${c.content}`)
-    .join("\n\n");
-  return `-----Reference Document List-----\n${refLines}\n\n-----Document Chunks-----\n${chunkLines}`;
+  const valid = new Set(references.map((r) => r.reference_id));
+  const lines = chunks
+    .filter((c) => c.content && c.reference_id && valid.has(c.reference_id))
+    .map((c) => `[${c.reference_id}] ${c.content}`);
+  const body = lines.join("\n\n") || "(no sources retrieved)";
+  return `-----Sources (cite by the bracketed number)-----\n${body}`;
+}
+
+const REFS_HEADING_RE =
+  /^[ \t]{0,3}(?:#{1,6}[ \t]*|\*{1,2}[ \t]*)?(?:references|sources|bibliography|works cited)[ \t]*:?[ \t]*\*{0,2}[ \t]*$/gim;
+
+/**
+ * Drop a trailing "References"/"Sources"/"Bibliography" heading and everything after it,
+ * in case the answer LLM writes its own list despite instructions (the app renders the
+ * real one). Guarded: never strips so much that the answer becomes trivially short — a
+ * stray leading "Sources" line won't nuke the whole answer.
+ */
+export function stripReferencesSection(text: string): string {
+  if (!text) {
+    return text;
+  }
+  let last = -1;
+  for (const m of text.matchAll(REFS_HEADING_RE)) {
+    last = m.index ?? last;
+  }
+  if (last < 0) {
+    return text;
+  }
+  const head = text.slice(0, last).replace(/\s+$/, "");
+  return head.length > 100 ? head : text;
 }
 
 // Citation token grammar (ported from apa_citations.py).
@@ -70,8 +97,10 @@ export function citedIds(text: string): Set<string> {
  * Replace numeric in-text citations with APA7 parentheticals, each a clickable link to
  * the cited paper (Google Drive when available, else an in-page anchor). `[1]` →
  * `([Smith, 2020](url))`; `([1], [3])` → `(A, 2018; B et al., 2020)` de-duplicated and
- * alphabetised. Unknown ids leave the cluster untouched (defensive). Safe to run on a
- * partially-streamed string — an unterminated `[1` simply doesn't match yet.
+ * alphabetised. **Unknown ids are dropped** (they are the source papers' own bracket
+ * citations bleeding through, e.g. a chunk containing "[11]"); a cluster with no known
+ * id is removed entirely. Safe to run on a partially-streamed string — an unterminated
+ * `[1` simply doesn't match yet.
  */
 export function rewriteIntext(
   text: string,
@@ -80,7 +109,7 @@ export function rewriteIntext(
   if (!text || byId.size === 0) {
     return text;
   }
-  return text.replace(new RegExp(CLUSTER, "g"), (match, g1, g2) => {
+  return text.replace(new RegExp(CLUSTER, "g"), (_match, g1, g2) => {
     const body: string = g1 ?? g2;
     const seen = new Set<string>();
     const items: { intext: string; href?: string }[] = [];
@@ -91,13 +120,12 @@ export function rewriteIntext(
       }
       seen.add(cid);
       const ref = byId.get(cid);
-      if (!ref) {
-        return match; // unknown id → leave cluster as-is
+      if (ref) {
+        items.push(ref); // drop unknown ids (source-text noise)
       }
-      items.push(ref);
     }
     if (items.length === 0) {
-      return match;
+      return ""; // all ids unknown → strip the stray cluster
     }
     items.sort((a, b) => a.intext.toLowerCase().localeCompare(b.intext.toLowerCase()));
     const labels = items.map((r) =>

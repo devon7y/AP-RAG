@@ -29,7 +29,7 @@ export async function generateTitleFromUserMessage({
     system: titlePrompt,
     prompt: getTextFromMessage(message),
     providerOptions: {
-      openai: { reasoningEffort: "minimal" },
+      openai: { reasoningEffort: "none" },
     },
   });
   return text

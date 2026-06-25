@@ -3,13 +3,21 @@
 // reasoning-effort + retrieval-mode controls (see RagControls). This file keeps the
 // symbols the rest of the template imports, but collapsed to that one model.
 
-export const CHAT_MODEL_ID = "gpt-5-mini";
+export const CHAT_MODEL_ID = "gpt-5.4-mini";
 export const DEFAULT_CHAT_MODEL = CHAT_MODEL_ID;
 
-// Answer-synthesis reasoning effort, mirroring the CLI's `--reasoning`.
-export const REASONING_EFFORTS = ["minimal", "low", "medium", "high"] as const;
+// Answer-synthesis reasoning effort, mirroring the CLI's `--reasoning`. gpt-5.4-mini's
+// levels are none/low/medium/high/xhigh (it does NOT accept "minimal"); "none" (no
+// reasoning tokens — fastest) is the default.
+export const REASONING_EFFORTS = [
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
-export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "minimal";
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "none";
 
 // LightRAG retrieval strategies, mirroring the CLI's `--mode`.
 export const RETRIEVAL_MODES = [
@@ -25,7 +33,7 @@ export const DEFAULT_RETRIEVAL_MODE: RetrievalMode = "hybrid";
 
 export const titleModel = {
   id: CHAT_MODEL_ID,
-  name: "gpt-5-mini",
+  name: "gpt-5.4-mini",
   provider: "openai",
   description: "Title generation",
 };
@@ -42,15 +50,15 @@ export type ChatModel = {
   provider: string;
   description: string;
   gatewayOrder?: string[];
-  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
+  reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
 };
 
 export const chatModels: ChatModel[] = [
   {
     id: CHAT_MODEL_ID,
-    name: "gpt-5-mini",
+    name: "gpt-5.4-mini",
     provider: "openai",
-    description: "AP-RAG answer synthesis (OpenAI gpt-5-mini)",
+    description: "AP-RAG answer synthesis (OpenAI gpt-5.4-mini)",
   },
 ];
 

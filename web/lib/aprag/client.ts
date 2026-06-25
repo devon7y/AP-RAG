@@ -110,3 +110,24 @@ export async function getStats(): Promise<{ papers: number }> {
   }
   return (await res.json()) as { papers: number };
 }
+
+export type Facets = {
+  authors: string[];
+  journals: string[];
+  subjects: string[];
+  keywords: string[];
+  affiliations: string[];
+};
+
+// GET /facets — distinct filter values (authors/journals/...) for the filter autocomplete.
+export async function getFacets(): Promise<Facets> {
+  const res = await fetch(`${BASE_URL}/facets`, {
+    headers: headers(),
+    cache: "no-store",
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) {
+    throw new Error(`AP-RAG /facets failed: ${res.status}`);
+  }
+  return (await res.json()) as Facets;
+}

@@ -7,16 +7,19 @@ import { fetcher } from "@/lib/utils";
 // acronym letter bold. The expansion collapses on small screens.
 export function AppTitle() {
   return (
-    <div className="flex min-w-0 items-baseline gap-2">
-      <span className="font-semibold text-sm tracking-tight">AP-RAG</span>
-      <span className="hidden truncate font-light text-muted-foreground text-sm md:inline">
-        <span className="text-muted-foreground/60">— </span>
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="shrink-0 font-semibold text-sm tracking-tight">
+        AP-RAG
+      </span>
+      <span className="hidden truncate font-light text-muted-foreground/55 text-sm md:inline">
+        <span className="text-muted-foreground/45">— </span>
         <b className="font-semibold text-foreground">A</b>cademic{" "}
         <b className="font-semibold text-foreground">P</b>aper{" "}
         <b className="font-semibold text-foreground">R</b>etrieval-
         <b className="font-semibold text-foreground">A</b>ugmented{" "}
         <b className="font-semibold text-foreground">G</b>eneration
       </span>
+      <PaperCount />
     </div>
   );
 }
@@ -34,7 +37,7 @@ export function PaperCount() {
     return null;
   }
   return (
-    <span className="whitespace-nowrap rounded-full bg-muted px-2.5 py-1 font-medium text-muted-foreground text-xs tabular-nums">
+    <span className="shrink-0 whitespace-nowrap rounded-full bg-muted px-2.5 py-1 font-medium text-muted-foreground text-xs tabular-nums">
       {papers == null ? "…" : papers.toLocaleString()} papers
     </span>
   );

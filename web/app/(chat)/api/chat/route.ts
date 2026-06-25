@@ -81,7 +81,7 @@ export async function POST(request: Request) {
       message,
       messages,
       selectedVisibilityType,
-      reasoning = "minimal",
+      reasoning = "none",
       mode,
       chunkMode = false,
       filters,
