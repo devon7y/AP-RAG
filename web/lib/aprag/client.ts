@@ -111,6 +111,20 @@ export async function getStats(): Promise<{ papers: number }> {
   return (await res.json()) as { papers: number };
 }
 
+// GET /health — is the query server (PC backend) reachable right now?
+export async function getHealth(): Promise<{ online: boolean }> {
+  try {
+    const res = await fetch(`${BASE_URL}/health`, {
+      headers: headers(),
+      cache: "no-store",
+      signal: AbortSignal.timeout(8000),
+    });
+    return { online: res.ok };
+  } catch {
+    return { online: false };
+  }
+}
+
 export type Facets = {
   authors: string[];
   journals: string[];

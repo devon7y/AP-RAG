@@ -134,7 +134,7 @@ export function RagControls() {
             <NetworkIcon className="size-3.5" />
             {retrievalMode}
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent align="start" position="popper">
             {RETRIEVAL_MODES.map((m) => (
               <SelectItem key={m} value={m}>
                 <span className="capitalize">{m}</span>
@@ -161,7 +161,7 @@ export function RagControls() {
             <Brain className="size-3.5" />
             {REASONING_LABEL[reasoning]}
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent align="start" position="popper">
             {REASONING_EFFORTS.map((r) => (
               <SelectItem key={r} value={r}>
                 <span>{REASONING_LABEL[r]}</span>

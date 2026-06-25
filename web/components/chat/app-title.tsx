@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { fetcher } from "@/lib/utils";
+import { cn, fetcher } from "@/lib/utils";
 
 // Header title — "AP-RAG — Academic Paper Retrieval-Augmented Generation" with each
 // acronym letter bold. The expansion collapses on small screens.
@@ -20,7 +20,32 @@ export function AppTitle() {
         <b className="font-semibold text-foreground">G</b>eneration
       </span>
       <PaperCount />
+      <BackendStatus />
     </div>
+  );
+}
+
+// Live backend (query server) status — green dot when reachable, red when not. Polls so
+// it reflects the PC backend going up/down.
+export function BackendStatus() {
+  const { data } = useSWR<{ online: boolean }>(
+    `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/health`,
+    fetcher,
+    { refreshInterval: 30_000, revalidateOnFocus: true }
+  );
+  const online = data?.online;
+  return (
+    <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-foreground/75 text-xs">
+      Status: {online == null ? "…" : online ? "Online" : "Offline"}
+      <span
+        className={cn(
+          "size-2 rounded-full",
+          online == null && "bg-muted-foreground",
+          online === true && "bg-green-500",
+          online === false && "bg-red-500"
+        )}
+      />
+    </span>
   );
 }
 
