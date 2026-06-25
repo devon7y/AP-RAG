@@ -121,11 +121,37 @@ async def openai_llm(prompt, system_prompt=None, history_messages=None, **kwargs
 # ── RAG (loaded once at startup) ──────────────────────────────────────────────
 
 _rag: LightRAG | None = None
+# Whether the deployed store carries per-chunk page numbers (set by re-ingesting with
+# the page-aware chunker). Sampled once at startup; None = undeterminable.
+_PAGE_AWARE: bool | None = None
+
+
+async def _sample_page_aware() -> bool | None:
+    """Cheaply sample a few chunks (Qdrant scroll → text_chunks lookup) to see whether
+    they carry ``page_start`` — i.e. whether reference/chunk page locators will appear."""
+    vdb = getattr(_rag, "chunks_vdb", None)
+    client = getattr(vdb, "_client", None)
+    collection = getattr(vdb, "final_namespace", None) or getattr(vdb, "namespace", None)
+    if not (client and collection and hasattr(_rag, "text_chunks")):
+        return None
+    try:
+        points, _ = await asyncio.to_thread(
+            client.scroll, collection_name=collection, limit=5, with_payload=True)
+        ids = [p.payload.get("id") for p in points if p.payload and p.payload.get("id")]
+        if not ids:
+            return None
+        recs = [r for r in await _rag.text_chunks.get_by_ids(ids) if isinstance(r, dict)]
+        if not recs:
+            return None
+        return any(r.get("page_start") is not None for r in recs)
+    except Exception as exc:  # diagnostic only — never block startup
+        print(f"page-aware sample failed ({exc!r})", flush=True)
+        return None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _rag
+    global _rag, _PAGE_AWARE
     print("Loading LightRAG knowledge graph...", flush=True)
     _rag = LightRAG(
         working_dir=STORAGE_DIR,
@@ -140,7 +166,8 @@ async def lifespan(app: FastAPI):
         vector_db_storage_cls_kwargs={"cosine_better_than_threshold": 0.2},
     )
     await _rag.initialize_storages()
-    print("Knowledge graph ready.", flush=True)
+    _PAGE_AWARE = await _sample_page_aware()
+    print(f"Knowledge graph ready. (page_aware={_PAGE_AWARE})", flush=True)
     yield
     await _rag.finalize_storages()
     print("Shutting down.", flush=True)
@@ -269,6 +296,17 @@ async def _pages_by_reference(data: dict) -> dict:
     return _group_pages(chunks, "reference_id", await _pages_for_chunk_ids(ids))
 
 
+async def _attach_chunk_pages(chunks: list[dict]) -> None:
+    """Stamp each chunk with its own ``page`` (PDF page) from the text-chunks KV, so the
+    `aprag chunks` view can label 'Chunk N (p. 12)'. No-op for a pre-page-aware store."""
+    ids = [c.get("chunk_id") for c in chunks if c.get("chunk_id")]
+    page_by_cid = await _pages_for_chunk_ids(ids)
+    for c in chunks:
+        page = page_by_cid.get(c.get("chunk_id"))
+        if page is not None:
+            c["page"] = page
+
+
 async def _pages_by_file(chunks: list[dict]) -> dict:
     ids = [c.get("chunk_id") for c in chunks if c.get("chunk_id")]
     return _group_pages(chunks, "file_path", await _pages_for_chunk_ids(ids))
@@ -356,6 +394,12 @@ def health():
         "llm": LLM_MODEL,
         # Lets clients/deploys detect an older LightRAG that lacks structured retrieval.
         "lightrag_has_aquery_data": hasattr(LightRAG, "aquery_data"),
+        # Whether reference/chunk page locators will appear (True after a page-aware
+        # re-ingest; False on an older store; None if undeterminable).
+        "page_aware": _PAGE_AWARE,
+        # Feature/deploy visibility:
+        "manifest_papers": len(apa.load_manifest(APA_MANIFEST)),
+        "drive_map_loaded": bool(apa.load_drive_map(APRAG_DRIVE_MAP)),
     }
 
 
@@ -435,6 +479,7 @@ async def retrieve(req: RetrieveRequest):
     if filenames is not None:
         top_k = req.chunk_top_k or req.top_k or 20
         chunks = await _vector_chunk_search(req.question, filenames, top_k)
+        await _attach_chunk_pages(chunks)
         references = _enrich_references(search.assign_reference_ids(chunks))
         return {
             "status": "success", "message": "filtered retrieval",
@@ -452,6 +497,7 @@ async def retrieve(req: RetrieveRequest):
     result = await _rag.aquery_data(req.question, param=_build_query_param(req))
     try:
         data = result.get("data") or {}
+        await _attach_chunk_pages(data.get("chunks") or [])
         if data.get("references"):
             data["references"] = _enrich_references(data["references"])
     except Exception as exc:  # never let enrichment break raw retrieval

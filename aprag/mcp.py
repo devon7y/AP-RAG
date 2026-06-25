@@ -98,7 +98,9 @@ def _format_retrieval(result: dict) -> str:
     for i, ch in enumerate(chunks, 1):
         rm = refs_by_id.get(str(ch.get("reference_id") or ""))
         source = (rm.get("apa") if rm and rm.get("apa") else ch.get("file_path", "unknown"))
-        lines.append(f"\n[chunk {i}] {source}")
+        page = ch.get("page")
+        page_str = f" (p. {page})" if page is not None else ""
+        lines.append(f"\n[chunk {i}]{page_str} {source}")
         lines.append((ch.get("content") or "").strip())
 
     if entities:

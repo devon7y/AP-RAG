@@ -271,11 +271,14 @@ If an LLM is setting this up autonomously, the precise technical context:
 `aprag_query` and `aprag_retrieve`), `aprag.client` (the shared async HTTP client — the one place
 that knows the wire protocol), and `aprag.references` (client-side local PDF resolution).
 Endpoints: `POST /query` → `{"answer", "references", "mode"}` where `references` is a list of
-`{n, apa, intext, filename, hades_path, pages}`; `POST /retrieve` → `LightRAG.aquery_data()` output
-`{"status","message","data":{entities,relationships,chunks,references},"metadata"}` (chunks:
-`{content,file_path,chunk_id,reference_id}`; `naive` mode returns chunks only); `POST /search` →
-`{"status","papers":[{filename,apa,hades_path,pages,score,n_chunks,snippet}],"count","matched_files"}`;
-`GET /health`. All of `/query`, `/retrieve`, `/search` accept an optional `filters` object
+`{n, apa, intext, filename, drive_url, hades_path, pages}`; `POST /retrieve` →
+`LightRAG.aquery_data()` output `{"status","message","data":{entities,relationships,chunks,references},"metadata"}`
+where each chunk is enriched to `{content,file_path,chunk_id,reference_id,page}` and each `references`
+entry gains `{apa,intext,filename,drive_url,hades_path}` (so `aprag chunks` shows a cited markdown
+header + per-chunk page; `naive` mode returns chunks only); `POST /search` →
+`{"status","papers":[{filename,apa,drive_url,hades_path,pages,score,n_chunks,snippet}],"count","matched_files"}`;
+`GET /health` → adds `page_aware` (bool/null — does the store carry per-chunk page numbers),
+`manifest_papers` (count), `drive_map_loaded` (bool). All of `/query`, `/retrieve`, `/search` accept an optional `filters` object
 (`{authors[],year,year_from,year_to,journals[],subjects[],keywords[],affiliations[]}`). The server
 URL is `$APRAG_QUERY_URL` (default `http://localhost:8001`). After a `/query`, the CLI/MCP call
 `aprag.references.localize_answer(...)` to rewrite the `### References` block — cited PDFs found

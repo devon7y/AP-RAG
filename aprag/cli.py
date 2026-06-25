@@ -99,7 +99,9 @@ def _format_chunks(result: dict, show_entities: bool, index: dict | None = None)
         else:  # older server / no manifest entry → fall back to the filename
             label = ch.get("file_path", "unknown source")
             locator = ""
-        header = f"**Chunk {i}: {label}" + (f" — {locator}" if locator else "") + "**"
+        page = ch.get("page")
+        page_str = f" (p. {page})" if page is not None else ""  # PDF page (page-aware ingest)
+        header = (f"**Chunk {i}{page_str}: {label}" + (f" — {locator}" if locator else "") + "**")
         out.extend([header, "", (ch.get("content") or "").strip(), ""])
 
     if show_entities:
