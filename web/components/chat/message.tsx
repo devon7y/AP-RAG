@@ -2,6 +2,7 @@
 import type { UseChatHelpers } from "@ai-sdk/react";
 import {
   citedIds,
+  normalizeMath,
   rewriteIntext,
   stripReferencesSection,
 } from "@/lib/aprag/citations";
@@ -166,7 +167,10 @@ const PurePreviewMessage = ({
       // messages / no references). Safe on partial text while streaming — an
       // unterminated "[1" simply isn't matched yet.
       const text = isAssistant
-        ? rewriteIntext(stripReferencesSection(sanitizeText(part.text)), citeById)
+        ? rewriteIntext(
+            normalizeMath(stripReferencesSection(sanitizeText(part.text))),
+            citeById
+          )
         : sanitizeText(part.text);
       return (
         <MessageContent
@@ -390,9 +394,7 @@ const PurePreviewMessage = ({
       {!hasText && isLoading && (
         <div className="flex h-[calc(13px*1.65)] items-center text-[13px] leading-[1.65]">
           <Shimmer className="font-medium" duration={1}>
-            {`Synthesizing answer from ${retrieval.references.length} source${
-              retrieval.references.length === 1 ? "" : "s"
-            }…`}
+            Synthesizing answer…
           </Shimmer>
         </div>
       )}
@@ -464,7 +466,7 @@ export const ThinkingMessage = () => {
 
         <div className="flex h-[calc(13px*1.65)] items-center text-[13px] leading-[1.65]">
           <Shimmer className="font-medium" duration={1}>
-            Thinking...
+            Processing…
           </Shimmer>
         </div>
       </div>

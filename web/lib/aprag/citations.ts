@@ -31,8 +31,22 @@ export const SYNTH_SYSTEM_PROMPT =
   "[11] or [12]) — those are the papers' internal citations, not your sources. Do NOT " +
   "output a 'References', 'Sources', or bibliography section, and do NOT restate the " +
   "list of sources anywhere — the application renders the reference list itself. If the " +
-  "sources do not address the question, say so plainly. Write clear markdown prose.\n\n" +
+  "sources do not address the question, say so plainly. Write clear markdown prose. " +
+  "Write any mathematical notation as LaTeX delimited by $...$ (inline) or $$...$$ " +
+  "(display) — never \\(...\\) or \\[...\\].\n\n" +
   CITATION_STYLE_PROMPT;
+
+// gpt-5.4-mini often emits LaTeX with \(...\) / \[...\] delimiters, which markdown
+// renders as literal parentheses/brackets (the math plugin only sees $...$ / $$...$$).
+// Convert them so KaTeX renders the math. Leaves existing $/$$ untouched.
+export function normalizeMath(text: string): string {
+  if (!text) {
+    return text;
+  }
+  return text
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_m, body) => `\n$$${body}$$\n`)
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_m, body) => `$${body}$`);
+}
 
 // The [n]-tagged context handed to the synthesis model. We deliberately do NOT include a
 // separate "Reference Document List" (LLMs tend to echo it verbatim into the answer):

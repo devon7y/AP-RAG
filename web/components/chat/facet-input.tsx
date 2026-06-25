@@ -9,10 +9,12 @@ import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 
-// Distinct filter values (authors/journals/...) for autocomplete, loaded once.
-export function useFacets(): Facets {
+// Distinct filter values (authors/journals/...) for autocomplete. Lazy: only fetched
+// once `enabled` is true (i.e. when the user first opens a filter), since the payload is
+// large.
+export function useFacets(enabled = true): Facets {
   const { data } = useSWR<Facets>(
-    `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/facets`,
+    enabled ? `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/facets` : null,
     fetcher,
     { revalidateOnFocus: false, dedupingInterval: 600_000 }
   );

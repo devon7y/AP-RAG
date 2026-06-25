@@ -8,11 +8,18 @@ import type {
   RagRelationship,
   RagRetrieval,
 } from "@/lib/aprag/types";
+import { MessageResponse } from "../ai-elements/message";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "../ui/collapsible";
+
+// PDF text extraction sometimes leaves a newline after every word/line; collapse all
+// whitespace to single spaces so chunks read as flowing text instead of one word per line.
+function cleanChunkText(s: string): string {
+  return (s || "").replace(/\s+/g, " ").trim();
+}
 
 // Raw-chunk view (the web version of `aprag chunks`): the retrieved passages as cards,
 // each headed by its APA citation + PDF page + relevance, with a Drive link when known.
@@ -64,11 +71,11 @@ function ChunkCard({
   return (
     <article className="rounded-xl border border-border/60 bg-card/40 px-3.5 py-3">
       <header className="mb-1.5 flex items-start justify-between gap-3">
-        <div className="min-w-0 text-[13px]">
+        <div className="min-w-0 font-medium text-[13px] [&_p]:m-0 [&_p]:inline">
           <span className="mr-1.5 text-muted-foreground tabular-nums">
             {index}.
           </span>
-          <span className="font-medium">{label}</span>
+          <MessageResponse>{label}</MessageResponse>
         </div>
         <div className="flex shrink-0 items-center gap-2 text-muted-foreground text-xs">
           {chunk.page != null && <span>p. {chunk.page}</span>}
@@ -86,8 +93,8 @@ function ChunkCard({
           )}
         </div>
       </header>
-      <p className="whitespace-pre-wrap text-[13px] text-foreground/90 leading-[1.6]">
-        {chunk.content}
+      <p className="text-[13px] text-foreground/90 leading-[1.6]">
+        {cleanChunkText(chunk.content)}
       </p>
     </article>
   );

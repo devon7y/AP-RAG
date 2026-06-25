@@ -11,8 +11,8 @@ export function AppTitle() {
       <span className="shrink-0 font-semibold text-sm tracking-tight">
         AP-RAG
       </span>
-      <span className="hidden truncate font-light text-foreground/65 text-sm md:inline">
-        <span className="text-foreground/40">— </span>
+      <span className="hidden truncate font-light text-foreground/75 text-sm md:inline">
+        <span className="text-foreground/45">— </span>
         <b className="font-semibold text-foreground">A</b>cademic{" "}
         <b className="font-semibold text-foreground">P</b>aper{" "}
         <b className="font-semibold text-foreground">R</b>etrieval-
@@ -37,7 +37,7 @@ export function PaperCount() {
     return null;
   }
   return (
-    <span className="shrink-0 whitespace-nowrap rounded-full bg-muted px-2.5 py-1 font-medium text-muted-foreground text-xs tabular-nums">
+    <span className="shrink-0 whitespace-nowrap rounded-full bg-muted px-2.5 py-1 font-medium text-foreground/75 text-xs tabular-nums">
       {papers == null ? "…" : papers.toLocaleString()} papers
     </span>
   );

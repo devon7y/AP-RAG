@@ -1,6 +1,7 @@
 "use client";
 
-import { Brain, LayersIcon, ListFilterIcon, NetworkIcon } from "lucide-react";
+import { Brain, LayersIcon, NetworkIcon } from "lucide-react";
+import { useState } from "react";
 import { useActiveChat } from "@/hooks/use-active-chat";
 import {
   REASONING_EFFORTS,
@@ -8,6 +9,7 @@ import {
   RETRIEVAL_MODES,
   type RetrievalMode,
 } from "@/lib/ai/models";
+import type { Facets } from "@/lib/aprag/client";
 import type { RagFilters } from "@/lib/aprag/types";
 import { cn } from "@/lib/utils";
 import { FacetInput, useFacets } from "./facet-input";
@@ -21,7 +23,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "../ui/select";
 import {
   Tooltip,
@@ -38,6 +39,15 @@ const MODE_HINT: Record<RetrievalMode, string> = {
   naive: "Plain vector search",
 };
 
+// Short label for the closed trigger.
+const REASONING_LABEL: Record<ReasoningEffort, string> = {
+  none: "No reasoning",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+};
+// Descriptive hint for the open menu.
 const REASONING_HINT: Record<ReasoningEffort, string> = {
   none: "Fastest (no reasoning)",
   low: "A little reasoning",
@@ -46,14 +56,14 @@ const REASONING_HINT: Record<ReasoningEffort, string> = {
   xhigh: "Most careful (slowest)",
 };
 
-function countActiveFilters(f: RagFilters | null): number {
-  if (!f) {
-    return 0;
-  }
-  return Object.values(f).filter(
-    (v) => v != null && (Array.isArray(v) ? v.length > 0 : true)
-  ).length;
-}
+// Each metadata filter that maps to a Facets key, surfaced as its own composer button.
+const FACET_FILTERS: { key: keyof RagFilters & keyof Facets; label: string }[] = [
+  { key: "authors", label: "Authors" },
+  { key: "journals", label: "Journals" },
+  { key: "subjects", label: "Subjects" },
+  { key: "keywords", label: "Keywords" },
+  { key: "affiliations", label: "Affiliations" },
+];
 
 export function RagControls() {
   const {
@@ -67,12 +77,28 @@ export function RagControls() {
     setFilters,
   } = useActiveChat();
 
-  const activeFilterCount = countActiveFilters(filters);
+  // Facets (autocomplete options) are large, so only load them once the user opens a
+  // filter for the first time.
+  const [facetsEnabled, setFacetsEnabled] = useState(false);
+  const facets = useFacets(facetsEnabled);
+
+  const setList = (key: keyof Facets) => (next: string[]) =>
+    setFilters((prev) => {
+      const merged: RagFilters = { ...(prev ?? {}) };
+      if (next.length > 0) {
+        merged[key] = next;
+      } else {
+        delete merged[key];
+      }
+      return Object.keys(merged).length > 0 ? merged : null;
+    });
+
+  const yearActive = filters?.year_from != null || filters?.year_to != null;
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="flex items-center gap-1">
-        {/* Chunk-mode toggle: synthesized answer vs raw retrieved chunks. */}
+      <div className="flex flex-wrap items-center gap-1">
+        {/* Answer vs raw chunks */}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -96,23 +122,18 @@ export function RagControls() {
           </TooltipContent>
         </Tooltip>
 
-        {/* Retrieval mode (LightRAG strategy). */}
+        {/* Retrieval mode — short label in the trigger, hint in the menu */}
         <Select
           onValueChange={(v) => setRetrievalMode(v as RetrievalMode)}
           value={retrievalMode}
         >
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <SelectTrigger
-                className="h-7 gap-1.5 rounded-lg border-0 px-2 text-xs shadow-none hover:bg-accent"
-                size="sm"
-              >
-                <NetworkIcon className="size-3.5" />
-                <SelectValue />
-              </SelectTrigger>
-            </TooltipTrigger>
-            <TooltipContent>Retrieval mode</TooltipContent>
-          </Tooltip>
+          <SelectTrigger
+            className="h-7 gap-1.5 rounded-lg border-0 px-2 text-xs capitalize shadow-none hover:bg-accent"
+            size="sm"
+          >
+            <NetworkIcon className="size-3.5" />
+            {retrievalMode}
+          </SelectTrigger>
           <SelectContent>
             {RETRIEVAL_MODES.map((m) => (
               <SelectItem key={m} value={m}>
@@ -125,34 +146,25 @@ export function RagControls() {
           </SelectContent>
         </Select>
 
-        {/* Reasoning effort (answer mode only). */}
+        {/* Reasoning effort — short label in the trigger, hint in the menu */}
         <Select
           onValueChange={(v) => setReasoning(v as ReasoningEffort)}
           value={reasoning}
         >
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <SelectTrigger
-                className={cn(
-                  "h-7 gap-1.5 rounded-lg border-0 px-2 text-xs shadow-none hover:bg-accent",
-                  chunkMode && "pointer-events-none opacity-40"
-                )}
-                size="sm"
-              >
-                <Brain className="size-3.5" />
-                <SelectValue />
-              </SelectTrigger>
-            </TooltipTrigger>
-            <TooltipContent>
-              {chunkMode
-                ? "Reasoning applies to synthesized answers"
-                : "Answer reasoning effort"}
-            </TooltipContent>
-          </Tooltip>
+          <SelectTrigger
+            className={cn(
+              "h-7 gap-1.5 rounded-lg border-0 px-2 text-xs shadow-none hover:bg-accent",
+              chunkMode && "pointer-events-none opacity-40"
+            )}
+            size="sm"
+          >
+            <Brain className="size-3.5" />
+            {REASONING_LABEL[reasoning]}
+          </SelectTrigger>
           <SelectContent>
             {REASONING_EFFORTS.map((r) => (
               <SelectItem key={r} value={r}>
-                <span className="capitalize">{r}</span>
+                <span>{REASONING_LABEL[r]}</span>
                 <span className="ml-2 text-muted-foreground text-xs">
                   {REASONING_HINT[r]}
                 </span>
@@ -161,153 +173,148 @@ export function RagControls() {
           </SelectContent>
         </Select>
 
-        {/* Metadata filters (scope retrieval to a paper subset). */}
-        <Popover>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <PopoverTrigger asChild>
-                <Button
-                  className={cn(
-                    "h-7 gap-1.5 rounded-lg px-2 text-xs",
-                    activeFilterCount > 0 && "bg-primary/10 text-primary"
-                  )}
-                  size="sm"
-                  type="button"
-                  variant="ghost"
-                >
-                  <ListFilterIcon className="size-3.5" />
-                  Filters
-                  {activeFilterCount > 0 && (
-                    <Badge
-                      className="ml-0.5 h-4 min-w-4 justify-center px-1 text-[10px]"
-                      variant="secondary"
-                    >
-                      {activeFilterCount}
-                    </Badge>
-                  )}
-                </Button>
-              </PopoverTrigger>
-            </TooltipTrigger>
-            <TooltipContent>
-              Scope retrieval to papers matching metadata
-            </TooltipContent>
-          </Tooltip>
-          <FiltersForm filters={filters} setFilters={setFilters} />
-        </Popover>
+        {/* Individual metadata filters, inline */}
+        {FACET_FILTERS.map((f) => (
+          <FacetFilterButton
+            key={f.key}
+            label={f.label}
+            onChange={setList(f.key)}
+            onOpen={() => setFacetsEnabled(true)}
+            options={facets[f.key]}
+            selected={filters?.[f.key] ?? []}
+          />
+        ))}
+
+        <YearFilterButton active={yearActive} filters={filters} setFilters={setFilters} />
       </div>
     </TooltipProvider>
   );
 }
 
-function FiltersForm({
-  filters,
-  setFilters,
+function FacetFilterButton({
+  label,
+  options,
+  selected,
+  onChange,
+  onOpen,
 }: {
-  filters: RagFilters | null;
-  setFilters: (f: RagFilters | null) => void;
+  label: string;
+  options: string[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+  onOpen: () => void;
 }) {
-  const facets = useFacets();
-
-  const update = (patch: Partial<RagFilters>) => {
-    const next: RagFilters = { ...(filters ?? {}), ...patch };
-    // Drop empty fields so countActiveFilters stays honest.
-    for (const k of Object.keys(next) as (keyof RagFilters)[]) {
-      const v = next[k];
-      if (v == null || (Array.isArray(v) && v.length === 0) || v === ("" as never)) {
-        delete next[k];
-      }
-    }
-    setFilters(Object.keys(next).length > 0 ? next : null);
-  };
-
-  const setList = (key: keyof RagFilters) => (next: string[]) =>
-    update({ [key]: next.length > 0 ? next : undefined } as Partial<RagFilters>);
-
-  const num = (value: string): number | undefined => {
-    const n = Number.parseInt(value, 10);
-    return Number.isFinite(n) ? n : undefined;
-  };
-
   return (
-    <PopoverContent
-      align="start"
-      className="max-h-[70vh] w-80 space-y-3 overflow-y-auto"
-    >
-      <div className="flex items-center justify-between">
-        <p className="font-medium text-sm">Filter papers</p>
+    <Popover onOpenChange={(open) => open && onOpen()}>
+      <PopoverTrigger asChild>
         <Button
-          className="h-6 px-2 text-muted-foreground text-xs"
-          onClick={() => setFilters(null)}
+          className={cn(
+            "h-7 gap-1.5 rounded-lg px-2 text-xs",
+            selected.length > 0 && "bg-primary/10 text-primary"
+          )}
           size="sm"
           type="button"
           variant="ghost"
         >
-          Clear
+          {label}
+          {selected.length > 0 && (
+            <Badge
+              className="ml-0.5 h-4 min-w-4 justify-center px-1 text-[10px]"
+              variant="secondary"
+            >
+              {selected.length}
+            </Badge>
+          )}
         </Button>
-      </div>
-      <FacetInput
-        label="Authors"
-        onChange={setList("authors")}
-        options={facets.authors}
-        placeholder="Type a surname…"
-        selected={filters?.authors ?? []}
-      />
-      <div className="grid grid-cols-2 gap-2">
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-72">
+        <FacetInput
+          label={label}
+          onChange={onChange}
+          options={options}
+          placeholder={`Type a ${label.replace(/s$/, "").toLowerCase()}…`}
+          selected={selected}
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function YearFilterButton({
+  active,
+  filters,
+  setFilters,
+}: {
+  active: boolean;
+  filters: RagFilters | null;
+  setFilters: ReturnType<typeof useActiveChat>["setFilters"];
+}) {
+  const num = (value: string): number | undefined => {
+    const n = Number.parseInt(value, 10);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const setYear = (key: "year_from" | "year_to", value: number | undefined) =>
+    setFilters((prev) => {
+      const merged: RagFilters = { ...(prev ?? {}) };
+      if (value == null) {
+        delete merged[key];
+      } else {
+        merged[key] = value;
+      }
+      return Object.keys(merged).length > 0 ? merged : null;
+    });
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          className={cn(
+            "h-7 gap-1.5 rounded-lg px-2 text-xs",
+            active && "bg-primary/10 text-primary"
+          )}
+          size="sm"
+          type="button"
+          variant="ghost"
+        >
+          Year
+          {active && (
+            <Badge
+              className="ml-0.5 h-4 justify-center px-1 text-[10px]"
+              variant="secondary"
+            >
+              {filters?.year_from ?? "…"}–{filters?.year_to ?? "…"}
+            </Badge>
+          )}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="grid w-56 grid-cols-2 gap-2">
         <div className="space-y-1">
           <Label className="text-xs" htmlFor="filter-year-from">
-            Year from
+            From
           </Label>
           <Input
             className="h-8 text-sm"
             defaultValue={filters?.year_from ?? ""}
             id="filter-year-from"
             inputMode="numeric"
-            onChange={(e) => update({ year_from: num(e.target.value) })}
+            onChange={(e) => setYear("year_from", num(e.target.value))}
             placeholder="2015"
           />
         </div>
         <div className="space-y-1">
           <Label className="text-xs" htmlFor="filter-year-to">
-            Year to
+            To
           </Label>
           <Input
             className="h-8 text-sm"
             defaultValue={filters?.year_to ?? ""}
             id="filter-year-to"
             inputMode="numeric"
-            onChange={(e) => update({ year_to: num(e.target.value) })}
+            onChange={(e) => setYear("year_to", num(e.target.value))}
             placeholder="2026"
           />
         </div>
-      </div>
-      <FacetInput
-        label="Journals / venues"
-        onChange={setList("journals")}
-        options={facets.journals}
-        placeholder="Type a journal…"
-        selected={filters?.journals ?? []}
-      />
-      <FacetInput
-        label="Subjects"
-        onChange={setList("subjects")}
-        options={facets.subjects}
-        placeholder="Type a subject…"
-        selected={filters?.subjects ?? []}
-      />
-      <FacetInput
-        label="Keywords"
-        onChange={setList("keywords")}
-        options={facets.keywords}
-        placeholder="Type a keyword…"
-        selected={filters?.keywords ?? []}
-      />
-      <FacetInput
-        label="Affiliations"
-        onChange={setList("affiliations")}
-        options={facets.affiliations}
-        placeholder="Type an institution…"
-        selected={filters?.affiliations ?? []}
-      />
-    </PopoverContent>
+      </PopoverContent>
+    </Popover>
   );
 }
