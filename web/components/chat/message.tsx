@@ -70,14 +70,12 @@ const PurePreviewMessage = ({
     retrievalPart as { data?: RagRetrieval } | undefined
   )?.data;
 
-  // reference_id → APA in-text citation (+ Drive link), for rewriting [n] inline.
+  // reference_id → APA in-text citation, for rewriting [n] inline. No link: in-text
+  // citations are plain "(Author, Year)"; the Drive link lives only on the references.
   const citeById = new Map<string, { intext: string; href?: string }>();
   if (retrieval) {
     for (const ref of retrieval.references) {
-      citeById.set(ref.reference_id, {
-        intext: ref.intext,
-        href: ref.drive_url || undefined,
-      });
+      citeById.set(ref.reference_id, { intext: ref.intext });
     }
   }
 

@@ -25,7 +25,7 @@ export function RagReferences({
         References
       </h3>
       <ol className="space-y-2">
-        {references.map((ref) => {
+        {references.map((ref, i) => {
           const pages = formatPages(ref.pages);
           return (
             <li
@@ -34,7 +34,7 @@ export function RagReferences({
               key={`${ref.reference_id}-${ref.filename}`}
             >
               <span className="mt-px shrink-0 text-muted-foreground tabular-nums">
-                [{ref.reference_id}]
+                [{i + 1}]
               </span>
               <div className="min-w-0 flex-1">
                 <div className="[&_p]:m-0 [&_p]:inline">
