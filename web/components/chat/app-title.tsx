@@ -11,8 +11,8 @@ export function AppTitle() {
       <span className="shrink-0 font-semibold text-sm tracking-tight">
         AP-RAG
       </span>
-      <span className="hidden truncate font-light text-muted-foreground/55 text-sm md:inline">
-        <span className="text-muted-foreground/45">— </span>
+      <span className="hidden truncate font-light text-foreground/65 text-sm md:inline">
+        <span className="text-foreground/40">— </span>
         <b className="font-semibold text-foreground">A</b>cademic{" "}
         <b className="font-semibold text-foreground">P</b>aper{" "}
         <b className="font-semibold text-foreground">R</b>etrieval-
