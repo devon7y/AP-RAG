@@ -466,7 +466,7 @@ export const ThinkingMessage = () => {
 
         <div className="flex h-[calc(13px*1.65)] items-center text-[13px] leading-[1.65]">
           <Shimmer className="font-medium" duration={1}>
-            Processing…
+            Checking the database…
           </Shimmer>
         </div>
       </div>

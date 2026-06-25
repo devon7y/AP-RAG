@@ -1,10 +1,10 @@
 "use client";
 
 import { XIcon } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 import type { Facets } from "@/lib/aprag/client";
-import { fetcher } from "@/lib/utils";
+import { cn, fetcher } from "@/lib/utils";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
@@ -29,9 +29,11 @@ export function useFacets(enabled = true): Facets {
   );
 }
 
-// A multi-value filter field: type to autocomplete against `options` (native datalist,
-// dynamically narrowed so huge lists stay fast), Enter to add a chip, × to remove.
-// Free text is allowed too (so you can filter on a value not in the list).
+const MAX_SUGGESTIONS = 8;
+
+// A multi-value filter field: selected values are chips ABOVE the input; typing shows a
+// suggestion list (only once you start typing). Click a suggestion or press Tab to add
+// the top match; Enter adds the top match (or your free text). × removes a chip.
 export function FacetInput({
   label,
   placeholder,
@@ -45,16 +47,17 @@ export function FacetInput({
   selected: string[];
   onChange: (next: string[]) => void;
 }) {
-  const listId = useId();
   const [query, setQuery] = useState("");
 
   const suggestions = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const base = q
-      ? options.filter((o) => o.toLowerCase().includes(q))
-      : options;
-    return base.slice(0, 30);
-  }, [query, options]);
+    if (!q) {
+      return []; // nothing until the user types
+    }
+    return options
+      .filter((o) => o.toLowerCase().includes(q) && !selected.includes(o))
+      .slice(0, MAX_SUGGESTIONS);
+  }, [query, options, selected]);
 
   const add = (value: string) => {
     const v = value.trim();
@@ -65,32 +68,12 @@ export function FacetInput({
   };
 
   return (
-    <div className="space-y-1">
-      <Label className="text-xs" htmlFor={listId}>
-        {label}
-      </Label>
-      <Input
-        autoComplete="off"
-        className="h-8 text-sm"
-        id={listId}
-        list={`${listId}-list`}
-        onChange={(e) => setQuery(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            add(query);
-          }
-        }}
-        placeholder={placeholder}
-        value={query}
-      />
-      <datalist id={`${listId}-list`}>
-        {suggestions.map((o) => (
-          <option key={o} value={o} />
-        ))}
-      </datalist>
+    <div className="space-y-1.5">
+      <Label className="text-xs">{label}</Label>
+
+      {/* Selected chips ABOVE the input so suggestions never cover them. */}
       {selected.length > 0 && (
-        <div className="flex flex-wrap gap-1 pt-0.5">
+        <div className="flex flex-wrap gap-1">
           {selected.map((s) => (
             <Badge
               className="gap-1 pr-1 font-normal"
@@ -109,6 +92,52 @@ export function FacetInput({
             </Badge>
           ))}
         </div>
+      )}
+
+      <Input
+        autoComplete="off"
+        className="h-8 text-sm"
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            add(suggestions[0] ?? query);
+          } else if (e.key === "Tab" && suggestions.length > 0) {
+            e.preventDefault(); // Tab completes the top suggestion
+            add(suggestions[0]);
+          }
+        }}
+        placeholder={placeholder}
+        value={query}
+      />
+
+      {suggestions.length > 0 && (
+        <ul className="max-h-44 overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-sm">
+          {suggestions.map((o, i) => (
+            <li key={o}>
+              <button
+                className={cn(
+                  "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm hover:bg-accent",
+                  i === 0 && "bg-accent/40"
+                )}
+                // onMouseDown (not onClick) so the input keeps focus and the click
+                // registers before any blur.
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  add(o);
+                }}
+                type="button"
+              >
+                <span className="truncate">{o}</span>
+                {i === 0 && (
+                  <span className="ml-auto shrink-0 rounded border px-1 text-[10px] text-muted-foreground">
+                    tab
+                  </span>
+                )}
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
