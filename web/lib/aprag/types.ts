@@ -57,7 +57,8 @@ export type RagRetrieval = {
   chunks: RagChunk[];
   entities: RagEntity[];
   relationships: RagRelationship[];
-  // Metadata filters the LLM inferred from this turn's wording (explicit mentions only,
-  // validated against the corpus). The client merges these into the active filter chips.
-  inferredFilters?: RagFilters;
+  // The metadata filters actually applied this turn (manual + client-previewed + the
+  // server's second-pass extraction, minus any the user dismissed). The client syncs its
+  // active filter chips to this.
+  appliedFilters?: RagFilters | null;
 };

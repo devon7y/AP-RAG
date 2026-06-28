@@ -49,6 +49,9 @@ export const postRequestBodySchema = z.object({
   mode: z.enum(["hybrid", "local", "global", "mix", "naive"]).optional(),
   chunkMode: z.boolean().optional(),
   filters: filtersSchema.optional(),
+  // Filter keys ("authors:caplan", "year_from:2020") the user dismissed in the preview,
+  // so the server's second-pass extraction won't re-add them.
+  dismissed: z.array(z.string()).optional(),
 });
 
 export type PostRequestBody = z.infer<typeof postRequestBodySchema>;

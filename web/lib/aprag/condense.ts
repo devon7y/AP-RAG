@@ -3,10 +3,13 @@ import "server-only";
 import { generateText } from "ai";
 import { getLanguageModel } from "@/lib/ai/providers";
 import { getFacetsCached } from "./client";
-import { FILTER_LIST_KEYS } from "./filters";
 import type { RagFilters } from "./types";
 
 export type HistoryTurn = { role: "user" | "assistant"; content: string };
+
+// NL extraction scope: author / journal / affiliation / year (NOT subject/keyword — the
+// question's topic is left to semantic + graph retrieval).
+const EXTRACT_LIST_KEYS = ["authors", "journals", "affiliations"] as const;
 
 const EXTRACT_SYSTEM =
   "You convert a user's message (in the context of the conversation) into a standalone " +
@@ -18,10 +21,11 @@ const EXTRACT_SYSTEM =
   '"year_to" (int). Include a filter ONLY when the user explicitly names it: "Caplan ' +
   'papers" -> authors:["Caplan"]; "in Cognition" -> journals:["Cognition"]; "from ' +
   'Alberta" / "at MIT" -> affiliations:["Alberta"]/["MIT"]; "since 2020" -> ' +
-  'year_from:2020; "before 2015" -> year_to:2014; "in 2026" -> year:2026. Do NOT extract ' +
-  "topics, subjects, or keywords as filters — leave the question's topic to semantic " +
-  "retrieval. Do NOT infer filters from vague wording (e.g. 'recent', 'classic'). Omit " +
-  "keys you have no value for. Respond with the JSON object only — no prose, no code fences.";
+  'year_from:2020; "before 2015" -> year_to:2014; "in 2026" -> year:2026. Correct obvious ' +
+  'misspellings of journal/affiliation names to the intended name. Do NOT extract topics, ' +
+  "subjects, or keywords as filters. Do NOT infer filters from vague wording ('recent', " +
+  "'classic'). Omit keys you have no value for. Respond with the JSON object only — no " +
+  "prose, no code fences.";
 
 function safeParse(text: string): Record<string, unknown> {
   try {
@@ -52,9 +56,9 @@ function asInt(v: unknown): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-// One cheap gpt-5.4-mini call: standalone retrieval query + explicit metadata filters.
-// Filters are validated against the corpus (see validateInferredFilters). Always returns
-// something usable — on any error it falls back to the raw question with no filters.
+// One cheap gpt-5.4-mini call: standalone retrieval query + a second-pass extraction of
+// explicit metadata filters (validated against the corpus). Always returns something
+// usable — on any error it falls back to the raw question with no filters.
 export async function condenseAndExtract(
   history: HistoryTurn[],
   question: string
@@ -78,10 +82,8 @@ export async function condenseAndExtract(
         ? obj.query.trim()
         : question;
 
-    // NL extraction is limited to author/journal/affiliation/year — topic dimensions
-    // (subjects/keywords) are deliberately left to semantic + graph retrieval.
     const raw: RagFilters = {};
-    for (const k of ["authors", "journals", "affiliations"] as const) {
+    for (const k of EXTRACT_LIST_KEYS) {
       const v = asStrings(obj[k]);
       if (v) {
         raw[k] = v;
@@ -111,7 +113,7 @@ export async function validateInferredFilters(
       out[k] = f[k];
     }
   }
-  const needsFacets = FILTER_LIST_KEYS.some((k) => (f[k]?.length ?? 0) > 0);
+  const needsFacets = EXTRACT_LIST_KEYS.some((k) => (f[k]?.length ?? 0) > 0);
   if (!needsFacets) {
     return out;
   }
@@ -119,7 +121,7 @@ export async function validateInferredFilters(
   const facets = await getFacetsCached();
   const keep = (vals: string[] | undefined, opts: string[] | undefined) => {
     if (!opts) {
-      return vals ?? []; // can't validate → apply as-is
+      return vals ?? [];
     }
     const lc = opts.map((o) => o.toLowerCase());
     return (vals ?? []).filter((v) => {
@@ -127,7 +129,7 @@ export async function validateInferredFilters(
       return lc.some((o) => o.includes(x) || x.includes(o));
     });
   };
-  for (const k of FILTER_LIST_KEYS) {
+  for (const k of EXTRACT_LIST_KEYS) {
     const kept = keep(f[k], facets?.[k]);
     if (kept.length > 0) {
       out[k] = kept;

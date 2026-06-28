@@ -17,7 +17,7 @@ import { getLanguageModel } from "@/lib/ai/providers";
 import { retrieve } from "@/lib/aprag/client";
 import { buildContext, SYNTH_SYSTEM_PROMPT } from "@/lib/aprag/citations";
 import { condenseAndExtract, type HistoryTurn } from "@/lib/aprag/condense";
-import { mergeFilters } from "@/lib/aprag/filters";
+import { dropDismissed, mergeFilters } from "@/lib/aprag/filters";
 import type { RagRetrieval } from "@/lib/aprag/types";
 import { isProductionEnvironment } from "@/lib/constants";
 import {
@@ -86,6 +86,7 @@ export async function POST(request: Request) {
       mode,
       chunkMode = false,
       filters,
+      dismissed,
     } = requestBody;
 
     const [, session] = await Promise.all([
@@ -163,13 +164,15 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream<ChatMessage>({
       execute: async ({ writer: dataStream }) => {
-        // 1. Condense the follow-up into a standalone retrieval query AND extract any
-        //    metadata filters the user explicitly named (validated against the corpus).
-        const { query: retrievalQuery, filters: inferredFilters } =
+        // 1. Condense into a standalone query AND run the second-pass LLM filter
+        //    extraction (catches mistyped/fuzzy names the client preview misses).
+        const { query: retrievalQuery, filters: inferred } =
           await condenseAndExtract(toHistoryTurns(priorMessages), question);
 
-        // Apply manual (UI) filters + inferred filters together.
-        const effectiveFilters = mergeFilters(filters ?? null, inferredFilters);
+        // Honor the user's pre-send cancellations, then combine the client-confirmed
+        // filters with the server's second-pass extraction.
+        const inferredKept = dropDismissed(inferred, dismissed ?? []);
+        const effectiveFilters = mergeFilters(filters ?? null, inferredKept);
 
         // 2. Retrieve from the AP-RAG query server (PC, over the tunnel).
         const retrieved = await retrieve({
@@ -188,7 +191,7 @@ export async function POST(request: Request) {
           chunks: retrieved.chunks,
           entities: retrieved.entities,
           relationships: retrieved.relationships,
-          ...(Object.keys(inferredFilters).length > 0 && { inferredFilters }),
+          appliedFilters: effectiveFilters,
         };
         dataStream.write({
           type: "data-retrieval",

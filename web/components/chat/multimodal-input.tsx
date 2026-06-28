@@ -19,6 +19,7 @@ import {
   type SetStateAction,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -52,7 +53,14 @@ import {
   PromptInputTools,
 } from "../ai-elements/prompt-input";
 import { Button } from "../ui/button";
+import { XIcon } from "lucide-react";
+import { useActiveChat } from "@/hooks/use-active-chat";
+import { detectFilters } from "@/lib/aprag/detect";
+import { type FilterListKey, mergeFilters } from "@/lib/aprag/filters";
+import type { RagFilters } from "@/lib/aprag/types";
+import { Badge } from "../ui/badge";
 import { ActiveFilters } from "./active-filters";
+import { useFacets } from "./facet-input";
 import { PaperclipIcon, StopIcon } from "./icons";
 import { PreviewAttachment } from "./preview-attachment";
 import { RagControls } from "./rag-controls";
@@ -217,6 +225,81 @@ function PureMultimodalInput({
   const [slashQuery, setSlashQuery] = useState("");
   const [slashIndex, setSlashIndex] = useState(0);
 
+  // ── Live filter preview ──────────────────────────────────────────────────────
+  // Detect explicit author/journal/affiliation/year mentions as the user types and
+  // show them as cancellable "will filter" chips before sending. On send these are
+  // applied; cancelled ones are reported to the server so its second-pass LLM
+  // extraction won't re-add them.
+  const { filters, setFilters } = useActiveChat();
+  const facets = useFacets(input.trim().length > 0);
+  const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
+
+  const FACET_LABEL: Record<FilterListKey, string> = {
+    authors: "Author",
+    journals: "Journal",
+    subjects: "Subject",
+    keywords: "Keyword",
+    affiliations: "Affiliation",
+  };
+
+  const pending = useMemo(() => {
+    const detected = detectFilters(input, facets);
+    const active = filters ?? {};
+    const chips: {
+      key: string;
+      dim: keyof RagFilters;
+      value: string | number;
+      label: string;
+    }[] = [];
+    for (const dim of ["authors", "journals", "affiliations"] as const) {
+      for (const v of detected[dim] ?? []) {
+        const key = `${dim}:${v.toLowerCase()}`;
+        if (dismissedKeys.has(key)) {
+          continue;
+        }
+        if ((active[dim] ?? []).some((a) => a.toLowerCase() === v.toLowerCase())) {
+          continue;
+        }
+        chips.push({ key, dim, value: v, label: `${FACET_LABEL[dim]}: ${v}` });
+      }
+    }
+    const yearLabels: Record<"year" | "year_from" | "year_to", (v: number) => string> =
+      {
+        year: (v) => `Year: ${v}`,
+        year_from: (v) => `Year ≥ ${v}`,
+        year_to: (v) => `Year ≤ ${v}`,
+      };
+    for (const dim of ["year", "year_from", "year_to"] as const) {
+      const v = detected[dim];
+      if (v == null || active[dim] === v) {
+        continue;
+      }
+      const key = `${dim}:${v}`;
+      if (dismissedKeys.has(key)) {
+        continue;
+      }
+      chips.push({ key, dim, value: v, label: yearLabels[dim](v) });
+    }
+    return chips;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input, facets, filters, dismissedKeys]);
+
+  const pendingToFilters = useCallback((): RagFilters => {
+    const out: RagFilters = {};
+    for (const c of pending) {
+      if (c.dim === "year" || c.dim === "year_from" || c.dim === "year_to") {
+        out[c.dim] = c.value as number;
+      } else if (
+        c.dim === "authors" ||
+        c.dim === "journals" ||
+        c.dim === "affiliations"
+      ) {
+        (out[c.dim] ??= []).push(c.value as string);
+      }
+    }
+    return out;
+  }, [pending]);
+
   const submitForm = useCallback(() => {
     window.history.pushState(
       {},
@@ -224,22 +307,39 @@ function PureMultimodalInput({
       `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/chat/${chatId}`
     );
 
-    sendMessage({
-      role: "user",
-      parts: [
-        ...attachments.map((attachment) => ({
-          type: "file" as const,
-          url: attachment.url,
-          name: attachment.name,
-          mediaType: attachment.contentType,
-        })),
-        {
-          type: "text",
-          text: input,
-        },
-      ],
-    });
+    // Apply the previewed filters (manual + non-dismissed detections) and tell the
+    // server which detections the user cancelled. Sent in the request body so they
+    // take effect this turn without waiting for the filter-state ref to update.
+    const merged = mergeFilters(filters, pendingToFilters());
+    setFilters(merged);
+    const extraBody: Record<string, unknown> = {};
+    if (merged) {
+      extraBody.filters = merged;
+    }
+    if (dismissedKeys.size > 0) {
+      extraBody.dismissed = [...dismissedKeys];
+    }
 
+    (sendMessage as UseChatHelpers<ChatMessage>["sendMessage"])(
+      {
+        role: "user",
+        parts: [
+          ...attachments.map((attachment) => ({
+            type: "file" as const,
+            url: attachment.url,
+            name: attachment.name,
+            mediaType: attachment.contentType,
+          })),
+          {
+            type: "text",
+            text: input,
+          },
+        ],
+      },
+      Object.keys(extraBody).length > 0 ? { body: extraBody } : undefined
+    );
+
+    setDismissedKeys(new Set());
     setAttachments([]);
     setLocalStorageInput("");
     setInput("");
@@ -256,6 +356,10 @@ function PureMultimodalInput({
     setLocalStorageInput,
     width,
     chatId,
+    filters,
+    setFilters,
+    pendingToFilters,
+    dismissedKeys,
   ]);
 
   const uploadFile = useCallback(async (file: File) => {
@@ -475,6 +579,30 @@ function PureMultimodalInput({
           </div>
         )}
         <ActiveFilters />
+        {pending.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 px-3.5 pt-2.5">
+            <span className="text-muted-foreground text-xs">Will filter:</span>
+            {pending.map((c) => (
+              <Badge
+                className="gap-1 border-dashed pr-1 font-normal text-muted-foreground"
+                key={c.key}
+                variant="outline"
+              >
+                {c.label}
+                <button
+                  aria-label={`Cancel ${c.label}`}
+                  className="rounded-sm hover:text-foreground"
+                  onClick={() =>
+                    setDismissedKeys((prev) => new Set(prev).add(c.key))
+                  }
+                  type="button"
+                >
+                  <XIcon className="size-3" />
+                </button>
+              </Badge>
+            ))}
+          </div>
+        )}
         <PromptInputTextarea
           className="min-h-0 text-[13px] leading-relaxed px-4 pt-3.5 pb-1.5 placeholder:text-muted-foreground/35"
           data-testid="multimodal-input"
