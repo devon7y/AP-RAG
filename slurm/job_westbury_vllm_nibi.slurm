@@ -47,6 +47,7 @@ vllm serve Qwen/Qwen3.6-35B-A3B \
   --max-model-len 40000 \
   --gpu-memory-utilization 0.90 \
   --dtype bfloat16 \
+  --enable-prefix-caching \
   --default-chat-template-kwargs '{"enable_thinking": false}' &
 VLLM_PID=$!
 

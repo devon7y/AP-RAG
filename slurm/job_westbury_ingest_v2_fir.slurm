@@ -1,27 +1,26 @@
 #!/bin/bash
 #SBATCH --account=def-jcaplan
 #SBATCH --job-name=westbury_ingest
-#SBATCH --output=/scratch/devon7y/westbury_rag/logs/westbury_ingest_%j.out
-#SBATCH --error=/scratch/devon7y/westbury_rag/logs/westbury_ingest_%j.err
+#SBATCH --output=/home/devon7y/scratch/devon7y/westbury_rag/logs/westbury_ingest_%j.out
+#SBATCH --error=/home/devon7y/scratch/devon7y/westbury_rag/logs/westbury_ingest_%j.err
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=32G
 #SBATCH --gpus=h100:1
 
-# Rorqual ingest — mirrors job_westbury_ingest_v2_nibi.slurm. Only difference:
-# HF_HOME points at the shared top-level model cache (Qwen3-Embedding-8B lives in
-# /scratch/devon7y/huggingface, not westbury_rag/hf_cache). WORKDIR path is the
-# same on Nibi and Rorqual (/scratch/devon7y/...), so everything else is identical.
+# Fir ingest — mirrors job_westbury_ingest_v2_nibi.slurm. Only difference is the
+# WORKDIR path (/home/devon7y/scratch/devon7y/... on Fir). HF_HOME=$WORKDIR/hf_cache
+# is the same as Nibi (models live in westbury_rag/hf_cache).
 
-WORKDIR=/scratch/devon7y/westbury_rag
+WORKDIR=/home/devon7y/scratch/devon7y/westbury_rag
 VENV_DIR=$WORKDIR/venv
 
 export WORKDIR
 export STORAGE_SUBDIR="${STORAGE_SUBDIR:-rag_storage_aprag}"
 QDRANT_SUBDIR="${QDRANT_SUBDIR:-qdrant_storage_aprag}"
 
-export HF_HOME=/scratch/devon7y/huggingface
+export HF_HOME=$WORKDIR/hf_cache
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export TIKTOKEN_CACHE_DIR=$WORKDIR/cache/tiktoken
@@ -36,7 +35,7 @@ mkdir -p "$WORKDIR/logs" "$WORKDIR/$STORAGE_SUBDIR" "$WORKDIR/cache" "$WORKDIR/c
 module load python/3.11 gcc/12.3 cuda/12.6 opencv
 
 if [ ! -f "$VENV_DIR/bin/activate" ]; then
-  echo "[$(date)] ERROR: venv not found at $VENV_DIR. Run job_setup_env_ror.slurm first."
+  echo "[$(date)] ERROR: venv not found at $VENV_DIR. Run job_setup_env_fir.slurm first."
   exit 1
 fi
 source "$VENV_DIR/bin/activate"
@@ -68,7 +67,7 @@ for s in ("processed", "processing", "pending", "failed"):
     print(f"    {s}: {counts.get(s, 0)}")
 PYEOF
 
-# ── Qdrant sidecar via Apptainer (local NVMe — Rorqual is Lustre) ──
+# ── Qdrant sidecar via Apptainer (local NVMe — Fir is Lustre) ──
 QDRANT_SIF="$WORKDIR/qdrant_latest.sif"
 QDRANT_LUSTRE="$WORKDIR/$QDRANT_SUBDIR"
 QDRANT_LOCAL="$SLURM_TMPDIR/qdrant_storage"

@@ -1,29 +1,26 @@
 #!/bin/bash
 #SBATCH --account=def-jcaplan
 #SBATCH --job-name=westbury_vllm
-#SBATCH --output=/scratch/devon7y/westbury_rag/logs/westbury_vllm_%j.out
-#SBATCH --error=/scratch/devon7y/westbury_rag/logs/westbury_vllm_%j.err
+#SBATCH --output=/home/devon7y/scratch/devon7y/westbury_rag/logs/westbury_vllm_%j.out
+#SBATCH --error=/home/devon7y/scratch/devon7y/westbury_rag/logs/westbury_vllm_%j.err
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=128G
 #SBATCH --gpus=h100:2
 
-# Rorqual vLLM serve — mirrors job_westbury_vllm_nibi.slurm (dynamic port +
-# --enable-prefix-caching) with two Rorqual-specific changes:
-#   1. Models live in the shared top-level cache /scratch/devon7y/huggingface
-#      (NOT westbury_rag/hf_cache), so HF_HOME points there.
-#   2. Rorqual scratch is Lustre (slow 70GB model loads) — copy the weights to
-#      node-local NVMe ($SLURM_TMPDIR) first, like the prior proven Ror run.
+# Fir vLLM serve — mirrors job_westbury_vllm_nibi.slurm (dynamic port +
+# --enable-prefix-caching). Fir specifics:
+#   1. WORKDIR is under /home/devon7y/scratch/devon7y (not /scratch/...).
+#   2. Models live in westbury_rag/hf_cache, so HF_HOME=$WORKDIR/hf_cache.
+#   3. Fir is DDN Lustre — copy the weights to node-local NVMe ($SLURM_TMPDIR)
+#      first for a fast load (GPU nodes have 7.84TB local NVMe).
 
-WORKDIR=/scratch/devon7y/westbury_rag
+WORKDIR=/home/devon7y/scratch/devon7y/westbury_rag
 VENV_DIR=$WORKDIR/venv
 ENDPOINTS_DIR=$WORKDIR/vllm_endpoints_westbury_qwen3_32b
-HF_SHARED=/scratch/devon7y/huggingface
-# PORT is assigned dynamically (free ephemeral port) to avoid collisions with
-# other jobs sharing this GPU node.
 
-export HF_HOME=$HF_SHARED
+export HF_HOME=$WORKDIR/hf_cache
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export XDG_CACHE_HOME=$WORKDIR/cache
@@ -37,20 +34,20 @@ mkdir -p "$ENDPOINTS_DIR" "$WORKDIR/logs" "$WORKDIR/cache" "$WORKDIR/cache/flash
 module load python/3.11 gcc/12.3 cuda/12.6 opencv
 
 if [ ! -f "$VENV_DIR/bin/activate" ]; then
-  echo "[$(date)] ERROR: venv not found at $VENV_DIR. Run job_setup_env_ror.slurm first."
+  echo "[$(date)] ERROR: venv not found at $VENV_DIR. Run job_setup_env_fir.slurm first."
   exit 1
 fi
 source "$VENV_DIR/bin/activate"
 echo "[$(date)] Environment ready (venv activated)."
 
-# Rorqual is Lustre — stage the model on node-local NVMe for a fast load, so vLLM
-# is ready before the ingest's endpoint wait expires. Snapshot symlinks were
-# rebuilt and the truncated blobs completed from Fir, so cp -a copies a valid
-# HF cache. Verify config.json resolved after the copy; abort if not.
+# Fir is Lustre — stage the model on node-local NVMe for a fast load, so vLLM is
+# ready before the ingest's endpoint wait expires. The snapshot symlinks were
+# rebuilt via snapshot_download (Globus had dropped them), so cp -a now copies a
+# valid HF cache. Verify config.json resolved after the copy; abort if not.
 echo "[$(date)] Copying model weights to local NVMe ($SLURM_TMPDIR)..."
 _copy_start=$SECONDS
 mkdir -p "$SLURM_TMPDIR/hf_cache/hub"
-cp -a "$HF_SHARED/hub/models--Qwen--Qwen3.6-35B-A3B" "$SLURM_TMPDIR/hf_cache/hub/"
+cp -a "$WORKDIR/hf_cache/hub/models--Qwen--Qwen3.6-35B-A3B" "$SLURM_TMPDIR/hf_cache/hub/"
 echo "[$(date)] Model copy done in $(($SECONDS - _copy_start))s."
 export HF_HOME="$SLURM_TMPDIR/hf_cache"
 if ! ls "$SLURM_TMPDIR/hf_cache/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/"*/config.json >/dev/null 2>&1; then

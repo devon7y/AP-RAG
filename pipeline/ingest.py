@@ -87,7 +87,7 @@ LLM_API_KEY = "EMPTY"
 
 EMBED_MODEL_ID = os.environ.get("EMBED_MODEL_ID", "Qwen/Qwen3-Embedding-8B")
 EMBEDDING_DIM  = int(os.environ.get("EMBEDDING_DIM", 4096))
-EMBED_BATCH    = int(os.environ.get("EMBED_BATCH", 16))  # sentences per GPU forward pass
+EMBED_BATCH    = int(os.environ.get("EMBED_BATCH", 64))  # sentences per GPU forward pass (raised from 16: a batch of 16 grossly under-feeds an 8B embedder on a full 80GB H100 — it was the ingest throughput bottleneck)
 EMBED_DEVICE   = os.environ.get("EMBED_DEVICE", "cuda")
 # Qwen3-Embedding-8B ships in bf16. Load it in bf16 so the 8B model fits the
 # 40 GB MIG (~16 GiB); SentenceTransformer's float32 default would be ~32 GiB
@@ -129,7 +129,7 @@ LLM_DEBUG = os.environ.get("LLM_DEBUG", "0") == "1"
 # Fix 3: per-call embedding batch LightRAG hands to the embedder (distinct from
 # EMBED_BATCH, the SentenceTransformer micro-batch). Bigger batches make far better
 # use of a dedicated embedding GPU than extra async concurrency does.
-EMBEDDING_BATCH_NUM = int(os.environ.get("EMBEDDING_BATCH_NUM", 32))
+EMBEDDING_BATCH_NUM = int(os.environ.get("EMBEDDING_BATCH_NUM", 128))
 # Fix 3: if set, embed via an OpenAI-compatible server (scripts/server.py) on its
 # own GPU instead of loading the model in-process. Empty = in-process (default).
 EMBED_ENDPOINT = os.environ.get("EMBED_ENDPOINT", "").strip()
@@ -330,6 +330,44 @@ def _get_http_client():
     return _http_client
 
 
+_llm_httpx_client = None
+
+
+def _get_llm_httpx_client():
+    """Single shared, pooled async HTTP client for ALL vLLM LLM calls.
+
+    LightRAG's openai_complete_if_cache builds a fresh AsyncOpenAI (and underlying
+    httpx client) per call and `await`s client.close() in its finally on every code
+    path. That churns one TCP connection per LLM call into TIME_WAIT; at high
+    concurrency it exhausts ephemeral ports and surfaces as
+    RetryError[APIConnectionError] — the failures seen above MAX_PARALLEL_INSERT~16.
+    Injecting ONE keep-alive pooled client (openai_client_configs={"http_client":...})
+    reuses connections so the ingest can feed the vLLM's full ~73x capacity. aclose()
+    is a no-op so LightRAG's per-call close() doesn't tear down the shared pool; it
+    lives for the run (the process exit cleans it up).
+    """
+    global _llm_httpx_client
+    if _llm_httpx_client is None:
+        import httpx
+
+        class _KeepAliveAsyncClient(httpx.AsyncClient):
+            async def aclose(self):  # keep the shared pool alive across LLM calls
+                return None
+
+        _llm_httpx_client = _KeepAliveAsyncClient(
+            limits=httpx.Limits(
+                max_connections=int(os.environ.get("LLM_MAX_CONNECTIONS", 256)),
+                max_keepalive_connections=int(os.environ.get("LLM_MAX_KEEPALIVE", 256)),
+                keepalive_expiry=float(os.environ.get("LLM_KEEPALIVE_EXPIRY", 120)),
+            ),
+            timeout=httpx.Timeout(
+                float(os.environ.get("LLM_HTTP_TIMEOUT", 300)),
+                connect=float(os.environ.get("LLM_CONNECT_TIMEOUT", 30)),
+            ),
+        )
+    return _llm_httpx_client
+
+
 async def _remote_embed(texts: list[str], context: str) -> np.ndarray:
     """Fix 3: embed via an OpenAI-compatible server (scripts/server.py) on a
     dedicated GPU instead of loading the model in-process. Honors the server's
@@ -381,16 +419,105 @@ async def local_embed(texts: list[str], context: str = "document") -> np.ndarray
     return np.array(embeddings)
 
 
+# Column-aware extraction tunables (calibrated in scripts/audit_ocr.py over the
+# full Westbury corpus; see docs and the OCR-audit memory).
+_COL_GUTTER_BAND = (0.42, 0.58)   # central width fraction to look for a gutter
+_COL_MIN_GUTTER_FRAC = 0.035      # gutter gap must exceed this fraction of width
+_COL_MAX_STRADDLE = 0.030         # frac of words crossing the gutter -> 1-column
+_COL_MIN_PAGE_WORDS = 40          # below this, trust the native extractor
+_COL_MIN_SIDE_WORDS = 15          # each column needs this many words
+
+
+def _detect_gutter(centers: list[float], width: float):
+    """Return the x of the central whitespace gutter of a 2-column page, or None."""
+    lo, hi = _COL_GUTTER_BAND[0] * width, _COL_GUTTER_BAND[1] * width
+    cs = sorted(centers)
+    best, gutter = 0.0, None
+    for a, b in zip(cs, cs[1:]):
+        if a < lo or b > hi:
+            continue
+        if b - a > best:
+            best, gutter = b - a, (a + b) / 2
+    if gutter is None or best < _COL_MIN_GUTTER_FRAC * width:
+        return None
+    return gutter
+
+
+def _words_to_lines(words: list) -> list[str]:
+    """words: (x0,y0,x1,y1,text,...). Group into visual lines (top->bottom),
+    words left->right within a line; one line-string per line (newline-joinable)."""
+    ws = sorted(words, key=lambda w: (w[1], w[0]))
+    heights = sorted(w[3] - w[1] for w in ws)
+    h = heights[len(heights) // 2] or 8.0
+    tol = max(h * 0.6, 3.0)
+    lines, cur, cur_y = [], [ws[0]], ws[0][1]
+    for w in ws[1:]:
+        if abs(w[1] - cur_y) > tol:
+            lines.append(cur)
+            cur, cur_y = [], w[1]
+        cur.append(w)
+    lines.append(cur)
+    return [" ".join(w[4] for w in sorted(ln, key=lambda w: w[0])) for ln in lines]
+
+
+def _page_text_columnaware(page) -> str:
+    """One page → text in correct reading order. Native extraction for single-
+    column pages; for a confidently-detected 2-column page, emit the whole left
+    column then the whole right column (the across-columns jumble that pypdf's
+    extractor introduces). Line breaks are preserved so the chunker can still
+    strip running heads / detect section headings."""
+    W = page.rect.width
+    words = [w for w in page.get_text("words") if w[4].strip()]
+    if W <= 0 or len(words) < _COL_MIN_PAGE_WORDS:
+        return page.get_text("text")
+    gutter = _detect_gutter([(w[0] + w[2]) / 2 for w in words], W)
+    if gutter is not None:
+        straddle = sum(1 for w in words if w[0] < gutter < w[2]) / len(words)
+        if straddle <= _COL_MAX_STRADDLE:
+            left = [w for w in words if (w[0] + w[2]) / 2 < gutter]
+            right = [w for w in words if (w[0] + w[2]) / 2 >= gutter]
+            if len(left) >= _COL_MIN_SIDE_WORDS and len(right) >= _COL_MIN_SIDE_WORDS:
+                return "\n".join(_words_to_lines(left) + _words_to_lines(right))
+    return page.get_text("text")  # single-column / unconfident: native order
+
+
 def _extract_pdf_text(pdf_path: Path) -> str:
     """Synchronous PDF → text (page boundaries preserved as form-feeds for the
     chunker). CPU-bound and pure-Python, so callers run it in _IO_EXECUTOR (Fix 2a)
-    to keep it off the event loop."""
-    from pypdf import PdfReader
+    to keep it off the event loop.
 
-    reader = PdfReader(str(pdf_path))
-    page_texts = [(page.extract_text() or "").strip() for page in reader.pages]
-    text = "\n\f\n".join(page for page in page_texts if page).strip()
-    return text.replace("<|endofprompt|>", "")
+    Primary path is PyMuPDF with column-aware reading order: pypdf's
+    extract_text interleaves the two columns of many 2-column papers (the
+    across-columns "jumble"), corrupting every downstream chunk. PyMuPDF reads
+    columns correctly and also recovers text from files pypdf chokes on. Falls
+    back to pypdf if PyMuPDF is unavailable, so ingest never hard-fails on it."""
+    text = None
+    try:
+        import fitz  # PyMuPDF
+
+        with fitz.open(str(pdf_path)) as doc:
+            page_texts = [_page_text_columnaware(p).strip() for p in doc]
+        text = "\n\f\n".join(p for p in page_texts if p).strip()
+    except Exception:
+        text = None  # fall through to pypdf
+
+    if not text:
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(pdf_path))
+        page_texts = [(page.extract_text() or "").strip() for page in reader.pages]
+        text = "\n\f\n".join(page for page in page_texts if page).strip()
+
+    text = text.replace("<|endofprompt|>", "")
+    # Drop C0 control characters (e.g. \x03 that some odd title-page fonts emit)
+    # but keep \t \n \r and the \f page separator the chunker relies on.
+    text = re.sub(r"[\x00-\x08\x0b\x0e-\x1f]", "", text)
+    # Strip unpaired Unicode surrogates (e.g. \ud835 from mathematical-alphanumeric
+    # glyphs that some PDFs extract as lone surrogates). They are the only code
+    # points UTF-8 cannot encode, so leaving them in crashes the md5 doc_id,
+    # apipeline_enqueue, embedding, and JSON KV writes downstream. "ignore" drops
+    # only those surrogates and preserves all real text.
+    return text.encode("utf-8", "ignore").decode("utf-8")
 
 
 # ── Endpoint Discovery & Validation (1A) ──────────────────────────────────────
@@ -537,6 +664,7 @@ def build_round_robin_llm(endpoints: list[str]):
                     base_url=endpoint,
                     timeout=300,
                     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                    openai_client_configs={"http_client": _get_llm_httpx_client()},
                     **kwargs,
                 )
                 elapsed_llm = time.time() - t0
@@ -742,6 +870,11 @@ async def rebuild_embeddings_from_cache():
         ),
         embedding_func_max_async=EMBED_FUNC_MAX_ASYNC,
         embedding_batch_num=EMBEDDING_BATCH_NUM,
+        # The rebuild's final _insert_done flush embeds one large aggregate batch
+        # (a 100k+ relation flush measured ~425s); LightRAG's default 75s per-task
+        # embedding timeout is far too short and silently drops the whole collection
+        # (relationships persisted = 0). Give the flush generous headroom.
+        default_embedding_timeout=int(os.environ.get("EMBED_TIMEOUT", 1800)),
     )
     if USE_QDRANT:
         rag_kwargs["vector_storage"] = "QdrantVectorDBStorage"
@@ -935,7 +1068,7 @@ async def ingest_native_multimodal(rag, papers):
     print("[VLM] Pipeline drained.", flush=True)
 
 
-async def ingest_streaming_text(rag, papers, known_doc_ids):
+async def ingest_streaming_text(rag, papers, known_doc_ids, enqueued_files=None):
     """Fix 4: stream the text path through LightRAG's native pipeline.
 
     Instead of per-doc ``ainsert()`` + a per-doc poll loop (each task re-reading the
@@ -957,42 +1090,76 @@ async def ingest_streaming_text(rag, papers, known_doc_ids):
     Returns ``(enqueued, skipped)``.
     """
     loop = asyncio.get_event_loop()
-    read_sem = asyncio.Semaphore(PARALLEL_DOCS)  # bound concurrent PDF reads/enqueues
+    read_sem = asyncio.Semaphore(PARALLEL_DOCS)  # bound concurrent PDF reads
     enqueued = skipped = 0
-    counter_lock = asyncio.Lock()
+    # Enqueue in BATCHES, not per-doc. apipeline_enqueue_documents rewrites the whole
+    # (growing) full_docs/doc_status JSON once per call; calling it per-doc over a large
+    # corpus is O(N²) in bytes written and stalls the run for hours before the drain
+    # ever starts. Reading concurrently and enqueuing a list per call makes it O(N):
+    # one flush per batch instead of one per document.
+    ENQUEUE_BATCH = int(os.environ.get("ENQUEUE_BATCH", 512))
+    _enqueued_names = enqueued_files or set()  # resume-skip: filenames already enqueued
 
-    async def _read_and_enqueue(idx: int, pdf: Path):
-        nonlocal enqueued, skipped
+    async def _read_one(pdf: Path):
+        """Return (doc_id, text, path) for a new doc, or None to skip."""
+        if pdf.name in _enqueued_names:
+            return None  # resume-skip: already enqueued in a prior run — don't re-read the PDF
         async with read_sem:
             try:
                 text = await loop.run_in_executor(_IO_EXECUTOR, _extract_pdf_text, pdf)
             except Exception as e:  # noqa: BLE001 — one bad PDF must not abort the batch
-                print(f"[{idx:04d}/{len(papers)}] {pdf.name[:55]} [read failed]  {e}", flush=True)
-                async with counter_lock:
-                    skipped += 1
-                return
-            if not text:
-                async with counter_lock:
-                    skipped += 1
-                return
-            doc_id = "doc-" + hashlib.md5(text.encode("utf-8")).hexdigest()
-            if doc_id in known_doc_ids:
-                async with counter_lock:
-                    skipped += 1
-                return
+                print(f"  {pdf.name[:55]} [read failed]  {e}", flush=True)
+                return None
+        if not text:
+            return None
+        doc_id = "doc-" + hashlib.md5(text.encode("utf-8")).hexdigest()
+        if doc_id in known_doc_ids:
+            return None  # already processed in a prior run (resume)
+        return (doc_id, text, str(pdf))
+
+    print(
+        f"Reading + enqueuing {len(papers)} PDFs "
+        f"(read concurrency={PARALLEL_DOCS}, enqueue batch={ENQUEUE_BATCH})…",
+        flush=True,
+    )
+    seen_ids = set()  # doc_ids enqueued this run — dedup text-identical PDFs
+    for bstart in range(0, len(papers), ENQUEUE_BATCH):
+        batch = papers[bstart:bstart + ENQUEUE_BATCH]
+        reads = await asyncio.gather(*[_read_one(p) for p in batch])
+        # Dedup within the run: two PDFs with identical extracted text yield the same
+        # md5 doc_id; passing duplicate ids to apipeline_enqueue_documents raises
+        # "IDs must be unique" and drops the whole batch. Keep the first, skip the rest.
+        valid = []
+        for r in reads:
+            if r is None or r[0] in seen_ids:
+                continue
+            seen_ids.add(r[0])
+            valid.append(r)
+        skipped += len(batch) - len(valid)
+        if valid:
             try:
                 await rag.apipeline_enqueue_documents(
-                    text, ids=doc_id, file_paths=str(pdf)
+                    [t for _, t, _ in valid],
+                    ids=[d for d, _, _ in valid],
+                    file_paths=[p for _, _, p in valid],
                 )
-                async with counter_lock:
-                    enqueued += 1
-            except Exception as e:  # noqa: BLE001
-                print(f"[{idx:04d}/{len(papers)}] {pdf.name[:55]} [enqueue failed]  {e}", flush=True)
-                async with counter_lock:
-                    skipped += 1
+                enqueued += len(valid)
+            except Exception as e:  # noqa: BLE001 — a bad batch must not abort the run
+                # Fall back to per-doc enqueue so one bad doc can't drop the whole batch.
+                print(f"  [batch @{bstart} failed: {type(e).__name__}: {e}; retrying per-doc]", flush=True)
+                for d, t, p in valid:
+                    try:
+                        await rag.apipeline_enqueue_documents(t, ids=d, file_paths=p)
+                        enqueued += 1
+                    except Exception as e2:  # noqa: BLE001
+                        print(f"    {Path(p).name[:50]} [enqueue failed] {e2}", flush=True)
+                        skipped += 1
+        print(
+            f"  read {min(bstart + ENQUEUE_BATCH, len(papers))}/{len(papers)} "
+            f"(enqueued={enqueued}, skipped={skipped})",
+            flush=True,
+        )
 
-    print(f"Reading + enqueuing {len(papers)} PDFs (read concurrency={PARALLEL_DOCS})…", flush=True)
-    await asyncio.gather(*[_read_and_enqueue(i, p) for i, p in enumerate(papers, 1)])
     print(
         f"Enqueued {enqueued} new doc(s) ({skipped} skipped). Draining pipeline "
         f"(MAX_PARALLEL_INSERT={MAX_PARALLEL_INSERT})…",
@@ -1291,7 +1458,23 @@ async def main():
     # Only re-submit docs that LightRAG has never seen. Pending/processing docs
     # are already in the pipeline and will be picked up by apipeline_process_enqueue_documents.
     doc_status_path = STORAGE_DIR / "kv_store_doc_status.json"
+    # Self-heal (resume/chain): a cycle killed at walltime can leave docs stranded
+    # mid-pipeline (processing/analyzing/parsing). With resume-skip they'd be skipped
+    # from re-reading yet aren't 'pending', so the drain never picks them up. Reset them.
+    if doc_status_path.exists():
+        try:
+            _ds = json.loads(doc_status_path.read_text())
+            _hits = [k for k, v in _ds.items()
+                     if k.startswith("doc-") and v.get("status") in ("processing", "analyzing", "parsing")]
+            for _k in _hits:
+                _ds[_k]["status"] = "pending"
+            if _hits:
+                doc_status_path.write_text(json.dumps(_ds))
+                print(f"Self-heal: reset {len(_hits)} stranded in-flight doc(s) -> pending.", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"Self-heal reset skipped: {type(e).__name__}: {e}", flush=True)
     known_doc_ids = set()
+    enqueued_files = set()  # resume-skip: basenames of PDFs already in the pipeline (don't re-read)
     status_counts = {"processed": 0, "pending": 0, "processing": 0, "failed": 0}
     if doc_status_path.exists():
         try:
@@ -1302,11 +1485,20 @@ async def main():
                 status = v.get("status", "unknown")
                 if status in ("processed", "pending", "processing"):
                     known_doc_ids.add(k)
+                # resume-skip covers EVERY doc already in doc_status (incl. 'failed'):
+                # don't re-read any known file. Failed docs stay failed so the chain can
+                # self-terminate instead of re-attempting persistent failures every cycle —
+                # retrying failures is a deliberate end-of-run pass.
+                fp = v.get("file_path", "")
+                if fp:
+                    enqueued_files.add(Path(fp).name)
                 status_counts[status] = status_counts.get(status, 0) + 1
         except Exception:
             pass
     print(f"Doc status: {status_counts}")
     print(f"Known doc IDs (will skip): {len(known_doc_ids)}")
+    if enqueued_files:
+        print(f"Resume-skip: {len(enqueued_files)} PDFs already enqueued — skipping their re-read.")
 
     _mode_desc = "streaming enqueue/drain" if STREAMING_INGEST else "per-doc legacy"
     print(f"\nFound {len(papers)} papers. Starting ingestion "
@@ -1409,7 +1601,7 @@ async def main():
     if STREAMING_INGEST:
         # Fix 4: enqueue every doc, then drain LightRAG's native pipeline once.
         # process_one (above) is unused in this mode but kept for the legacy fallback.
-        s_enqueued, s_skipped = await ingest_streaming_text(rag, papers, known_doc_ids)
+        s_enqueued, s_skipped = await ingest_streaming_text(rag, papers, known_doc_ids, enqueued_files)
         succeeded, skipped = s_enqueued, s_skipped  # failures surface in doc_status below
     else:
         tasks = [process_one(i, p) for i, p in enumerate(papers, 1)]
@@ -1444,6 +1636,24 @@ async def main():
                     s = v.get("status", "unknown")
                     final_counts[s] = final_counts.get(s, 0) + 1
             print(f"\nFinal doc_status: {final_counts}")
+            # Self-terminate (chain mode): if no work remains, cancel the rest of the
+            # chained cycles (downstream vLLM + pending ingests) so dead cycles don't
+            # burn vLLM walltime. Gated by CHAIN_SELFTERMINATE=1 (standalone never scancels).
+            if os.environ.get("CHAIN_SELFTERMINATE") == "1":
+                _left = sum(final_counts.get(s, 0)
+                            for s in ("pending", "processing", "analyzing", "parsing"))
+                if _left == 0:
+                    import subprocess
+                    _u = os.environ.get("USER", "devon7y")
+                    print("Chain self-terminate: 0 docs left — cancelling downstream cycles.", flush=True)
+                    for _a in (["scancel", "-u", _u, "-n", "westbury_vllm"],
+                               ["scancel", "-u", _u, "-t", "PENDING", "-n", "westbury_ingest"]):
+                        try:
+                            subprocess.run(_a, timeout=30, check=False)
+                        except Exception as _e:  # noqa: BLE001
+                            print(f"  scancel failed: {_e}", flush=True)
+                else:
+                    print(f"Chain continues: {_left} docs still pending.", flush=True)
         except Exception:
             pass
 
