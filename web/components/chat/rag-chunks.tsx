@@ -56,7 +56,7 @@ export function RagChunks({ retrieval }: { retrieval: RagRetrieval }) {
   );
 }
 
-function ChunkCard({
+export function ChunkCard({
   chunk,
   index,
   reference,

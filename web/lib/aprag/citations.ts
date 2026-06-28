@@ -30,7 +30,9 @@ export const SYNTH_SYSTEM_PROMPT =
   "bracketed numbers that appear inside the source text itself (e.g. a passage's own " +
   "[11] or [12]) — those are the papers' internal citations, not your sources. Do NOT " +
   "output a 'References', 'Sources', or bibliography section, and do NOT restate the " +
-  "list of sources anywhere — the application renders the reference list itself. If the " +
+  "list of sources anywhere — the application renders the reference list itself. Each " +
+  "bracketed [n] is a distinct source PASSAGE; cite the specific passage(s) that support " +
+  "each statement (a paper may appear as several passages). If the " +
   "sources do not address the question, say so plainly. Write clear markdown prose. " +
   "Write any mathematical notation as LaTeX delimited by $...$ (inline) or $$...$$ " +
   "(display) — never \\(...\\) or \\[...\\].\n\n" +
@@ -48,20 +50,27 @@ export function normalizeMath(text: string): string {
     .replace(/\\\(([\s\S]*?)\\\)/g, (_m, body) => `$${body}$`);
 }
 
-// The [n]-tagged context handed to the synthesis model. We deliberately do NOT include a
-// separate "Reference Document List" (LLMs tend to echo it verbatim into the answer):
-// each passage is just prefixed with its source number, and multiple passages may share
-// a number (same paper). The app renders the actual reference list from the metadata.
+// The [n]-tagged context handed to the synthesis model. Each eligible chunk is numbered
+// individually (a per-PASSAGE citeIndex, stamped onto the chunk so the UI can map a
+// citation back to the exact passage); multiple passages from one paper get distinct
+// numbers. We deliberately omit a separate "Reference Document List" (LLMs echo it). The
+// app renders the actual reference list from the metadata.
 export function buildContext(
   references: RagReference[],
   chunks: RagChunk[]
 ): string {
   const valid = new Set(references.map((r) => r.reference_id));
-  const lines = chunks
-    .filter((c) => c.content && c.reference_id && valid.has(c.reference_id))
-    .map((c) => `[${c.reference_id}] ${c.content}`);
+  let n = 0;
+  const lines: string[] = [];
+  for (const c of chunks) {
+    if (!(c.content && c.reference_id && valid.has(c.reference_id))) {
+      continue;
+    }
+    c.citeIndex = ++n;
+    lines.push(`[${c.citeIndex}] ${c.content}`);
+  }
   const body = lines.join("\n\n") || "(no sources retrieved)";
-  return `-----Sources (cite by the bracketed number)-----\n${body}`;
+  return `-----Sources (cite each supporting passage by its bracketed number)-----\n${body}`;
 }
 
 const REFS_HEADING_RE =
@@ -93,59 +102,70 @@ const BRACKET = String.raw`\[[ \t]*\d+(?:[ \t]*[,;][ \t]*\d+)*[ \t]*\]`;
 const RUN = `${BRACKET}(?:[ \\t]*[,;]?[ \\t]*${BRACKET})*`;
 const CLUSTER = `\\([ \\t]*(${RUN})[ \\t]*\\)|(${RUN})`;
 
-/** Reference ids the answer body actually cites (so we list only those, like the CLI). */
-export function citedIds(text: string): Set<string> {
-  const ids = new Set<string>();
+// reference_id + APA in-text label for a cited passage number.
+export type CiteRef = { referenceId: string; intext: string };
+
+/** The reference_ids (papers) the answer cites, via the passage numbers it used. */
+export function citedReferenceIds(
+  text: string,
+  byCiteIndex: Map<number, CiteRef>
+): Set<string> {
+  const out = new Set<string>();
   if (!text) {
-    return ids;
+    return out;
   }
   for (const m of text.matchAll(new RegExp(BRACKET, "g"))) {
     for (const n of m[0].matchAll(/\d+/g)) {
-      ids.add(n[0]);
+      const ref = byCiteIndex.get(Number(n[0]));
+      if (ref) {
+        out.add(ref.referenceId);
+      }
     }
   }
-  return ids;
+  return out;
 }
 
 /**
- * Replace numeric in-text citations with APA7 parentheticals, each a clickable link to
- * the cited paper (Google Drive when available, else an in-page anchor). `[1]` →
- * `([Smith, 2020](url))`; `([1], [3])` → `(A, 2018; B et al., 2020)` de-duplicated and
- * alphabetised. **Unknown ids are dropped** (they are the source papers' own bracket
- * citations bleeding through, e.g. a chunk containing "[11]"); a cluster with no known
- * id is removed entirely. Safe to run on a partially-streamed string — an unterminated
- * `[1` simply doesn't match yet.
+ * Rewrite the answer's numeric passage citations into clickable APA in-text cites whose
+ * popovers reveal the exact passage(s). A cluster's passage numbers are grouped by paper,
+ * so two passages from one paper still read as one "(Author, Year)"; each rendered cite
+ * links to `#cite-<passage indices>` so the UI can show those chunks. **Unknown numbers
+ * are dropped** (a passage's own internal "[11]" bleeding through); an all-unknown
+ * cluster is removed. Safe on partially-streamed text.
  */
 export function rewriteIntext(
   text: string,
-  byId: Map<string, { intext: string; href?: string }>
+  byCiteIndex: Map<number, CiteRef>
 ): string {
-  if (!text || byId.size === 0) {
+  if (!text || byCiteIndex.size === 0) {
     return text;
   }
   return text.replace(new RegExp(CLUSTER, "g"), (_match, g1, g2) => {
     const body: string = g1 ?? g2;
-    const seen = new Set<string>();
-    const items: { intext: string; href?: string }[] = [];
+    const byPaper = new Map<string, { intext: string; indices: Set<number> }>();
     for (const m of body.matchAll(/\d+/g)) {
-      const cid = m[0];
-      if (seen.has(cid)) {
-        continue;
+      const idx = Number(m[0]);
+      const ref = byCiteIndex.get(idx);
+      if (!ref) {
+        continue; // unknown passage number → source-text noise
       }
-      seen.add(cid);
-      const ref = byId.get(cid);
-      if (ref) {
-        items.push(ref); // drop unknown ids (source-text noise)
+      let entry = byPaper.get(ref.referenceId);
+      if (!entry) {
+        entry = { intext: ref.intext, indices: new Set() };
+        byPaper.set(ref.referenceId, entry);
       }
+      entry.indices.add(idx);
     }
-    if (items.length === 0) {
-      return ""; // all ids unknown → strip the stray cluster
+    if (byPaper.size === 0) {
+      return ""; // all unknown → strip the stray cluster
     }
-    items.sort((a, b) => a.intext.toLowerCase().localeCompare(b.intext.toLowerCase()));
-    const labels = items.map((r) =>
-      r.href ? `[${r.intext}](${r.href})` : r.intext
-    );
-    return `(${labels.join("; ")})`;
+    const parts = [...byPaper.values()]
+      .sort((a, b) => a.intext.toLowerCase().localeCompare(b.intext.toLowerCase()))
+      .map((p) => {
+        const enc = [...p.indices].sort((x, y) => x - y).join("_");
+        return `[${p.intext}](#cite-${enc})`;
+      });
+    return `(${parts.join("; ")})`;
   });
 }
 

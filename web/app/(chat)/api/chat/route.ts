@@ -181,7 +181,14 @@ export async function POST(request: Request) {
           filters: effectiveFilters,
         });
 
-        // 3. Attach the retrieval payload to the assistant message (persisted, so the
+        // 3. Build the synthesis context first (answer mode) — this stamps a per-passage
+        //    citeIndex onto each chunk, which must be present BEFORE we serialize the
+        //    chunks into the data part below.
+        const context = chunkMode
+          ? ""
+          : buildContext(retrieved.references, retrieved.chunks);
+
+        // 4. Attach the retrieval payload to the assistant message (persisted, so the
         //    UI re-renders references / inline citations / chunk cards on reload).
         const ragRetrieval: RagRetrieval = {
           query: retrievalQuery,
@@ -204,7 +211,7 @@ export async function POST(request: Request) {
           return;
         }
 
-        // 4b. Answer mode: synthesize with gpt-5-mini, streamed, citing [n].
+        // 4b. Answer mode: synthesize with gpt-5.4-mini, streamed, citing passage [n].
         // Only carry text-bearing turns into history (a prior chunk-mode turn has just a
         // data part — convertToModelMessages would otherwise produce an empty message).
         const priorForSynthesis = priorMessages.filter((m) =>
@@ -218,10 +225,7 @@ export async function POST(request: Request) {
           ...priorModelMessages,
           {
             role: "user",
-            content: `${question}\n\n${buildContext(
-              retrieved.references,
-              retrieved.chunks
-            )}`,
+            content: `${question}\n\n${context}`,
           },
         ];
 

@@ -1,15 +1,20 @@
 "use client";
 import type { UseChatHelpers } from "@ai-sdk/react";
 import {
-  citedIds,
+  type CiteRef,
+  citedReferenceIds,
   normalizeMath,
   rewriteIntext,
   stripReferencesSection,
 } from "@/lib/aprag/citations";
-import type { RagRetrieval } from "@/lib/aprag/types";
+import type { RagChunk, RagReference, RagRetrieval } from "@/lib/aprag/types";
 import type { Vote } from "@/lib/db/schema";
 import type { ChatMessage } from "@/lib/types";
 import { cn, sanitizeText } from "@/lib/utils";
+import {
+  CITATION_COMPONENTS,
+  CitationContext,
+} from "./citation-popover";
 import { RagChunks } from "./rag-chunks";
 import { RagReferences } from "./rag-references";
 import { MessageContent, MessageResponse } from "../ai-elements/message";
@@ -70,17 +75,34 @@ const PurePreviewMessage = ({
     retrievalPart as { data?: RagRetrieval } | undefined
   )?.data;
 
-  // reference_id → APA in-text citation, for rewriting [n] inline. No link: in-text
-  // citations are plain "(Author, Year)"; the Drive link lives only on the references.
-  const citeById = new Map<string, { intext: string; href?: string }>();
+  // Per-passage citation maps: the answer cites passage numbers (citeIndex); each maps to
+  // its source chunk and that chunk's paper (for the APA in-text label + the popover).
+  const byCiteIndex = new Map<number, CiteRef>();
+  const chunkByCiteIndex = new Map<number, RagChunk>();
+  const refByReferenceId = new Map<string, RagReference>();
   if (retrieval) {
     for (const ref of retrieval.references) {
-      citeById.set(ref.reference_id, { intext: ref.intext });
+      refByReferenceId.set(ref.reference_id, ref);
+    }
+    for (const c of retrieval.chunks) {
+      if (c.citeIndex == null) {
+        continue;
+      }
+      chunkByCiteIndex.set(c.citeIndex, c);
+      const ref = c.reference_id
+        ? refByReferenceId.get(c.reference_id)
+        : undefined;
+      if (ref) {
+        byCiteIndex.set(c.citeIndex, {
+          referenceId: ref.reference_id,
+          intext: ref.intext,
+        });
+      }
     }
   }
 
   // The answer text with any LLM-written reference list removed (the app renders the
-  // real one). Used to detect which references are actually cited in-text.
+  // real one). Used to detect which papers are actually cited in-text.
   const cleanedAnswer = isAssistant
     ? stripReferencesSection(
         message.parts
@@ -89,8 +111,9 @@ const PurePreviewMessage = ({
           .join("") ?? ""
       )
     : "";
-  const cited = isAssistant && retrieval ? citedIds(cleanedAnswer) : null;
-  // Only list references the answer actually cites (matches the CLI), in cite order.
+  const cited =
+    isAssistant && retrieval ? citedReferenceIds(cleanedAnswer, byCiteIndex) : null;
+  // Only list references the answer actually cites (matches the CLI).
   const citedReferences = retrieval
     ? retrieval.references.filter((r) => !cited || cited.has(r.reference_id))
     : [];
@@ -167,7 +190,7 @@ const PurePreviewMessage = ({
       const text = isAssistant
         ? rewriteIntext(
             normalizeMath(stripReferencesSection(sanitizeText(part.text))),
-            citeById
+            byCiteIndex
           )
         : sanitizeText(part.text);
       return (
@@ -179,7 +202,17 @@ const PurePreviewMessage = ({
           data-testid="message-content"
           key={key}
         >
-          <MessageResponse>{text}</MessageResponse>
+          {isAssistant ? (
+            <CitationContext.Provider
+              value={{ chunkByCiteIndex, refByReferenceId }}
+            >
+              <MessageResponse components={CITATION_COMPONENTS}>
+                {text}
+              </MessageResponse>
+            </CitationContext.Provider>
+          ) : (
+            <MessageResponse>{text}</MessageResponse>
+          )}
         </MessageContent>
       );
     }

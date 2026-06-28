@@ -19,6 +19,7 @@ export type RagChunk = {
   reference_id?: string;
   score?: number | null;
   page?: number; // this chunk's own PDF page (server-stamped when page-aware)
+  citeIndex?: number; // 1-based passage number used in the synthesis context (answer mode)
 };
 
 export type RagEntity = {
