@@ -1,13 +1,17 @@
 "use client";
 
-import { createContext, type ReactNode, useContext } from "react";
-import type { RagChunk, RagReference } from "@/lib/aprag/types";
+import { ChevronLeftIcon, ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
 import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "../ui/hover-card";
-import { ChunkCard } from "./rag-chunks";
+  createContext,
+  type ReactNode,
+  useContext,
+  useRef,
+  useState,
+} from "react";
+import type { RagChunk, RagReference } from "@/lib/aprag/types";
+import { MessageResponse } from "../ai-elements/message";
+import { Popover, PopoverAnchor, PopoverContent } from "../ui/popover";
+import { cleanChunkText } from "./rag-chunks";
 
 type CitationData = {
   chunkByCiteIndex: Map<number, RagChunk>;
@@ -16,9 +20,9 @@ type CitationData = {
 
 export const CitationContext = createContext<CitationData | null>(null);
 
-// Custom markdown <a> renderer: a `#cite-3_5` href (from rewriteIntext) becomes a hover/
-// tap card revealing the exact retrieved passage(s) the model cited — in the same card
-// format as Chunks mode. Any other link renders normally.
+// Custom markdown <a> renderer: a `#cite-3_5` href (from rewriteIntext) becomes a
+// hover/click card revealing the exact retrieved passage(s) the model cited. Multiple
+// passages are paged through with arrows. Any other link renders normally.
 export function CitationAnchor({
   href,
   children,
@@ -52,36 +56,143 @@ export function CitationAnchor({
   }
 
   return (
-    <HoverCard closeDelay={80} openDelay={120}>
-      <HoverCardTrigger asChild>
+    <CitationCard chunks={chunks} refByReferenceId={ctx.refByReferenceId}>
+      {children}
+    </CitationCard>
+  );
+}
+
+function CitationCard({
+  chunks,
+  refByReferenceId,
+  children,
+}: {
+  chunks: RagChunk[];
+  refByReferenceId: Map<string, RagReference>;
+  children?: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [idx, setIdx] = useState(0);
+  const pinned = useRef(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelClose = () => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
+  const openNow = () => {
+    cancelClose();
+    setOpen(true);
+  };
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimer.current = setTimeout(() => {
+      if (!pinned.current) {
+        setOpen(false);
+      }
+    }, 140);
+  };
+  const togglePin = () => {
+    if (pinned.current && open) {
+      pinned.current = false;
+      setOpen(false);
+    } else {
+      pinned.current = true;
+      cancelClose();
+      setOpen(true);
+    }
+  };
+
+  const n = chunks.length;
+  const chunk = chunks[Math.min(idx, n - 1)];
+  const reference = refByReferenceId.get(chunk.reference_id ?? "");
+  const label = reference?.apa || reference?.filename || chunk.file_path;
+  const score = typeof chunk.score === "number" ? chunk.score.toFixed(3) : null;
+
+  return (
+    <Popover
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) {
+          pinned.current = false;
+        }
+      }}
+      open={open}
+    >
+      <PopoverAnchor asChild>
         <button
-          className="cursor-help rounded-sm font-medium text-primary underline decoration-dotted underline-offset-2 hover:text-primary/80"
+          className="cursor-pointer rounded-sm font-medium text-primary underline decoration-dotted underline-offset-2 hover:text-primary/80"
+          onClick={togglePin}
+          onMouseEnter={openNow}
+          onMouseLeave={scheduleClose}
           type="button"
         >
           {children}
         </button>
-      </HoverCardTrigger>
-      <HoverCardContent
+      </PopoverAnchor>
+      <PopoverContent
         align="start"
-        className="max-h-[26rem] w-[min(92vw,34rem)] overflow-y-auto p-2.5"
+        className="w-[min(94vw,46rem)] overflow-hidden p-0"
+        onMouseEnter={cancelClose}
+        onMouseLeave={scheduleClose}
+        onOpenAutoFocus={(e) => e.preventDefault()}
         side="top"
+        sideOffset={6}
       >
-        <p className="mb-2 px-1 text-muted-foreground text-xs">
-          Cited passage{chunks.length > 1 ? "s" : ""} ({chunks.length}) — the retrieved
-          text this citation draws on
-        </p>
-        <div className="flex flex-col gap-2">
-          {chunks.map((c, i) => (
-            <ChunkCard
-              chunk={c}
-              index={i + 1}
-              key={c.chunk_id || i}
-              reference={ctx.refByReferenceId.get(c.reference_id ?? "")}
-            />
-          ))}
+        <div className="flex items-center justify-between gap-2 border-border/60 border-b bg-muted/40 px-3 py-1.5">
+          <span className="text-muted-foreground text-xs">
+            Cited passage{n > 1 ? `  ·  ${Math.min(idx, n - 1) + 1} of ${n}` : ""}
+          </span>
+          {n > 1 && (
+            <div className="flex items-center gap-0.5">
+              <button
+                aria-label="Previous passage"
+                className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                onClick={() => setIdx((i) => (i - 1 + n) % n)}
+                type="button"
+              >
+                <ChevronLeftIcon className="size-4" />
+              </button>
+              <button
+                aria-label="Next passage"
+                className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                onClick={() => setIdx((i) => (i + 1) % n)}
+                type="button"
+              >
+                <ChevronRightIcon className="size-4" />
+              </button>
+            </div>
+          )}
         </div>
-      </HoverCardContent>
-    </HoverCard>
+        <div className="px-3.5 py-3">
+          <div className="mb-1.5 flex items-start justify-between gap-3 text-[13px]">
+            <div className="min-w-0 font-medium [&_p]:m-0 [&_p]:inline">
+              <MessageResponse>{label}</MessageResponse>
+            </div>
+            <div className="flex shrink-0 items-center gap-2 text-muted-foreground text-xs">
+              {chunk.page != null && <span>p. {chunk.page}</span>}
+              {score && <span className="tabular-nums">{score}</span>}
+              {reference?.drive_url && (
+                <a
+                  className="inline-flex items-center gap-1 text-primary hover:underline"
+                  href={reference.drive_url}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  <ExternalLinkIcon className="size-3" />
+                  PDF
+                </a>
+              )}
+            </div>
+          </div>
+          <p className="whitespace-pre-wrap text-[13px] text-foreground/90 leading-[1.6]">
+            {cleanChunkText(chunk.content)}
+          </p>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

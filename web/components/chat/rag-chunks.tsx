@@ -17,7 +17,7 @@ import {
 
 // PDF text extraction sometimes leaves a newline after every word/line; collapse all
 // whitespace to single spaces so chunks read as flowing text instead of one word per line.
-function cleanChunkText(s: string): string {
+export function cleanChunkText(s: string): string {
   return (s || "").replace(/\s+/g, " ").trim();
 }
 

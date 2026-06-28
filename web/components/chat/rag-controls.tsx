@@ -1,6 +1,6 @@
 "use client";
 
-import { Brain, LayersIcon, NetworkIcon } from "lucide-react";
+import { Brain, NetworkIcon } from "lucide-react";
 import { useState } from "react";
 import { useActiveChat } from "@/hooks/use-active-chat";
 import {
@@ -24,12 +24,14 @@ import {
   SelectItem,
   SelectTrigger,
 } from "../ui/select";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "../ui/tooltip";
+
+const MODE_LABEL: Record<RetrievalMode, string> = {
+  hybrid: "Hybrid Retrieval",
+  local: "Local Retrieval",
+  global: "Global Retrieval",
+  mix: "Mix Retrieval",
+  naive: "Naive Retrieval",
+};
 
 const MODE_HINT: Record<RetrievalMode, string> = {
   hybrid: "Graph + vector (recommended)",
@@ -71,8 +73,6 @@ export function RagControls() {
     setReasoning,
     retrievalMode,
     setRetrievalMode,
-    chunkMode,
-    setChunkMode,
     filters,
     setFilters,
   } = useActiveChat();
@@ -96,48 +96,23 @@ export function RagControls() {
   const yearActive = filters?.year_from != null || filters?.year_to != null;
 
   return (
-    <TooltipProvider delayDuration={300}>
-      <div className="flex flex-wrap items-center gap-1">
-        {/* Answer vs raw chunks */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              className={cn(
-                "h-7 gap-1.5 rounded-lg px-2 text-xs",
-                chunkMode && "bg-primary/10 text-primary"
-              )}
-              onClick={() => setChunkMode((v) => !v)}
-              size="sm"
-              type="button"
-              variant="ghost"
-            >
-              <LayersIcon className="size-3.5" />
-              {chunkMode ? "Chunks" : "Answer"}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            {chunkMode
-              ? "Showing raw retrieved chunks (no LLM). Click for synthesized answers."
-              : "Showing synthesized answers. Click to show raw retrieved chunks."}
-          </TooltipContent>
-        </Tooltip>
-
-        {/* Retrieval mode — short label in the trigger, hint in the menu */}
+    <div className="flex flex-wrap items-center gap-1">
+      {/* Retrieval mode — full label in the trigger, hint in the menu */}
         <Select
           onValueChange={(v) => setRetrievalMode(v as RetrievalMode)}
           value={retrievalMode}
         >
           <SelectTrigger
-            className="h-7 gap-1.5 rounded-lg border-0 px-2 text-xs capitalize shadow-none hover:bg-accent"
+            className="h-7 gap-1.5 rounded-lg border-0 px-2 text-xs shadow-none hover:bg-accent"
             size="sm"
           >
             <NetworkIcon className="size-3.5" />
-            {retrievalMode}
+            {MODE_LABEL[retrievalMode]}
           </SelectTrigger>
           <SelectContent align="start" position="popper">
             {RETRIEVAL_MODES.map((m) => (
               <SelectItem key={m} value={m}>
-                <span className="capitalize">{m}</span>
+                <span>{MODE_LABEL[m]}</span>
                 <span className="ml-2 text-muted-foreground text-xs">
                   {MODE_HINT[m]}
                 </span>
@@ -152,10 +127,7 @@ export function RagControls() {
           value={reasoning}
         >
           <SelectTrigger
-            className={cn(
-              "h-7 gap-1.5 rounded-lg border-0 px-2 text-xs shadow-none hover:bg-accent",
-              chunkMode && "pointer-events-none opacity-40"
-            )}
+            className="h-7 gap-1.5 rounded-lg border-0 px-2 text-xs shadow-none hover:bg-accent"
             size="sm"
           >
             <Brain className="size-3.5" />
@@ -186,8 +158,7 @@ export function RagControls() {
         ))}
 
         <YearFilterButton active={yearActive} filters={filters} setFilters={setFilters} />
-      </div>
-    </TooltipProvider>
+    </div>
   );
 }
 
