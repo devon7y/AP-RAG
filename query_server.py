@@ -18,7 +18,7 @@ import time
 from contextlib import asynccontextmanager
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
@@ -37,10 +37,17 @@ STORAGE_DIR   = os.environ.get("STORAGE_DIR", r"C:\rag_server\rag_storage_westbu
 EMBED_HOST    = os.environ.get("EMBED_HOST", "http://localhost:8000/v1")
 QDRANT_URL    = os.environ.get("QDRANT_URL", "http://localhost:6333")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-LLM_MODEL     = os.environ.get("LLM_MODEL", "gpt-5-mini")
+LLM_MODEL     = os.environ.get("LLM_MODEL", "gpt-5.4-mini")
 EMBEDDING_DIM = 4096
 HOST          = os.environ.get("HOST", "0.0.0.0")
 PORT          = int(os.environ.get("PORT", 8001))
+
+# Shared-secret gate for the data endpoints. When set (e.g. once the server is exposed
+# through a public Cloudflare Tunnel for the web frontend), every /query·/retrieve·
+# /search·/stats request must carry a matching `X-API-Key` header; unset = open, so the
+# local CLI/MCP keep working with no key. /health stays open for liveness checks. The
+# aprag client sends this automatically from its own $APRAG_API_KEY.
+APRAG_API_KEY = os.environ.get("APRAG_API_KEY", "")
 
 # APA citations: a filename→bib-record manifest (built by scripts/build_apa_manifest.py),
 # deployed next to this file, and the hades fallback share shown when a reader has no
@@ -77,23 +84,24 @@ async def pc_embed(texts: list[str], context: str = "query") -> np.ndarray:
 
 # ── LLM via OpenAI ────────────────────────────────────────────────────────────
 
-# Reasoning effort for gpt-5-mini. Defaults to "minimal" everywhere; the answer
-# synthesis level is overridable per request (CLI/MCP/API). Keyword extraction and
-# any other structured/JSON call stay "minimal" — they are mechanical, so reasoning
-# only adds latency. Set per-request via a ContextVar so concurrent requests don't
-# interfere (it propagates through the awaited LightRAG calls in the same task).
-VALID_REASONING = ("minimal", "low", "medium", "high")
+# Reasoning effort for gpt-5.4-mini. Defaults to "none" (gpt-5.4-mini supports a no-
+# reasoning mode — fastest); the answer synthesis level is overridable per request
+# (CLI/MCP/API). Keyword extraction and any other structured/JSON call stay "none" —
+# they are mechanical, so reasoning only adds latency. NOTE: gpt-5.4-mini does NOT accept
+# "minimal" (it 400s); its levels are none/low/medium/high/xhigh. Set per-request via a
+# process global (see below) so it reaches the awaited LightRAG calls in the same task.
+VALID_REASONING = ("none", "low", "medium", "high", "xhigh")
 # Per-request answer-synthesis effort. A process-global holder (not a ContextVar):
 # LightRAG dispatches LLM calls through a worker pool that captures the async context
 # early, so a ContextVar set per request never reaches the synthesis call. Serving is
 # single-user/serial so this is safe; truly concurrent callers at different levels
 # could race (acceptable for this use).
-_REASONING = {"effort": "minimal"}
+_REASONING = {"effort": "none"}
 
 
 def _valid_reasoning(value) -> str:
-    v = (value or "minimal").strip().lower()
-    return v if v in VALID_REASONING else "minimal"
+    v = (value or "none").strip().lower()
+    return v if v in VALID_REASONING else "none"
 
 
 async def openai_llm(prompt, system_prompt=None, history_messages=None, **kwargs):
@@ -101,7 +109,7 @@ async def openai_llm(prompt, system_prompt=None, history_messages=None, **kwargs
         # Structured calls (keyword extraction passes response_format=json_object)
         # never need reasoning; the free-text answer synthesis uses the request level.
         kwargs["reasoning_effort"] = (
-            "minimal" if kwargs.get("response_format") is not None else _REASONING["effort"]
+            "none" if kwargs.get("response_format") is not None else _REASONING["effort"]
         )
     _t0 = time.perf_counter()
     _r = await openai_complete_if_cache(
@@ -196,7 +204,7 @@ class QueryRequest(BaseModel):
     top_k: int | None = None
     chunk_top_k: int | None = None
     user_prompt: str | None = None
-    reasoning: str | None = None    # answer-synthesis reasoning: minimal|low|medium|high (default minimal)
+    reasoning: str | None = None    # answer-synthesis reasoning: none|low|medium|high|xhigh (default none)
     filters: Filters | None = None
 
 
@@ -240,7 +248,7 @@ def _build_query_param(req) -> QueryParam:
     # Always apply the citation style. Fold the reasoning level into user_prompt too:
     # LightRAG's answer cache keys on query_param.user_prompt (operate.py), so this makes
     # the cache distinguish effort levels without patching LightRAG — a `high` answer
-    # won't be served a cached `minimal` one. The bracketed marker is inert to the LLM.
+    # won't be served a cached `none` one. The bracketed marker is inert to the LLM.
     parts = [CITATION_STYLE_PROMPT, f"[answer-effort: {_valid_reasoning(getattr(req, 'reasoning', None))}]"]
     user_prompt = getattr(req, "user_prompt", None)
     if user_prompt:
@@ -383,11 +391,95 @@ async def _filtered_answer(req, filenames: set, manifest: dict) -> dict:
     return {"answer": answer, "references": ref_models, "mode": "filtered"}
 
 
+# ── Auth + corpus stats ────────────────────────────────────────────────────────
+
+
+async def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
+    """Gate the data endpoints with a shared secret when APRAG_API_KEY is set; a no-op
+    otherwise, so local/dev use needs no key. Applied as a route dependency."""
+    if APRAG_API_KEY and x_api_key != APRAG_API_KEY:
+        raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
+
+
+async def _count_papers() -> int:
+    """Number of papers in the database = doc_status PROCESSED (+ PREPROCESSED, which is
+    fully text-ingested with only VLM captioning pending). Best-effort; 0 on failure so
+    the header never breaks the server."""
+    try:
+        counts = await _rag.doc_status.get_status_counts()
+        return int(counts.get("processed", 0)) + int(counts.get("preprocessed", 0))
+    except Exception as exc:  # noqa: BLE001
+        print(f"paper count failed ({exc!r})", flush=True)
+        return 0
+
+
+# Distinct filter values (for the web UI's filter autocomplete), computed once from the
+# manifest and cached. The manifest is read-mostly, so this never needs invalidation
+# within a server lifetime.
+_FACETS: dict = {"data": None}
+
+
+def _compute_facets(manifest: dict) -> dict:
+    authors: set[str] = set()
+    journals: set[str] = set()
+    subjects: set[str] = set()
+    keywords: set[str] = set()
+    affiliations: set[str] = set()
+    for rec in (manifest or {}).values():
+        if not isinstance(rec, dict):
+            continue
+        for a in (rec.get("authors") or []) + (rec.get("editors") or []):
+            fam = (a.get("family") or "").strip()
+            if fam:
+                authors.add(fam)
+        ct = (rec.get("container_title") or "").strip()
+        if ct:
+            journals.add(ct)
+        for key, bucket in (("subjects", subjects), ("keywords", keywords),
+                            ("affiliations", affiliations)):
+            for v in (rec.get(key) or []):
+                v = str(v).strip()
+                if v:
+                    bucket.add(v)
+    srt = lambda s: sorted(s, key=str.lower)  # noqa: E731
+    return {"authors": srt(authors), "journals": srt(journals),
+            "subjects": srt(subjects), "keywords": srt(keywords),
+            "affiliations": srt(affiliations)}
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
+
+
+def _qdrant_ok() -> bool:
+    """Is the Qdrant vector DB reachable? (The query-server process can be up while
+    Qdrant is down — then retrieval fails.)"""
+    try:
+        client = getattr(getattr(_rag, "chunks_vdb", None), "_client", None)
+        if client is None:
+            return False
+        client.get_collections()  # raises if Qdrant is unreachable
+        return True
+    except Exception:
+        return False
+
+
+def _embedding_ok() -> bool:
+    """Is the local embedding server reachable?"""
+    try:
+        import urllib.request
+        base = EMBED_HOST.rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3]
+        with urllib.request.urlopen(base.rstrip("/") + "/health", timeout=3) as r:
+            return 200 <= r.status < 500
+    except Exception:
+        return False
 
 
 @app.get("/health")
 def health():
+    qdrant = _qdrant_ok()
+    embedding = _embedding_ok()
     return {
         "status": "ok",
         "storage": STORAGE_DIR,
@@ -397,13 +489,35 @@ def health():
         # Whether reference/chunk page locators will appear (True after a page-aware
         # re-ingest; False on an older store; None if undeterminable).
         "page_aware": _PAGE_AWARE,
+        # Dependency liveness — retrieval_ready is the real "can we answer?" signal
+        # (the process can be up while Qdrant/embedding are down).
+        "qdrant": qdrant,
+        "embedding": embedding,
+        "retrieval_ready": bool(_rag is not None and qdrant and embedding),
         # Feature/deploy visibility:
         "manifest_papers": len(apa.load_manifest(APA_MANIFEST)),
         "drive_map_loaded": bool(apa.load_drive_map(APRAG_DRIVE_MAP)),
     }
 
 
-@app.post("/query")
+@app.get("/stats", dependencies=[Depends(require_api_key)])
+async def stats():
+    """Corpus size for the web UI header: number of papers ingested into the database."""
+    if _rag is None:
+        raise HTTPException(status_code=503, detail="RAG not initialized")
+    return {"papers": await _count_papers()}
+
+
+@app.get("/facets", dependencies=[Depends(require_api_key)])
+def facets():
+    """Distinct authors/journals/subjects/keywords/affiliations (from the manifest) for
+    the web UI's filter autocomplete. Computed once and cached."""
+    if _FACETS["data"] is None:
+        _FACETS["data"] = _compute_facets(apa.load_manifest(APA_MANIFEST))
+    return _FACETS["data"]
+
+
+@app.post("/query", dependencies=[Depends(require_api_key)])
 async def query(req: QueryRequest):
     if _rag is None:
         raise HTTPException(status_code=503, detail="RAG not initialized")
@@ -451,24 +565,28 @@ async def query(req: QueryRequest):
     return {"answer": answer, "references": ref_models, "mode": req.mode}
 
 
-def _enrich_references(refs: list[dict]) -> list[dict]:
+def _enrich_references(refs: list[dict], id_to_pages: dict | None = None) -> list[dict]:
     """Add APA citation + Drive/hades locator fields to each {reference_id, file_path}
-    so /retrieve consumers (the `aprag chunks` CLI, the MCP) can show a readable,
-    cited source per chunk instead of a bare filename. Keeps the original keys."""
+    so /retrieve consumers (the `aprag chunks` CLI, the MCP, the web frontend) can show a
+    readable, cited source per chunk instead of a bare filename. ``id_to_pages`` maps a
+    reference_id to the PDF pages its chunks came from (so the references list can show
+    'pp. 3, 12'); empty for a pre-page-aware store. Keeps the original keys."""
     manifest = apa.load_manifest(APA_MANIFEST)
     drive_map = apa.load_drive_map(APRAG_DRIVE_MAP)
+    id_to_pages = id_to_pages or {}
     out = []
     for r in refs or []:
         rid = str(r.get("reference_id") or "")
         rm = apa.build_ref_model(rid, r.get("file_path") or "", manifest,
-                                 HADES_PAPERS_BASE, drive_map=drive_map)
+                                 HADES_PAPERS_BASE, pages=id_to_pages.get(rid),
+                                 drive_map=drive_map)
         out.append({**r, "apa": rm["apa"], "intext": rm["intext"],
                     "filename": rm["filename"], "drive_url": rm["drive_url"],
-                    "hades_path": rm["hades_path"]})
+                    "hades_path": rm["hades_path"], "pages": rm["pages"]})
     return out
 
 
-@app.post("/retrieve")
+@app.post("/retrieve", dependencies=[Depends(require_api_key)])
 async def retrieve(req: RetrieveRequest):
     """Structured retrieval without LLM synthesis — the agentic multi-hop primitive."""
     if _rag is None:
@@ -480,7 +598,8 @@ async def retrieve(req: RetrieveRequest):
         top_k = req.chunk_top_k or req.top_k or 20
         chunks = await _vector_chunk_search(req.question, filenames, top_k)
         await _attach_chunk_pages(chunks)
-        references = _enrich_references(search.assign_reference_ids(chunks))
+        refs = search.assign_reference_ids(chunks)
+        references = _enrich_references(refs, await _pages_by_reference({"chunks": chunks}))
         return {
             "status": "success", "message": "filtered retrieval",
             "data": {"entities": [], "relationships": [], "chunks": chunks,
@@ -499,13 +618,14 @@ async def retrieve(req: RetrieveRequest):
         data = result.get("data") or {}
         await _attach_chunk_pages(data.get("chunks") or [])
         if data.get("references"):
-            data["references"] = _enrich_references(data["references"])
+            data["references"] = _enrich_references(
+                data["references"], await _pages_by_reference(data))
     except Exception as exc:  # never let enrichment break raw retrieval
         print(f"reference enrichment failed ({exc!r})", flush=True)
     return result
 
 
-@app.post("/search")
+@app.post("/search", dependencies=[Depends(require_api_key)])
 async def search_papers(req: SearchRequest):
     """Metadata-filtered semantic search → ranked papers (with APA citation + path)."""
     if _rag is None:

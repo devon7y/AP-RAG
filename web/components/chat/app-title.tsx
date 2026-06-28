@@ -25,22 +25,35 @@ export function AppTitle() {
   );
 }
 
-// Live backend (query server) status — green dot when reachable, red when not. Polls so
-// it reflects the PC backend going up/down.
+// Live backend status — green when retrieval is actually ready (query server + Qdrant +
+// embedding all up), red when not, with the reason shown inline + on hover. Polls so it
+// reflects the PC backend going up/down.
 export function BackendStatus() {
-  const { data } = useSWR<{ online: boolean }>(
+  const { data } = useSWR<{ online: boolean; detail?: string }>(
     `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/health`,
     fetcher,
-    { refreshInterval: 30_000, revalidateOnFocus: true }
+    { refreshInterval: 20_000, revalidateOnFocus: true }
   );
   const online = data?.online;
+  const label = online == null ? "Checking…" : online ? "Online" : "Offline";
+  const detail = online === false ? (data?.detail ?? "backend offline") : undefined;
   return (
-    <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-foreground/75 text-xs">
-      Status: {online == null ? "…" : online ? "Online" : "Offline"}
+    <span
+      className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-foreground/75 text-xs"
+      title={
+        online === false
+          ? `Backend offline: ${detail}`
+          : online
+            ? "Backend online — retrieval ready"
+            : "Checking backend…"
+      }
+    >
+      Status: {label}
+      {detail && <span className="text-red-500/90">({detail})</span>}
       <span
         className={cn(
           "size-2 rounded-full",
-          online == null && "bg-muted-foreground",
+          online == null && "animate-pulse bg-muted-foreground",
           online === true && "bg-green-500",
           online === false && "bg-red-500"
         )}

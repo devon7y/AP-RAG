@@ -111,17 +111,40 @@ export async function getStats(): Promise<{ papers: number }> {
   return (await res.json()) as { papers: number };
 }
 
-// GET /health — is the query server (PC backend) reachable right now?
-export async function getHealth(): Promise<{ online: boolean }> {
+// GET /health — is the backend actually able to answer right now? "Online" requires the
+// query server AND its dependencies (Qdrant + embedding) to be up — the process can be
+// reachable while retrieval is broken. `detail` explains a degraded/offline state.
+export async function getHealth(): Promise<{ online: boolean; detail?: string }> {
   try {
     const res = await fetch(`${BASE_URL}/health`, {
       headers: headers(),
       cache: "no-store",
       signal: AbortSignal.timeout(8000),
     });
-    return { online: res.ok };
+    if (!res.ok) {
+      return { online: false, detail: "query server unreachable" };
+    }
+    const body = (await res.json().catch(() => ({}))) as {
+      retrieval_ready?: boolean;
+      qdrant?: boolean;
+      embedding?: boolean;
+    };
+    if (body.retrieval_ready === false) {
+      const down: string[] = [];
+      if (body.qdrant === false) {
+        down.push("vector DB");
+      }
+      if (body.embedding === false) {
+        down.push("embedding server");
+      }
+      return {
+        online: false,
+        detail: down.length > 0 ? `${down.join(" + ")} down` : "retrieval not ready",
+      };
+    }
+    return { online: true };
   } catch {
-    return { online: false };
+    return { online: false, detail: "backend unreachable" };
   }
 }
 

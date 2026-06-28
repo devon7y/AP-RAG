@@ -13,13 +13,15 @@ const EXTRACT_SYSTEM =
   "academic-paper search query, AND extract any metadata filters the user EXPLICITLY " +
   'stated. Output ONLY a JSON object with key "query" (string: the standalone search ' +
   "query — resolve pronouns from the conversation, preserve specific names, numbers and " +
-  'terms) and OPTIONALLY "authors" (array of surnames), "journals" (array), "subjects" ' +
-  '(array), "keywords" (array), "year" (int), "year_from" (int), "year_to" (int). ' +
-  'Include a filter ONLY when the user explicitly names it: "Caplan papers" -> ' +
-  'authors:["Caplan"]; "in Cognition" -> journals:["Cognition"]; "since 2020" -> ' +
-  'year_from:2020; "before 2015" -> year_to:2014; "in 2026" -> year:2026. Do NOT infer ' +
-  "filters from vague wording (e.g. 'recent', 'classic'). Omit keys you have no value " +
-  "for. Respond with the JSON object only — no prose, no code fences.";
+  'terms) and OPTIONALLY "authors" (array of surnames), "journals" (array of journal/' +
+  'venue names), "affiliations" (array of institutions), "year" (int), "year_from" (int), ' +
+  '"year_to" (int). Include a filter ONLY when the user explicitly names it: "Caplan ' +
+  'papers" -> authors:["Caplan"]; "in Cognition" -> journals:["Cognition"]; "from ' +
+  'Alberta" / "at MIT" -> affiliations:["Alberta"]/["MIT"]; "since 2020" -> ' +
+  'year_from:2020; "before 2015" -> year_to:2014; "in 2026" -> year:2026. Do NOT extract ' +
+  "topics, subjects, or keywords as filters — leave the question's topic to semantic " +
+  "retrieval. Do NOT infer filters from vague wording (e.g. 'recent', 'classic'). Omit " +
+  "keys you have no value for. Respond with the JSON object only — no prose, no code fences.";
 
 function safeParse(text: string): Record<string, unknown> {
   try {
@@ -76,8 +78,10 @@ export async function condenseAndExtract(
         ? obj.query.trim()
         : question;
 
+    // NL extraction is limited to author/journal/affiliation/year — topic dimensions
+    // (subjects/keywords) are deliberately left to semantic + graph retrieval.
     const raw: RagFilters = {};
-    for (const k of FILTER_LIST_KEYS) {
+    for (const k of ["authors", "journals", "affiliations"] as const) {
       const v = asStrings(obj[k]);
       if (v) {
         raw[k] = v;
