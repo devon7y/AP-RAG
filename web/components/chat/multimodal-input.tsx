@@ -52,6 +52,7 @@ import {
   PromptInputTools,
 } from "../ai-elements/prompt-input";
 import { Button } from "../ui/button";
+import { ActiveFilters } from "./active-filters";
 import { PaperclipIcon, StopIcon } from "./icons";
 import { PreviewAttachment } from "./preview-attachment";
 import { RagControls } from "./rag-controls";
@@ -473,6 +474,7 @@ function PureMultimodalInput({
             ))}
           </div>
         )}
+        <ActiveFilters />
         <PromptInputTextarea
           className="min-h-0 text-[13px] leading-relaxed px-4 pt-3.5 pb-1.5 placeholder:text-muted-foreground/35"
           data-testid="multimodal-input"

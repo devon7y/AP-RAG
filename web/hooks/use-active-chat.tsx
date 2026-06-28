@@ -29,7 +29,8 @@ import {
   type ReasoningEffort,
   type RetrievalMode,
 } from "@/lib/ai/models";
-import type { RagFilters } from "@/lib/aprag/types";
+import { mergeFilters } from "@/lib/aprag/filters";
+import type { RagFilters, RagRetrieval } from "@/lib/aprag/types";
 import type { Vote } from "@/lib/db/schema";
 import { ChatbotError } from "@/lib/errors";
 import type { ChatMessage } from "@/lib/types";
@@ -203,6 +204,13 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
     }),
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
+      // Surface filters the LLM inferred from the user's wording as active chips.
+      if (dataPart.type === "data-retrieval") {
+        const inferred = (dataPart.data as RagRetrieval).inferredFilters;
+        if (inferred && Object.keys(inferred).length > 0) {
+          setFilters((prev) => mergeFilters(prev, inferred));
+        }
+      }
     },
     onFinish: () => {
       mutate(unstable_serialize(getChatHistoryPaginationKey));

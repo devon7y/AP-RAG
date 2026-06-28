@@ -145,3 +145,18 @@ export async function getFacets(): Promise<Facets> {
   }
   return (await res.json()) as Facets;
 }
+
+// Module-cached facets (the corpus is read-mostly within a deployment), used to validate
+// LLM-inferred filters without re-fetching the large payload each turn.
+let _facetsCache: Facets | null = null;
+export async function getFacetsCached(): Promise<Facets | null> {
+  if (_facetsCache) {
+    return _facetsCache;
+  }
+  try {
+    _facetsCache = await getFacets();
+    return _facetsCache;
+  } catch {
+    return null;
+  }
+}

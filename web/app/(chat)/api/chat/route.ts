@@ -16,7 +16,8 @@ import { DEFAULT_CHAT_MODEL } from "@/lib/ai/models";
 import { getLanguageModel } from "@/lib/ai/providers";
 import { retrieve } from "@/lib/aprag/client";
 import { buildContext, SYNTH_SYSTEM_PROMPT } from "@/lib/aprag/citations";
-import { condenseQuery, type HistoryTurn } from "@/lib/aprag/condense";
+import { condenseAndExtract, type HistoryTurn } from "@/lib/aprag/condense";
+import { mergeFilters } from "@/lib/aprag/filters";
 import type { RagRetrieval } from "@/lib/aprag/types";
 import { isProductionEnvironment } from "@/lib/constants";
 import {
@@ -162,17 +163,19 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream<ChatMessage>({
       execute: async ({ writer: dataStream }) => {
-        // 1. Condense the follow-up into a standalone retrieval query.
-        const retrievalQuery = await condenseQuery(
-          toHistoryTurns(priorMessages),
-          question
-        );
+        // 1. Condense the follow-up into a standalone retrieval query AND extract any
+        //    metadata filters the user explicitly named (validated against the corpus).
+        const { query: retrievalQuery, filters: inferredFilters } =
+          await condenseAndExtract(toHistoryTurns(priorMessages), question);
+
+        // Apply manual (UI) filters + inferred filters together.
+        const effectiveFilters = mergeFilters(filters ?? null, inferredFilters);
 
         // 2. Retrieve from the AP-RAG query server (PC, over the tunnel).
         const retrieved = await retrieve({
           question: retrievalQuery,
           mode: retrievalMode,
-          filters: filters ?? null,
+          filters: effectiveFilters,
         });
 
         // 3. Attach the retrieval payload to the assistant message (persisted, so the
@@ -185,6 +188,7 @@ export async function POST(request: Request) {
           chunks: retrieved.chunks,
           entities: retrieved.entities,
           relationships: retrieved.relationships,
+          ...(Object.keys(inferredFilters).length > 0 && { inferredFilters }),
         };
         dataStream.write({
           type: "data-retrieval",
