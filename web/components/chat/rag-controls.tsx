@@ -13,7 +13,6 @@ import type { Facets } from "@/lib/aprag/client";
 import type { RagFilters } from "@/lib/aprag/types";
 import { cn } from "@/lib/utils";
 import { FacetInput, useFacets } from "./facet-input";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
@@ -188,14 +187,6 @@ function FacetFilterButton({
           variant="ghost"
         >
           {label}
-          {selected.length > 0 && (
-            <Badge
-              className="ml-0.5 h-4 min-w-4 justify-center px-1 text-[10px]"
-              variant="secondary"
-            >
-              {selected.length}
-            </Badge>
-          )}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-72">
@@ -248,14 +239,6 @@ function YearFilterButton({
           variant="ghost"
         >
           Year
-          {active && (
-            <Badge
-              className="ml-0.5 h-4 justify-center px-1 text-[10px]"
-              variant="secondary"
-            >
-              {filters?.year_from ?? "…"}–{filters?.year_to ?? "…"}
-            </Badge>
-          )}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="grid w-56 grid-cols-2 gap-2">

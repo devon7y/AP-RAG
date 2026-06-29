@@ -1,11 +1,9 @@
 "use client";
 
-import { XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import type { Facets } from "@/lib/aprag/client";
 import { cn, fetcher } from "@/lib/utils";
-import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 
@@ -31,9 +29,10 @@ export function useFacets(enabled = true): Facets {
 
 const MAX_SUGGESTIONS = 8;
 
-// A multi-value filter field: selected values are chips ABOVE the input; typing shows a
-// suggestion list (only once you start typing). Click a suggestion or press Tab to add
-// the top match; Enter adds the top match (or your free text). × removes a chip.
+// An "add a filter value" autocomplete: typing shows a suggestion list (only once you
+// start typing). Click a suggestion or press Tab to add the top match; Enter adds the top
+// match (or your free text). Added values render as removable chips in the chat box (the
+// same place the in-text/natural-language filters show) — not inside this popup.
 export function FacetInput({
   label,
   placeholder,
@@ -70,29 +69,6 @@ export function FacetInput({
   return (
     <div className="space-y-1.5">
       <Label className="text-xs">{label}</Label>
-
-      {/* Selected chips ABOVE the input so suggestions never cover them. */}
-      {selected.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {selected.map((s) => (
-            <Badge
-              className="gap-1 pr-1 font-normal"
-              key={s}
-              variant="secondary"
-            >
-              {s}
-              <button
-                aria-label={`Remove ${s}`}
-                className="rounded-sm hover:text-foreground"
-                onClick={() => onChange(selected.filter((x) => x !== s))}
-                type="button"
-              >
-                <XIcon className="size-3" />
-              </button>
-            </Badge>
-          ))}
-        </div>
-      )}
 
       <Input
         autoComplete="off"
