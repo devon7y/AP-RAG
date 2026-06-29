@@ -55,7 +55,7 @@ export function ConnectDialog() {
           variant="outline"
         >
           <PlugZapIcon className="size-3.5" />
-          <span className="hidden sm:inline">Connect to my own agentic AI</span>
+          <span className="hidden sm:inline">Connect to your own agentic AI</span>
           <span className="sm:hidden">Connect AI</span>
         </Button>
       </DialogTrigger>
