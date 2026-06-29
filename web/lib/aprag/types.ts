@@ -39,6 +39,7 @@ export type RagRelationship = {
 export type RagFilters = {
   authors?: string[];
   year?: number;
+  years?: number[]; // discrete years (e.g. "2025 and 2026") — match any
   year_from?: number;
   year_to?: number;
   journals?: string[];

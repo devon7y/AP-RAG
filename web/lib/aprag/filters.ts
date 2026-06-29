@@ -27,6 +27,12 @@ export function mergeFilters(
       out[k] = merged;
     }
   }
+  const years = Array.from(new Set([...(a?.years ?? []), ...(b?.years ?? [])])).sort(
+    (x, y) => x - y
+  );
+  if (years.length > 0) {
+    out.years = years;
+  }
   for (const k of ["year", "year_from", "year_to"] as const) {
     const v = b?.[k] ?? a?.[k];
     if (v != null) {
@@ -62,6 +68,10 @@ export function dropDismissed(
     if (kept.length > 0) {
       out[k] = kept;
     }
+  }
+  const keptYears = (f.years ?? []).filter((y) => !drop.has(filterKey("years", y)));
+  if (keptYears.length > 0) {
+    out.years = keptYears;
   }
   for (const k of ["year", "year_from", "year_to"] as const) {
     const v = f[k];

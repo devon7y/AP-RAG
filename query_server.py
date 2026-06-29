@@ -190,6 +190,7 @@ class Filters(BaseModel):
     """Metadata filters resolved against the manifest to scope retrieval to a paper set."""
     authors: list[str] | None = None       # surname substrings (any-match)
     year: int | None = None
+    years: list[int] | None = None         # discrete years (any-match)
     year_from: int | None = None
     year_to: int | None = None
     journals: list[str] | None = None      # container-title substrings

@@ -280,6 +280,14 @@ function PureMultimodalInput({
       }
       chips.push({ key, dim, value: v, label: yearLabels[dim](v) });
     }
+    // Discrete years (e.g. "2025 and 2026") — one chip each.
+    for (const y of detected.years ?? []) {
+      const key = `years:${y}`;
+      if (dismissedKeys.has(key) || (active.years ?? []).includes(y)) {
+        continue;
+      }
+      chips.push({ key, dim: "years", value: y, label: `Year: ${y}` });
+    }
     return chips;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [input, facets, filters, dismissedKeys]);
@@ -289,6 +297,8 @@ function PureMultimodalInput({
     for (const c of pending) {
       if (c.dim === "year" || c.dim === "year_from" || c.dim === "year_to") {
         out[c.dim] = c.value as number;
+      } else if (c.dim === "years") {
+        (out.years ??= []).push(c.value as number);
       } else if (
         c.dim === "authors" ||
         c.dim === "journals" ||
@@ -581,7 +591,6 @@ function PureMultimodalInput({
         <ActiveFilters />
         {pending.length > 0 && (
           <div className="flex flex-wrap items-center gap-1 px-3.5 pt-2.5">
-            <span className="text-muted-foreground text-xs">Will filter:</span>
             {pending.map((c) => (
               <Badge
                 className="gap-1 border-dashed pr-1 font-normal text-muted-foreground"

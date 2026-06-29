@@ -17,8 +17,8 @@ export const Greeting = () => {
         initial={{ opacity: 0, y: 10 }}
         transition={{ delay: 0.5, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
       >
-        Get APA-cited answers from the corpus, or switch to Chunks to see the raw
-        retrieved passages.
+        Get APA-cited answers from the corpus — hover any citation to see the exact
+        passage it draws on.
       </motion.div>
     </div>
   );

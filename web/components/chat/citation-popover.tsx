@@ -5,13 +5,14 @@ import {
   createContext,
   type ReactNode,
   useContext,
+  useEffect,
   useRef,
   useState,
 } from "react";
 import type { RagChunk, RagReference } from "@/lib/aprag/types";
 import { MessageResponse } from "../ai-elements/message";
 import { Popover, PopoverAnchor, PopoverContent } from "../ui/popover";
-import { cleanChunkText } from "./rag-chunks";
+import { splitChunkContent } from "./rag-chunks";
 
 type CitationData = {
   chunkByCiteIndex: Map<number, RagChunk>;
@@ -20,9 +21,10 @@ type CitationData = {
 
 export const CitationContext = createContext<CitationData | null>(null);
 
-// Custom markdown <a> renderer: a `#cite-3_5` href (from rewriteIntext) becomes a
-// hover/click card revealing the exact retrieved passage(s) the model cited. Multiple
-// passages are paged through with arrows. Any other link renders normally.
+// Only one citation card is open at a time: each card registers a close handler; opening
+// one closes all others (fixes hovering a second citation while one is pinned open).
+const closeHandlers = new Set<() => void>();
+
 export function CitationAnchor({
   href,
   children,
@@ -75,6 +77,19 @@ function CitationCard({
   const [idx, setIdx] = useState(0);
   const pinned = useRef(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const selfHandler = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    const fn = () => {
+      pinned.current = false;
+      setOpen(false);
+    };
+    selfHandler.current = fn;
+    closeHandlers.add(fn);
+    return () => {
+      closeHandlers.delete(fn);
+    };
+  }, []);
 
   const cancelClose = () => {
     if (closeTimer.current) {
@@ -82,8 +97,16 @@ function CitationCard({
       closeTimer.current = null;
     }
   };
+  const closeOthers = () => {
+    for (const h of closeHandlers) {
+      if (h !== selfHandler.current) {
+        h();
+      }
+    }
+  };
   const openNow = () => {
     cancelClose();
+    closeOthers();
     setOpen(true);
   };
   const scheduleClose = () => {
@@ -101,6 +124,7 @@ function CitationCard({
     } else {
       pinned.current = true;
       cancelClose();
+      closeOthers();
       setOpen(true);
     }
   };
@@ -110,6 +134,7 @@ function CitationCard({
   const reference = refByReferenceId.get(chunk.reference_id ?? "");
   const label = reference?.apa || reference?.filename || chunk.file_path;
   const score = typeof chunk.score === "number" ? chunk.score.toFixed(3) : null;
+  const { context, text } = splitChunkContent(chunk.content);
 
   return (
     <Popover
@@ -134,14 +159,14 @@ function CitationCard({
       </PopoverAnchor>
       <PopoverContent
         align="start"
-        className="w-[min(94vw,46rem)] overflow-hidden p-0"
+        className="flex max-h-[85vh] w-[min(94vw,46rem)] flex-col overflow-hidden p-0"
         onMouseEnter={cancelClose}
         onMouseLeave={scheduleClose}
         onOpenAutoFocus={(e) => e.preventDefault()}
         side="top"
         sideOffset={6}
       >
-        <div className="flex items-center justify-between gap-2 border-border/60 border-b bg-muted/40 px-3 py-1.5">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-border/60 border-b bg-muted/40 px-3 py-1.5">
           <span className="text-muted-foreground text-xs">
             Cited passage{n > 1 ? `  ·  ${Math.min(idx, n - 1) + 1} of ${n}` : ""}
           </span>
@@ -166,8 +191,8 @@ function CitationCard({
             </div>
           )}
         </div>
-        <div className="px-3.5 py-3">
-          <div className="mb-1.5 flex items-start justify-between gap-3 text-[13px]">
+        <div className="overflow-y-auto px-3.5 py-3">
+          <div className="mb-2 flex items-start justify-between gap-3 text-[13px]">
             <div className="min-w-0 font-medium [&_p]:m-0 [&_p]:inline">
               <MessageResponse>{label}</MessageResponse>
             </div>
@@ -187,8 +212,13 @@ function CitationCard({
               )}
             </div>
           </div>
+          {context && (
+            <p className="mb-2 text-muted-foreground text-xs italic leading-snug">
+              {context}
+            </p>
+          )}
           <p className="whitespace-pre-wrap text-[13px] text-foreground/90 leading-[1.6]">
-            {cleanChunkText(chunk.content)}
+            {text ? `“${text}”` : ""}
           </p>
         </div>
       </PopoverContent>

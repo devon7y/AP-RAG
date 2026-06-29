@@ -17,11 +17,12 @@ const EXTRACT_SYSTEM =
   'stated. Output ONLY a JSON object with key "query" (string: the standalone search ' +
   "query — resolve pronouns from the conversation, preserve specific names, numbers and " +
   'terms) and OPTIONALLY "authors" (array of surnames), "journals" (array of journal/' +
-  'venue names), "affiliations" (array of institutions), "year" (int), "year_from" (int), ' +
-  '"year_to" (int). Include a filter ONLY when the user explicitly names it: "Caplan ' +
-  'papers" -> authors:["Caplan"]; "in Cognition" -> journals:["Cognition"]; "from ' +
-  'Alberta" / "at MIT" -> affiliations:["Alberta"]/["MIT"]; "since 2020" -> ' +
-  'year_from:2020; "before 2015" -> year_to:2014; "in 2026" -> year:2026. Correct obvious ' +
+  'venue names), "affiliations" (array of institutions), "years" (array of specific ' +
+  'years), "year_from" (int), "year_to" (int). Include a filter ONLY when the user ' +
+  'explicitly names it: "Caplan papers" -> authors:["Caplan"]; "in Cognition" -> ' +
+  'journals:["Cognition"]; "from Alberta" / "at MIT" -> affiliations:["Alberta"]/["MIT"]; ' +
+  '"since 2020" -> year_from:2020; "before 2015" -> year_to:2014; "in 2025 and 2026" -> ' +
+  'years:[2025,2026]. Correct obvious ' +
   'misspellings of journal/affiliation names to the intended name. Do NOT extract topics, ' +
   "subjects, or keywords as filters. Do NOT infer filters from vague wording ('recent', " +
   "'classic'). Omit keys you have no value for. Respond with the JSON object only — no " +
@@ -54,6 +55,14 @@ function asStrings(v: unknown): string[] | undefined {
 function asInt(v: unknown): number | undefined {
   const n = typeof v === "number" ? v : Number.parseInt(String(v), 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function asInts(v: unknown): number[] | undefined {
+  if (!Array.isArray(v)) {
+    return undefined;
+  }
+  const out = v.map(asInt).filter((n): n is number => n != null);
+  return out.length > 0 ? Array.from(new Set(out)).sort((a, b) => a - b) : undefined;
 }
 
 // One cheap gpt-5.4-mini call: standalone retrieval query + a second-pass extraction of
@@ -89,6 +98,10 @@ export async function condenseAndExtract(
         raw[k] = v;
       }
     }
+    const years = asInts(obj.years);
+    if (years) {
+      raw.years = years;
+    }
     for (const k of ["year", "year_from", "year_to"] as const) {
       const v = asInt(obj[k]);
       if (v != null) {
@@ -108,6 +121,9 @@ export async function validateInferredFilters(
   f: RagFilters
 ): Promise<RagFilters> {
   const out: RagFilters = {};
+  if (f.years?.length) {
+    out.years = f.years;
+  }
   for (const k of ["year", "year_from", "year_to"] as const) {
     if (f[k] != null) {
       out[k] = f[k];

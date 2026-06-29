@@ -24,6 +24,7 @@ const userMessageSchema = z.object({
 const filtersSchema = z.object({
   authors: z.array(z.string()).optional(),
   year: z.number().int().optional(),
+  years: z.array(z.number().int()).optional(),
   year_from: z.number().int().optional(),
   year_to: z.number().int().optional(),
   journals: z.array(z.string()).optional(),

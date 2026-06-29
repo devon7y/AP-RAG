@@ -24,7 +24,7 @@ import re
 import apa_citations as apa
 
 #: Recognised filter dimensions (all optional; AND across dimensions, OR within a list).
-FILTER_KEYS = ("authors", "year", "year_from", "year_to",
+FILTER_KEYS = ("authors", "year", "years", "year_from", "year_to",
                "journals", "subjects", "keywords", "affiliations")
 
 
@@ -64,6 +64,10 @@ def record_matches(record: dict, filters: dict) -> bool:
     year = _record_year(record)
     if filters.get("year") is not None and year != int(filters["year"]):
         return False
+    years = filters.get("years")
+    if years:
+        if year is None or year not in {int(y) for y in years}:
+            return False
     if filters.get("year_from") is not None and (year is None or year < int(filters["year_from"])):
         return False
     if filters.get("year_to") is not None and (year is None or year > int(filters["year_to"])):

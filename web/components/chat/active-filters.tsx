@@ -52,6 +52,21 @@ export function ActiveFilters() {
       return Object.keys(cleaned).length > 0 ? cleaned : null;
     });
 
+  const removeYear = (year: number) =>
+    setFilters((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      const next: RagFilters = { ...prev };
+      const arr = (next.years ?? []).filter((y) => y !== year);
+      if (arr.length > 0) {
+        next.years = arr;
+      } else {
+        delete next.years;
+      }
+      return Object.keys(next).length > 0 ? next : null;
+    });
+
   const chips: { id: string; label: string; onRemove: () => void }[] = [];
   for (const key of FILTER_LIST_KEYS) {
     for (const v of filters[key] ?? []) {
@@ -61,6 +76,13 @@ export function ActiveFilters() {
         onRemove: () => removeValue(key, v),
       });
     }
+  }
+  for (const y of filters.years ?? []) {
+    chips.push({
+      id: `year-${y}`,
+      label: `Year: ${y}`,
+      onRemove: () => removeYear(y),
+    });
   }
   if (filters.year != null) {
     chips.push({

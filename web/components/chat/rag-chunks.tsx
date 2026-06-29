@@ -21,6 +21,24 @@ export function cleanChunkText(s: string): string {
   return (s || "").replace(/\s+/g, " ").trim();
 }
 
+// Contextual retrieval stores each chunk as "<situating context>\n\n<original passage>".
+// Split the situating context (a short LLM-written header) from the actual paper text.
+export function splitChunkContent(content: string): {
+  context: string | null;
+  text: string;
+} {
+  const raw = content || "";
+  const i = raw.indexOf("\n\n");
+  // The context blurb is short; if the first segment is long, it's all passage text.
+  if (i > 0 && i < 600) {
+    return {
+      context: cleanChunkText(raw.slice(0, i)),
+      text: cleanChunkText(raw.slice(i + 2)),
+    };
+  }
+  return { context: null, text: cleanChunkText(raw) };
+}
+
 // Raw-chunk view (the web version of `aprag chunks`): the retrieved passages as cards,
 // each headed by its APA citation + PDF page + relevance, with a Drive link when known.
 export function RagChunks({ retrieval }: { retrieval: RagRetrieval }) {

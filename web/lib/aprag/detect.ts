@@ -40,29 +40,39 @@ function buildIndexes(facets: Facets) {
 function detectYears(lower: string): Partial<RagFilters> {
   const out: Partial<RagFilters> = {};
   const Y = "((?:19|20)\\d{2})";
-  const range = lower.match(new RegExp(`\\b${Y}\\s*(?:-|–|—|to)\\s*${Y}\\b`));
+  // Consume range/since/before/until patterns first; whatever years remain are discrete.
+  let work = lower;
+  const range = work.match(new RegExp(`\\b${Y}\\s*(?:-|–|—|to)\\s*${Y}\\b`));
   if (range) {
     out.year_from = Number(range[1]);
     out.year_to = Number(range[2]);
-    return out;
+    work = work.replace(range[0], " ");
   }
-  const from = lower.match(new RegExp(`\\b(?:since|after|from)\\s+${Y}\\b`));
+  const from = work.match(new RegExp(`\\b(?:since|after|from)\\s+${Y}\\b`));
   if (from) {
     out.year_from = Number(from[1]);
+    work = work.replace(from[0], " ");
   }
-  const before = lower.match(new RegExp(`\\b(?:before|prior to)\\s+${Y}\\b`));
+  const before = work.match(new RegExp(`\\b(?:before|prior to)\\s+${Y}\\b`));
   if (before) {
     out.year_to = Number(before[1]) - 1;
+    work = work.replace(before[0], " ");
   }
-  const until = lower.match(new RegExp(`\\b(?:until|up to|through|by)\\s+${Y}\\b`));
+  const until = work.match(new RegExp(`\\b(?:until|up to|through|by)\\s+${Y}\\b`));
   if (until) {
     out.year_to = Number(until[1]);
+    work = work.replace(until[0], " ");
   }
-  if (out.year_from == null && out.year_to == null) {
-    const inY = lower.match(new RegExp(`\\bin\\s+${Y}\\b`));
-    if (inY) {
-      out.year = Number(inY[1]);
+  // Remaining standalone years (e.g. "in 2025 and 2026") → discrete, match-any.
+  const years: number[] = [];
+  for (const m of work.matchAll(new RegExp(`\\b${Y}\\b`, "g"))) {
+    const y = Number(m[1]);
+    if (!years.includes(y)) {
+      years.push(y);
     }
+  }
+  if (years.length > 0) {
+    out.years = years.sort((a, b) => a - b);
   }
   return out;
 }
