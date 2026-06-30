@@ -94,8 +94,9 @@ export function detectFilters(text: string, facets: Facets): RagFilters {
     if (tok.length < 4 || !/^[A-Z]/.test(tok)) {
       continue;
     }
-    const lc = tok.toLowerCase();
-    if (COMMON_SURNAME_WORDS.has(lc)) {
+    // Strip a trailing possessive ("Caplan's" / "Caplan’s" -> "caplan") before matching.
+    const lc = tok.toLowerCase().replace(/(?:'|’)s$/, "");
+    if (lc.length < 3 || COMMON_SURNAME_WORDS.has(lc)) {
       continue;
     }
     const canon = _surnames?.get(lc);

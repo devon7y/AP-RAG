@@ -159,7 +159,8 @@ function CitationCard({
       </PopoverAnchor>
       <PopoverContent
         align="start"
-        className="flex max-h-[85vh] w-[min(94vw,46rem)] flex-col overflow-hidden p-0"
+        className="flex max-h-[min(85vh,var(--radix-popover-content-available-height))] w-[min(94vw,46rem)] flex-col overflow-hidden p-0"
+        collisionPadding={8}
         onMouseEnter={cancelClose}
         onMouseLeave={scheduleClose}
         onOpenAutoFocus={(e) => e.preventDefault()}
@@ -191,14 +192,18 @@ function CitationCard({
             </div>
           )}
         </div>
-        <div className="overflow-y-auto px-3.5 py-3">
+        <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-3">
           <div className="mb-2 flex items-start justify-between gap-3 text-[13px]">
             <div className="min-w-0 font-medium [&_p]:m-0 [&_p]:inline">
               <MessageResponse>{label}</MessageResponse>
             </div>
             <div className="flex shrink-0 items-center gap-2 text-muted-foreground text-xs">
               {chunk.page != null && <span>p. {chunk.page}</span>}
-              {score && <span className="tabular-nums">{score}</span>}
+              {score && (
+                <span className="tabular-nums" title="Relevance score (vector similarity)">
+                  {score}
+                </span>
+              )}
               {reference?.drive_url && (
                 <a
                   className="inline-flex items-center gap-1 text-primary hover:underline"
