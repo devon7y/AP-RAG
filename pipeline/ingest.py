@@ -460,6 +460,49 @@ def _words_to_lines(words: list) -> list[str]:
     return [" ".join(w[4] for w in sorted(ln, key=lambda w: w[0])) for ln in lines]
 
 
+_LINENO_MIN_COL = 8           # isolated marginal integers needed to call it a line-number column
+_LINENO_MARGIN_FRAC = 0.15    # cluster center must sit within this fraction of either page edge
+
+
+def _strip_line_number_column(words, W):
+    """Drop a marginal column of manuscript line numbers without touching inline
+    numbers. Detect the COLUMN, never judge a number by its value: a line number is
+    an integer that is the only word on its text line; when >= _LINENO_MIN_COL such
+    integers cluster tightly at a near-constant marginal x with values increasing
+    down the page, that whole column is line numbering. Inline numbers ('value 17',
+    'R2 = 0.92') share their line with words and are never matched. Returns
+    (filtered_words, n_dropped)."""
+    counts = {}
+    for w in words:
+        k = (w[5], w[6])                         # (block, line) per PyMuPDF word
+        counts[k] = counts.get(k, 0) + 1
+    isolated = [w for w in words if w[4].isdigit() and counts[(w[5], w[6])] == 1]
+    if len(isolated) < _LINENO_MIN_COL:
+        return words, 0
+    isolated.sort(key=lambda w: (w[0] + w[2]) / 2)
+    clusters, cur = [], [isolated[0]]            # greedily group by x-center (within 20pt)
+    for w in isolated[1:]:
+        if (w[0] + w[2]) / 2 - (cur[-1][0] + cur[-1][2]) / 2 <= 20:
+            cur.append(w)
+        else:
+            clusters.append(cur)
+            cur = [w]
+    clusters.append(cur)
+    drop = set()
+    for members in clusters:
+        if len(members) < _LINENO_MIN_COL:
+            continue
+        cx = sum((m[0] + m[2]) / 2 for m in members) / len(members)
+        if not (cx < _LINENO_MARGIN_FRAC * W or cx > (1 - _LINENO_MARGIN_FRAC) * W):
+            continue                             # not at a margin -> not line numbers
+        seq = [int(m[4]) for m in sorted(members, key=lambda m: m[1])]   # ordered top→bottom
+        if sum(b >= a for a, b in zip(seq, seq[1:])) >= 0.7 * (len(seq) - 1):  # mostly increasing
+            drop.update(id(m) for m in members)
+    if not drop:
+        return words, 0
+    return [w for w in words if id(w) not in drop], len(drop)
+
+
 def _page_text_columnaware(page) -> str:
     """One page → text in correct reading order. Native extraction for single-
     column pages; for a confidently-detected 2-column page, emit the whole left
@@ -470,6 +513,7 @@ def _page_text_columnaware(page) -> str:
     words = [w for w in page.get_text("words") if w[4].strip()]
     if W <= 0 or len(words) < _COL_MIN_PAGE_WORDS:
         return page.get_text("text")
+    words, n_lineno = _strip_line_number_column(words, W)  # drop marginal line-number column
     gutter = _detect_gutter([(w[0] + w[2]) / 2 for w in words], W)
     if gutter is not None:
         straddle = sum(1 for w in words if w[0] < gutter < w[2]) / len(words)
@@ -478,7 +522,22 @@ def _page_text_columnaware(page) -> str:
             right = [w for w in words if (w[0] + w[2]) / 2 >= gutter]
             if len(left) >= _COL_MIN_SIDE_WORDS and len(right) >= _COL_MIN_SIDE_WORDS:
                 return "\n".join(_words_to_lines(left) + _words_to_lines(right))
+    if n_lineno:  # stripped line numbers -> rebuild from filtered words (native get_text keeps them)
+        return "\n".join(_words_to_lines(words))
     return page.get_text("text")  # single-column / unconfident: native order
+
+
+# Visibility for the PyMuPDF→pypdf fallback. pypdf emits glyph-name artifacts
+# (/uniFB01) and mojibake, so a SILENT fallback quietly corrupts chunks. Probe fitz
+# once at import (a missing module degrades the entire run) and warn+count per file.
+try:
+    import fitz as _fitz_probe  # noqa: F401
+    del _fitz_probe
+except Exception:
+    print("[extract] CRITICAL: PyMuPDF (fitz) is not importable — every PDF will use "
+          "the pypdf fallback, which produces /uniFB01 glyph names and mojibake. "
+          "Install pymupdf in the ingest env before running.", flush=True)
+_PYPDF_FALLBACKS = 0
 
 
 def _extract_pdf_text(pdf_path: Path) -> str:
@@ -491,6 +550,7 @@ def _extract_pdf_text(pdf_path: Path) -> str:
     across-columns "jumble"), corrupting every downstream chunk. PyMuPDF reads
     columns correctly and also recovers text from files pypdf chokes on. Falls
     back to pypdf if PyMuPDF is unavailable, so ingest never hard-fails on it."""
+    global _PYPDF_FALLBACKS
     text = None
     try:
         import fitz  # PyMuPDF
@@ -498,8 +558,13 @@ def _extract_pdf_text(pdf_path: Path) -> str:
         with fitz.open(str(pdf_path)) as doc:
             page_texts = [_page_text_columnaware(p).strip() for p in doc]
         text = "\n\f\n".join(p for p in page_texts if p).strip()
-    except Exception:
+    except Exception as exc:
         text = None  # fall through to pypdf
+        _PYPDF_FALLBACKS += 1
+        print(f"[extract] WARNING: PyMuPDF failed on {pdf_path.name} "
+              f"({type(exc).__name__}: {exc}); using pypdf fallback — expect "
+              f"/uniFB01 glyph names / mojibake [pypdf fallback #{_PYPDF_FALLBACKS}]",
+              flush=True)
 
     if not text:
         from pypdf import PdfReader
