@@ -160,14 +160,23 @@ export async function POST(request: Request) {
     // The latest user question + the prior conversation (for condensing/synthesis).
     const question = getTextFromMessage(message as ChatMessage);
     const priorMessages = uiMessages.slice(0, -1);
-    const retrievalMode = mode ?? (chunkMode ? "naive" : "hybrid");
+    // "auto" (the default) lets the condense LLM pick the strategy below.
+    const requestedMode = mode ?? "auto";
 
     const stream = createUIMessageStream<ChatMessage>({
       execute: async ({ writer: dataStream }) => {
         // 1. Condense into a standalone query AND run the second-pass LLM filter
         //    extraction (catches mistyped/fuzzy names the client preview misses).
-        const { query: retrievalQuery, filters: inferred } =
-          await condenseAndExtract(toHistoryTurns(priorMessages), question);
+        const {
+          query: retrievalQuery,
+          filters: inferred,
+          mode: suggestedMode,
+        } = await condenseAndExtract(toHistoryTurns(priorMessages), question);
+
+        // Resolve "auto" to the LLM-suggested concrete mode (hybrid fallback); an explicit
+        // user choice always wins.
+        const retrievalMode =
+          requestedMode === "auto" ? (suggestedMode ?? "hybrid") : requestedMode;
 
         // Honor the user's pre-send cancellations, then combine the client-confirmed
         // filters with the server's second-pass extraction.
@@ -192,7 +201,7 @@ export async function POST(request: Request) {
         //    UI re-renders references / inline citations / chunk cards on reload).
         const ragRetrieval: RagRetrieval = {
           query: retrievalQuery,
-          mode: retrieved.mode,
+          mode: retrievalMode,
           chunkMode,
           references: retrieved.references,
           chunks: retrieved.chunks,

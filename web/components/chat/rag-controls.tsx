@@ -1,7 +1,7 @@
 "use client";
 
 import { Brain, NetworkIcon } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useActiveChat } from "@/hooks/use-active-chat";
 import {
   REASONING_EFFORTS,
@@ -10,6 +10,7 @@ import {
   type RetrievalMode,
 } from "@/lib/ai/models";
 import type { Facets } from "@/lib/aprag/client";
+import { detectFilters } from "@/lib/aprag/detect";
 import type { RagFilters } from "@/lib/aprag/types";
 import { cn } from "@/lib/utils";
 import { FacetInput, useFacets } from "./facet-input";
@@ -25,6 +26,7 @@ import {
 } from "../ui/select";
 
 const MODE_LABEL: Record<RetrievalMode, string> = {
+  auto: "Auto Retrieval",
   hybrid: "Hybrid Retrieval",
   local: "Local Retrieval",
   global: "Global Retrieval",
@@ -33,7 +35,8 @@ const MODE_LABEL: Record<RetrievalMode, string> = {
 };
 
 const MODE_HINT: Record<RetrievalMode, string> = {
-  hybrid: "Graph + vector (recommended)",
+  auto: "The model picks the method (recommended)",
+  hybrid: "Graph + vector",
   local: "Entity-focused (specific leads)",
   global: "Theme-focused (relationships)",
   mix: "Combined graph + vector",
@@ -74,12 +77,17 @@ export function RagControls() {
     setRetrievalMode,
     filters,
     setFilters,
+    input,
   } = useActiveChat();
 
-  // Facets (autocomplete options) are large, so only load them once the user opens a
-  // filter for the first time.
+  // Facets (autocomplete options) are large: load once a filter is first opened OR the
+  // user starts typing (so we can highlight buttons for auto-detected filters).
   const [facetsEnabled, setFacetsEnabled] = useState(false);
-  const facets = useFacets(facetsEnabled);
+  const facets = useFacets(facetsEnabled || input.trim().length > 0);
+
+  // What the composer text would auto-apply — used to light up the matching buttons, the
+  // same signal the in-text filter chips use.
+  const detected = useMemo(() => detectFilters(input, facets), [input, facets]);
 
   const setList = (key: keyof Facets) => (next: string[]) =>
     setFilters((prev) => {
@@ -92,7 +100,18 @@ export function RagControls() {
       return Object.keys(merged).length > 0 ? merged : null;
     });
 
-  const yearActive = filters?.year_from != null || filters?.year_to != null;
+  // A dimension's button is "active" if it has an applied filter OR the typed text would
+  // add one.
+  const dimActive = (key: keyof Facets) =>
+    (filters?.[key]?.length ?? 0) > 0 || (detected[key]?.length ?? 0) > 0;
+  const yearActive =
+    filters?.year_from != null ||
+    filters?.year_to != null ||
+    (filters?.years?.length ?? 0) > 0 ||
+    detected.year_from != null ||
+    detected.year_to != null ||
+    detected.year != null ||
+    (detected.years?.length ?? 0) > 0;
 
   return (
     <div className="flex flex-wrap items-center gap-1">
@@ -147,6 +166,7 @@ export function RagControls() {
         {/* Individual metadata filters, inline */}
         {FACET_FILTERS.map((f) => (
           <FacetFilterButton
+            active={dimActive(f.key)}
             key={f.key}
             label={f.label}
             onChange={setList(f.key)}
@@ -162,12 +182,14 @@ export function RagControls() {
 }
 
 function FacetFilterButton({
+  active,
   label,
   options,
   selected,
   onChange,
   onOpen,
 }: {
+  active: boolean;
   label: string;
   options: string[];
   selected: string[];
@@ -180,7 +202,7 @@ function FacetFilterButton({
         <Button
           className={cn(
             "h-7 gap-1.5 rounded-lg px-2 text-xs",
-            selected.length > 0 && "bg-primary/10 text-primary"
+            active && "bg-accent text-foreground"
           )}
           size="sm"
           type="button"
@@ -232,7 +254,7 @@ function YearFilterButton({
         <Button
           className={cn(
             "h-7 gap-1.5 rounded-lg px-2 text-xs",
-            active && "bg-primary/10 text-primary"
+            active && "bg-accent text-foreground"
           )}
           size="sm"
           type="button"

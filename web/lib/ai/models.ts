@@ -19,8 +19,21 @@ export const REASONING_EFFORTS = [
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "none";
 
-// LightRAG retrieval strategies, mirroring the CLI's `--mode`.
+// Concrete LightRAG retrieval strategies (what the query server actually accepts),
+// mirroring the CLI's `--mode`.
+export const CONCRETE_RETRIEVAL_MODES = [
+  "hybrid",
+  "local",
+  "global",
+  "mix",
+  "naive",
+] as const;
+export type ConcreteRetrievalMode = (typeof CONCRETE_RETRIEVAL_MODES)[number];
+
+// UI-facing modes: "auto" lets the condense LLM pick the strategy per question; the route
+// resolves it to a concrete mode before retrieving (the PC never sees "auto").
 export const RETRIEVAL_MODES = [
+  "auto",
   "hybrid",
   "local",
   "global",
@@ -28,8 +41,7 @@ export const RETRIEVAL_MODES = [
   "naive",
 ] as const;
 export type RetrievalMode = (typeof RETRIEVAL_MODES)[number];
-// Answer mode defaults to `hybrid` (graph + vector); chunk mode defaults to `naive`.
-export const DEFAULT_RETRIEVAL_MODE: RetrievalMode = "hybrid";
+export const DEFAULT_RETRIEVAL_MODE: RetrievalMode = "auto";
 
 export const titleModel = {
   id: CHAT_MODEL_ID,

@@ -249,6 +249,10 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (prevChatIdRef.current !== chatId) {
       prevChatIdRef.current = chatId;
+      // Switching chats (new or existing): start fresh — clear the composer text and any
+      // active metadata filters so they don't leak across conversations.
+      setInput("");
+      setFilters(null);
       if (isNewChat) {
         setMessages([]);
       }

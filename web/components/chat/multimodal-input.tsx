@@ -56,7 +56,11 @@ import { Button } from "../ui/button";
 import { XIcon } from "lucide-react";
 import { useActiveChat } from "@/hooks/use-active-chat";
 import { detectFilters } from "@/lib/aprag/detect";
-import { type FilterListKey, mergeFilters } from "@/lib/aprag/filters";
+import {
+  type FilterListKey,
+  hasAnyFilter,
+  mergeFilters,
+} from "@/lib/aprag/filters";
 import type { RagFilters } from "@/lib/aprag/types";
 import { Badge } from "../ui/badge";
 import { ActiveFilters } from "./active-filters";
@@ -588,9 +592,11 @@ function PureMultimodalInput({
             ))}
           </div>
         )}
-        <ActiveFilters />
-        {pending.length > 0 && (
+        {(hasAnyFilter(filters) || pending.length > 0) && (
           <div className="flex flex-wrap items-center gap-1 px-3.5 pt-2.5">
+            {/* Manual/applied filters (solid) and auto-detected pending filters (dashed)
+                share one row — no separate "Filters:" section. */}
+            <ActiveFilters />
             {pending.map((c) => (
               <Badge
                 className="gap-1 border-dashed pr-1 font-normal text-muted-foreground"

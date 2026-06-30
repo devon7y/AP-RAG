@@ -1,6 +1,10 @@
 import "server-only";
 
 import { generateText } from "ai";
+import {
+  CONCRETE_RETRIEVAL_MODES,
+  type ConcreteRetrievalMode,
+} from "@/lib/ai/models";
 import { getLanguageModel } from "@/lib/ai/providers";
 import { getFacetsCached } from "./client";
 import type { RagFilters } from "./types";
@@ -25,7 +29,16 @@ const EXTRACT_SYSTEM =
   'years:[2025,2026]. Correct obvious ' +
   'misspellings of journal/affiliation names to the intended name. Do NOT extract topics, ' +
   "subjects, or keywords as filters. Do NOT infer filters from vague wording ('recent', " +
-  "'classic'). Omit keys you have no value for. Respond with the JSON object only — no " +
+  "'classic'). " +
+  // Retrieval-strategy routing (the "auto" mode).
+  'ALSO choose the best retrieval "mode" for this question (a knowledge-graph + vector ' +
+  'RAG over academic papers): "local" = a specific entity/finding/person/dataset (facts ' +
+  'about one thing, e.g. "what % were utilitarian in Yanitski 2026?"); "global" = broad ' +
+  'thematic synthesis or relationships across many papers ("how does humor relate to word ' +
+  'frequency across the lab?"); "hybrid" = needs both specific facts and broader context ' +
+  "(the safe default for most questions); \"naive\" = a simple keyword lookup where the " +
+  'graph adds nothing. Prefer "hybrid" when unsure. ' +
+  "Omit keys you have no value for. Respond with the JSON object only — no " +
   "prose, no code fences.";
 
 function safeParse(text: string): Record<string, unknown> {
@@ -71,7 +84,11 @@ function asInts(v: unknown): number[] | undefined {
 export async function condenseAndExtract(
   history: HistoryTurn[],
   question: string
-): Promise<{ query: string; filters: RagFilters }> {
+): Promise<{
+  query: string;
+  filters: RagFilters;
+  mode?: ConcreteRetrievalMode;
+}> {
   const convo = history
     .filter((t) => t.content.trim().length > 0)
     .map((t) => `${t.role === "user" ? "User" : "Assistant"}: ${t.content}`)
@@ -108,7 +125,8 @@ export async function condenseAndExtract(
         raw[k] = v;
       }
     }
-    return { query, filters: await validateInferredFilters(raw) };
+    const mode = CONCRETE_RETRIEVAL_MODES.find((m) => m === obj.mode);
+    return { query, filters: await validateInferredFilters(raw), mode };
   } catch {
     return { query: question, filters: {} };
   }

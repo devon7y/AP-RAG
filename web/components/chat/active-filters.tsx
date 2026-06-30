@@ -102,9 +102,10 @@ export function ActiveFilters() {
     return null;
   }
 
+  // Just the chips — the composer renders these in the SAME row as the auto-detected
+  // (pending) filter chips, so manual and natural-language filters share one display.
   return (
-    <div className="flex flex-wrap items-center gap-1 px-3.5 pt-2.5">
-      <span className="text-muted-foreground text-xs">Filters:</span>
+    <>
       {chips.map((c) => (
         <Badge className="gap-1 pr-1 font-normal" key={c.id} variant="secondary">
           {c.label}
@@ -118,6 +119,6 @@ export function ActiveFilters() {
           </button>
         </Badge>
       ))}
-    </div>
+    </>
   );
 }
