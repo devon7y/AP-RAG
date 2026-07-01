@@ -29,7 +29,10 @@ export XDG_CACHE_HOME=$WORKDIR/cache
 export TRITON_CACHE_DIR=$WORKDIR/cache/triton
 export FLASHINFER_CACHE_DIR=$WORKDIR/cache/flashinfer
 export BNB_CUDA_VERSION=126
-export PYTORCH_ALLOC_CONF=expandable_segments:True
+# PyTorch reads PYTORCH_CUDA_ALLOC_CONF (the older PYTORCH_ALLOC_CONF was a typo and
+# never applied — the embedder OOM'd at 70GB from fragmentation creep). expandable_segments
+# lets freed blocks be reused so the embedder can safely run near the GPU limit.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 mkdir -p "$WORKDIR/logs" "$WORKDIR/$STORAGE_SUBDIR" "$WORKDIR/cache" "$WORKDIR/cache/flashinfer"
 
