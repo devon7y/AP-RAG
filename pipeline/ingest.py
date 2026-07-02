@@ -60,6 +60,9 @@ Environment variables (set by job_westbury_ingest_v2.slurm):
     VLLM_METRICS         — "1"/"0" poll vLLM /metrics in the status monitor (default 1)
     STREAM_OVERLAP       — "1"/"0" start draining while still enqueuing (default 1) — P8
     RETRY_EXTRACT_FAILED — "1" to retry PDFs recorded in the extraction skip ledger
+    CHUNK_IN_EXTRACT     — "1"/"0" chunk inside the extraction subprocess and seed
+                           the chunk cache (default 1) — parallel, off-loop, and
+                           keys always match the enqueued text
     REBUILD_EMBEDDINGS   — if "1", skip LLM pipeline and rebuild vector DBs from cache (4)
     REBUILD_BATCH_SIZE   — records per upsert batch during rebuild (default 50)
     CHUNK_TARGET_TOKENS  — target chunk size in tokens (5, default 512)
@@ -161,6 +164,17 @@ VLLM_METRICS       = os.environ.get("VLLM_METRICS", "1") == "1"
 STREAM_OVERLAP       = os.environ.get("STREAM_OVERLAP", "1") == "1"
 RETRY_EXTRACT_FAILED = os.environ.get("RETRY_EXTRACT_FAILED", "0") == "1"
 
+# ── Chunk in the extraction subprocess (pass 2) ──────────────────────────────────
+# The extraction child also runs the structure-aware chunker and writes a .chunks
+# sidecar; the parent seeds the in-memory chunk cache so LightRAG's later
+# chunking_func call is a dict hit. Fixes two things at once: (a) cold-cache
+# chunking ran synchronously ON the event loop (sync chunker → serialized across
+# all pipeline workers, SIGALRM-guarded); (b) the persistent prechunk cache is
+# keyed on md5(pypdf text) while ingest extracts with PyMuPDF, so its keys MISS on
+# every two-column paper — chunks computed in the child hash the exact enqueued
+# text. Chunk failures in the child are non-fatal (live chunking still works).
+CHUNK_IN_EXTRACT = os.environ.get("CHUNK_IN_EXTRACT", "1") == "1"
+
 # ── Concurrency-optimization knobs (see docs/INGEST_CONCURRENCY_PLAN.md) ─────────
 # All wrapper-side; none patch the nested LightRAG. Defaults preserve prior behavior
 # except the text path, which now defaults to the streaming enqueue/drain model.
@@ -187,8 +201,10 @@ EMBED_ENDPOINT = os.environ.get("EMBED_ENDPOINT", "").strip()
 KV_STORAGE = os.environ.get("KV_STORAGE", "").strip()
 DOC_STATUS_STORAGE = os.environ.get("DOC_STATUS_STORAGE", "").strip()
 # Fix 2d: dedicated thread pools so blocking IO (PDF reads, doc-status polling) never
-# competes with embedding for the default executor's threads.
-IO_THREADS = int(os.environ.get("IO_THREADS", 8))
+# competes with embedding for the default executor's threads. Default matches the
+# ingest jobs' --cpus-per-task=12: each read thread mostly blocks on one
+# extraction(+chunking) subprocess, so threads ≈ cores keeps them fully parallel.
+IO_THREADS = int(os.environ.get("IO_THREADS", 12))
 _IO_EXECUTOR = ThreadPoolExecutor(max_workers=IO_THREADS, thread_name_prefix="aprag-io")
 _EMBED_EXECUTOR = ThreadPoolExecutor(
     max_workers=max(2, EMBED_FUNC_MAX_ASYNC), thread_name_prefix="aprag-embed"
@@ -226,16 +242,20 @@ REBUILD_BATCH_SIZE = int(os.environ.get("REBUILD_BATCH_SIZE", 50))
 # routing — classify each PDF as book/paper and dispatch; see document_router.py).
 _CHUNKER_TYPE = os.environ.get("CHUNKER_TYPE", "scientific").lower()
 
+# The cache dict is ALWAYS present (possibly empty): the extraction subprocess
+# seeds freshly computed chunks into it at read time (CHUNK_IN_EXTRACT), and the
+# factories hold a reference so seeded entries are visible at chunking time.
 if _CHUNKER_TYPE == "book":
     from pipeline.book_chunker import BookChunkerConfig, make_book_chunker
     CHUNKER_CONFIG = BookChunkerConfig.from_env()
     _chunk_cache_path = STORAGE_DIR / "book_chunk_cache.json"
-    _CHUNK_CACHE = None
+    _CHUNK_CACHE: dict = {}
     if _chunk_cache_path.exists():
-        _CHUNK_CACHE = json.loads(_chunk_cache_path.read_text())
+        _CHUNK_CACHE.update(json.loads(_chunk_cache_path.read_text()))
         print(f"[CACHE] Loaded {len(_CHUNK_CACHE)} pre-chunked docs from {_chunk_cache_path.name}")
     else:
-        print("[CACHE] No book chunk cache found — chunking will be computed live")
+        print("[CACHE] No book chunk cache found — chunks come from the extract "
+              "subprocess (CHUNK_IN_EXTRACT) or live chunking")
     SCIENTIFIC_CHUNKER = make_book_chunker(CHUNKER_CONFIG, chunk_cache=_CHUNK_CACHE)
 elif _CHUNKER_TYPE == "auto":
     # Per-document structure routing: classify each PDF as book/paper from its
@@ -259,8 +279,8 @@ elif _CHUNKER_TYPE == "auto":
             _CHUNK_CACHE.update(_loaded)
             print(f"[CACHE] Loaded {len(_loaded)} pre-chunked docs from {_cache_name}")
     if not _CHUNK_CACHE:
-        _CHUNK_CACHE = None
-        print("[CACHE] No chunk caches found — chunking will be computed live")
+        print("[CACHE] No chunk caches found — chunks come from the extract "
+              "subprocess (CHUNK_IN_EXTRACT) or live chunking")
     SCIENTIFIC_CHUNKER = make_auto_chunker(
         sci_config=_SCI_CONFIG,
         book_config=_BOOK_CONFIG,
@@ -277,12 +297,13 @@ else:
     from pipeline.scientific_chunker import ChunkerConfig, make_scientific_chunker
     CHUNKER_CONFIG = ChunkerConfig.from_env()
     _chunk_cache_path = STORAGE_DIR / "chunk_cache.json"
-    _CHUNK_CACHE = None
+    _CHUNK_CACHE = {}
     if _chunk_cache_path.exists():
-        _CHUNK_CACHE = json.loads(_chunk_cache_path.read_text())
+        _CHUNK_CACHE.update(json.loads(_chunk_cache_path.read_text()))
         print(f"[CACHE] Loaded {len(_CHUNK_CACHE)} pre-chunked docs from {_chunk_cache_path.name}")
     else:
-        print("[CACHE] No chunk cache found — chunking will be computed live")
+        print("[CACHE] No chunk cache found — chunks come from the extract "
+              "subprocess (CHUNK_IN_EXTRACT) or live chunking")
     SCIENTIFIC_CHUNKER = make_scientific_chunker(CHUNKER_CONFIG, chunk_cache=_CHUNK_CACHE)
 
 # ── Chunker timeout (SIGALRM) ──────────────────────────────────────────────────
@@ -481,27 +502,65 @@ async def local_embed(texts: list[str], context: str = "document") -> np.ndarray
 # per PDF, so a native crash fails only that ONE document (the wrapper returns "",
 # which both enqueue callers already treat as "skip") instead of killing the ingest.
 # Output for good PDFs is byte-identical (same code, run in the child). The timeout
-# guards against a pathological PDF hanging a worker forever.
-PDF_EXTRACT_TIMEOUT = int(os.environ.get("PDF_EXTRACT_TIMEOUT", "180"))
+# guards against a pathological PDF hanging a worker forever. With CHUNK_IN_EXTRACT
+# the child also chunks (see the pass-2 block above), so the timeout budget is
+# larger; because the child writes the text file ATOMICALLY before chunking, a
+# timeout/crash during chunking still salvages the completed text.
+PDF_EXTRACT_TIMEOUT = int(
+    os.environ.get("PDF_EXTRACT_TIMEOUT", "300" if CHUNK_IN_EXTRACT else "180")
+)
 _EXTRACT_FAILURES = 0
+_extract_stats = {"chunks_seeded": 0, "salvaged": 0}
+
+
+def _seed_chunk_cache(text: str, chunks: list) -> None:
+    """Insert child-computed chunks into the in-memory chunk cache so LightRAG's
+    later chunking_func call is a dict hit (no on-loop chunking, no SIGALRM)."""
+    content_hash = hashlib.md5(text.encode("utf-8")).hexdigest()
+    if content_hash not in _CHUNK_CACHE:
+        _CHUNK_CACHE[content_hash] = chunks
+        _extract_stats["chunks_seeded"] += 1
+
+
+def _salvage_text(out_path: Path) -> str:
+    """The child writes text atomically (tmp+rename over the parent's empty temp
+    file), so a NON-EMPTY out file is always a complete extraction — usable even
+    when the child later died (timeout/crash while chunking)."""
+    try:
+        if out_path.stat().st_size > 0:
+            return out_path.read_text(encoding="utf-8")
+    except OSError:
+        pass
+    return ""
 
 
 def _extract_pdf_text(pdf_path: Path) -> str:
     """PDF → text (page boundaries preserved as form-feeds), run in an isolated
     subprocess (see block comment above). Returns "" on ANY extraction failure —
     native crash, timeout, or handled error — which both enqueue callers already
-    treat as "skip this doc". Never raises."""
+    treat as "skip this doc". Never raises. As a side effect, seeds the chunk
+    cache from the child's .chunks sidecar when CHUNK_IN_EXTRACT is on."""
     global _EXTRACT_FAILURES
     fd, out_name = tempfile.mkstemp(suffix=".pdftxt")
     os.close(fd)
     out_path = Path(out_name)
+    chunks_path = Path(out_name + ".chunks")
+    child_env = dict(os.environ, CHUNK_IN_EXTRACT="1" if CHUNK_IN_EXTRACT else "0")
     try:
         try:
             proc = subprocess.run(
                 [sys.executable, "-m", "pipeline.pdf_extract", str(pdf_path), out_name],
                 capture_output=True, text=True, timeout=PDF_EXTRACT_TIMEOUT,
+                env=child_env,
             )
         except subprocess.TimeoutExpired:
+            salvaged = _salvage_text(out_path)
+            if salvaged:
+                _extract_stats["salvaged"] += 1
+                print(f"[extract] WARN: child TIMED OUT (>{PDF_EXTRACT_TIMEOUT}s) on "
+                      f"{pdf_path.name} after writing text — salvaged text, chunking "
+                      f"falls back to live", flush=True)
+                return salvaged
             _EXTRACT_FAILURES += 1
             print(f"[extract] ERROR: extraction TIMED OUT (>{PDF_EXTRACT_TIMEOUT}s) on "
                   f"{pdf_path.name} — skipping [extract failure #{_EXTRACT_FAILURES}]",
@@ -511,6 +570,15 @@ def _extract_pdf_text(pdf_path: Path) -> str:
         # into the ingest log so capture_output doesn't swallow that signal.
         extra = ((proc.stdout or "") + (proc.stderr or "")).strip()
         if proc.returncode != 0:
+            salvaged = _salvage_text(out_path)
+            if salvaged:
+                # Text was fully written before the child died (the death was in
+                # the chunking phase) — keep the doc, just chunk it live later.
+                _extract_stats["salvaged"] += 1
+                print(f"[extract] WARN: child died (rc={proc.returncode}) on "
+                      f"{pdf_path.name} after writing text — salvaged text, chunking "
+                      f"falls back to live", flush=True)
+                return salvaged
             _EXTRACT_FAILURES += 1
             if proc.returncode < 0:
                 why = (f"killed by signal {-proc.returncode} — native crash in "
@@ -528,9 +596,17 @@ def _extract_pdf_text(pdf_path: Path) -> str:
         if extra:
             for line in extra.splitlines():
                 print(line, flush=True)
-        return out_path.read_text(encoding="utf-8")
+        text = out_path.read_text(encoding="utf-8")
+        if text and CHUNK_IN_EXTRACT and chunks_path.exists():
+            try:
+                _seed_chunk_cache(text, json.loads(chunks_path.read_text(encoding="utf-8")))
+            except Exception as e:  # noqa: BLE001 — a bad sidecar must not fail the doc
+                print(f"[extract] WARN: unreadable chunks sidecar for {pdf_path.name} "
+                      f"({type(e).__name__}) — chunking falls back to live", flush=True)
+        return text
     finally:
         out_path.unlink(missing_ok=True)
+        chunks_path.unlink(missing_ok=True)
 
 
 # ── Endpoint Discovery & Validation (1A) ──────────────────────────────────────
@@ -1038,6 +1114,12 @@ async def status_monitor(storage_dir: Path, t_start: float):
                     f"[STATUS] Context: cache_hits={_context_stats.get('context_cache_hits', 0)} "
                     f"llm_calls={_context_stats.get('context_llm_calls', 0)} "
                     f"failures={_context_stats.get('context_failures', 0)}",
+                    flush=True,
+                )
+            if _extract_stats["chunks_seeded"] or _extract_stats["salvaged"]:
+                print(
+                    f"[STATUS] Extract: chunk_cache_seeded={_extract_stats['chunks_seeded']} "
+                    f"salvaged_texts={_extract_stats['salvaged']}",
                     flush=True,
                 )
             if _kv_throttle is not None:

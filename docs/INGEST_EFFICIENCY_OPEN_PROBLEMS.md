@@ -23,7 +23,7 @@ override any knob at submit time via `--export=ALL,VAR=value`.
 | **P3** enforce-eager cost | ⚙️ parametrized, soak is ops | vLLM jobs take `VLLM_ENFORCE_EAGER` (default 1 = current stable flags), `VLLM_KV_CACHE_DTYPE` (try `fp8` — ~2× KV capacity → fewer prefix evictions; direct P1 amplifier), and `VLLM_EXTRA_ARGS`. The A/B is now one submit flag; soak ≥4 h (crash appeared at ~2h50m) before trusting `VLLM_ENFORCE_EAGER=0`. The **vLLM pin is codified** in the setup jobs (`VLLM_PIN=0.23.1rc1.dev245+g9037498c2`) — they previously installed an *unpinned* nightly, which is how the TP=2 regression got in. |
 | **P4** embedder | ✅ infra added, opt-in | New `slurm/job_westbury_embed.slurm` serves `scripts/server.py` (Qwen3-Embedding-8B bf16) on its own H100 and registers `$WORKDIR/embed_endpoints/<jobid>.txt`; every ingest job **auto-adopts** a healthy registered endpoint into `EMBED_ENDPOINT`. Without it, behavior is unchanged (in-process, `EMBED_FUNC_MAX_ASYNC=2`, `EMBED_BATCH=64` — the validated-safe ceiling; the books scripts' stale `=16` default, which would OOM the 8B bf16 embedder, was lowered to 2). Batches are already length-sorted internally by sentence-transformers. |
 | **P5** max_tokens | ✅ | Every LLM call is capped: `LLM_MAX_TOKENS=4096` global, `CONTEXT_MAX_TOKENS=300` for blurbs. No more 39k-token runaway decodes. |
-| **P6** chunk size | ⏸ untouched | Owner decision; run the 512-vs-800 retrieval A/B before the full re-ingest. Note fewer chunks now also means fewer *cached* artifacts to reuse — do the A/B first, then ingest. |
+| **P6** chunk size | ✅ resolved (no change) | **512 is canonical** — owner decision 2026-07-02. The "pending 512-vs-800 A/B" in this doc and older notes was stale; 800 was an old configuration. `CHUNK_TARGET_TOKENS=512` stays. |
 | **P7** saturation | 📊 instrumented | Use the new `[VLLM]` lines: target `kv%` ~60–80 with `waiting≈0`; raise `MAX_PARALLEL_INSERT`/`LLM_MAX_ASYNC` until `waiting>0` or `prefix_hit%` drops (eviction). Defaults baked = the validated TUNE set (24/48/48/24). |
 | **P8** restarts | ✅ | (1) **Extraction skip ledger** (`extract_skip_ledger.jsonl`): failed/empty extractions are recorded (basename+size) and skipped on resume — a re-OCR'd replacement (different size) retries automatically; `RETRY_EXTRACT_FAILED=1` forces a retry pass. (2) **Enqueue/drain overlap** (`STREAM_OVERLAP=1`): the pipeline starts draining after the first 512-doc batch instead of idling the GPUs through the whole read phase. (3) **Rolling vLLM adoption** (`ENDPOINT_REFRESH_S=300`): endpoints registered mid-run are adopted, so a fresh vLLM job can replace an expiring one without waiting for total failure. (4) P2 makes each resume cheap (blurbs + extractions cached). (5) Ingest jobs got `--cpus-per-task=12` (was 6 — extraction subprocesses + chunking + Qdrant + JSON flushes were CPU-starved). |
 
@@ -40,10 +40,22 @@ most the last interval (those docs simply re-process — cheap under P2). SIGTER
 (walltime) triggers an immediate final flush. `KV_FLUSH_INTERVAL=0` restores
 upstream per-doc behavior. Also removed: the dead `INSERT_DONE_EVERY_N` knob.
 
+**Pass 2 (same day) found three more — P10–P12, all fixed:**
+
+| Problem | What it was | Fix |
+| --- | --- | --- |
+| **P10** stale prechunk cache + on-loop chunking | `scripts/prechunk_papers.py` keys the cache on md5 of **pypdf**-extracted text, but ingest extracts with **PyMuPDF** (`pipeline/pdf_extract.py`) — keys miss on every two-column paper, so "cached" chunking was silently live, synchronous, ON the event loop (sync chunker ⇒ serialized across all pipeline workers, SIGALRM-guarded). | `CHUNK_IN_EXTRACT=1`: the extraction subprocess also chunks (same env-driven chunker, tiktoken cl100k) and writes a `.chunks` sidecar; the parent seeds the in-memory chunk cache, so LightRAG's chunking_func is a dict hit. Chunking is now parallel (per-PDF subprocess), off-loop, and killable by subprocess timeout; keys hash the exact enqueued text. The child writes text atomically first, so a timeout/crash during chunking still **salvages** the completed text. |
+| **P11** walltime kill lost the cycle's Qdrant delta | Qdrant runs on `$SLURM_TMPDIR` and rsyncs back to scratch *after* the ingest — but at walltime SLURM SIGTERMs and then SIGKILLs after ~30 s (KillWait). The old trap only `echo`ed; python kept running; the rsync-back never got time. **Vectors written that cycle were lost while doc_status said processed** (the likely source of past "missing embeddings" repairs). Books scripts had NO trap at all. | `#SBATCH --signal=B:TERM@600` (TERM to the shell 10 min early) + the ingest now runs backgrounded and the trap kills it → the in-python SIGTERM handler flushes throttled storages → Qdrant stop + rsync-back run with minutes of budget. Applied to all westbury + books ingest jobs (tril: signal only — its Qdrant lives on Lustre). |
+| **P12** dead O(k²) tokenizer work in the chunker | `split_oversized_paragraph` re-tokenized the accumulated chunk after **every sentence append** and discarded the result (unused variable — ruff F841). | Removed. Exact same chunk output, less CPU per oversized paragraph. |
+
 **How to validate the next run** (§7 still applies): compare docs/hr vs the 75/hr
 baseline; check `[VLLM] prefix_hit%` (expect ≫ the old ~70–75% once affinity+warm-up
-are on), `[STATUS] Context: cache_hits` climbing on a resume, and `[STATUS] Flush:
-ticks` staying ~1 per 5 min while `doc_status` counts keep moving.
+are on), `[STATUS] Context: cache_hits` climbing on a resume, `[STATUS] Extract:
+chunk_cache_seeded` tracking the read count, and `[STATUS] Flush: ticks` staying
+~1 per 5 min while `doc_status` counts keep moving.
+
+**The complete change inventory (both passes) lives in
+[INGEST_EFFICIENCY_CHANGES.md](INGEST_EFFICIENCY_CHANGES.md).**
 
 ---
 
@@ -229,6 +241,10 @@ are short), removes runaway cost, and reduces crash surface. **Cheap, do this ea
 ---
 
 ### P6 — Chunk size drives LLM call count 🟡 lower (quality tradeoff)
+
+> **RESOLVED 2026-07-02 — no A/B needed.** 512 is the correct, canonical chunk
+> size (owner decision); "800" below refers to an old configuration. Kept for
+> the historical record only.
 **Problem.** Smaller chunks → more chunks → more LLM calls (contextualization + extraction).
 Current `CHUNK_TARGET_TOKENS=512`. A pending A/B (512 vs 800) was never resolved. 800-token
 chunks would cut chunk count ~35% → proportionally fewer LLM calls.

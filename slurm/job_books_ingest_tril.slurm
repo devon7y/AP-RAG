@@ -7,6 +7,11 @@
 #SBATCH --nodes=1
 #SBATCH --partition=compute
 #SBATCH --gpus-per-node=h100:1
+#SBATCH --signal=B:TERM@600
+# ^ deliver SIGTERM to this shell 10 min BEFORE walltime: the trap below stops
+#   the ingest (its in-python handler flushes storages), leaving real time for
+#   the Qdrant stop + rsync-back. Without it, SLURM's ~30s KillWait silently
+#   dropped the cycle's Qdrant delta (vectors) on every walltime kill.
 
 WORKDIR=/scratch/devon7y/westbury_rag
 VENV_DIR=$WORKDIR/venv_tril
@@ -38,6 +43,11 @@ restore_graphml() {
     fi
 }
 trap restore_graphml EXIT
+
+# ── Early SIGTERM → graceful stop with time to sync (see --signal above) ──────
+PYTHON_PID=""
+TIMED_OUT=0
+trap 'echo "[$(date)] SIGTERM — stopping ingest for graceful sync"; TIMED_OUT=1; [ -n "$PYTHON_PID" ] && kill $PYTHON_PID 2>/dev/null' SIGTERM SIGINT
 
 module load python/3.11 gcc/12.3 cuda/12.6 opencv
 
@@ -157,9 +167,16 @@ BOOK_CHUNK_TARGET_TOKENS=${BOOK_CHUNK_TARGET_TOKENS:-1000} \
 BOOK_CHUNK_MAX_TOKENS=${BOOK_CHUNK_MAX_TOKENS:-1500} \
 BOOK_CHUNK_MIN_TOKENS=${BOOK_CHUNK_MIN_TOKENS:-250} \
 BOOK_CHUNK_OVERLAP_TOKENS=${BOOK_CHUNK_OVERLAP_TOKENS:-200} \
-  PYTHONPATH="$WORKDIR" python -m pipeline.ingest
-
+  PYTHONPATH="$WORKDIR" python -m pipeline.ingest &
+PYTHON_PID=$!
+wait $PYTHON_PID
 EXIT_CODE=$?
+# A trap-interrupted wait returns >128 while the child may still be flushing —
+# wait again to reap the real exit status.
+if [ $EXIT_CODE -gt 128 ] && kill -0 $PYTHON_PID 2>/dev/null; then
+    wait $PYTHON_PID
+    EXIT_CODE=$?
+fi
 echo "[$(date)] Ingestion finished with exit code $EXIT_CODE."
 
 # ── Stop Qdrant and sync back ─────────────────────────────────────────

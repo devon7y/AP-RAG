@@ -884,7 +884,6 @@ def split_oversized_paragraph(
 
     subchunks: list[RawChunk] = []
     current_sents: list[str] = []
-    current_tokens = 0
     sent_start = 0
 
     for i, sent in enumerate(sentences):
@@ -907,7 +906,6 @@ def split_oversized_paragraph(
                     )
                 )
                 current_sents = []
-                current_tokens = 0
                 sent_start = i
 
             subchunks.extend(
@@ -938,11 +936,12 @@ def split_oversized_paragraph(
                 )
             )
             current_sents = []
-            current_tokens = 0
             sent_start = i
 
         current_sents.append(sent)
-        current_tokens = count_tokens(tokenizer, " ".join(current_sents))
+        # NOTE: no token recount here — the boundary decision above already
+        # re-tokenizes the projected join; recounting the accumulated chunk after
+        # every append was O(k²) tokenizer work whose result was never read.
 
     # Flush remainder
     if current_sents:

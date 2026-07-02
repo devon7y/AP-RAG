@@ -25,8 +25,25 @@ Standalone contract::
       exit 0                 → <out_txt_path> written with UTF-8 text (may be empty)
       exit 3                 → a *handled* Python error (bad/unreadable file)
       killed by signal (rc<0) → native crash in fitz/pypdf on this PDF
+
+    The text file is written ATOMICALLY (tmp sibling + os.replace), so a
+    non-empty <out_txt_path> is always a complete extraction — the parent can
+    salvage it even if this process is later killed (timeout mid-chunking).
+
+    CHUNK_IN_EXTRACT=1 (env): after the text is written, also run the
+    structure-aware chunker (selected by CHUNKER_TYPE / CHUNK_* env, same as the
+    ingest) and write the chunk list as JSON to <out_txt_path>.chunks. This is
+    what makes cold-cache chunking parallel, subprocess-timeout-guarded, and
+    OFF the ingest event loop: the parent seeds its in-memory chunk cache from
+    the sidecar, so LightRAG's later chunking_func call is a dict hit. It also
+    guarantees cache keys match — the old prechunk cache hashed *pypdf* text
+    while ingest extracts with PyMuPDF, so its md5 keys missed on every
+    two-column paper. Chunking failures here are non-fatal: warn and exit 0
+    (the text still stands; the ingest falls back to live chunking).
 """
 
+import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -197,6 +214,48 @@ def extract_pdf_text(pdf_path: Path) -> str:
     return text.encode("utf-8", "ignore").decode("utf-8")
 
 
+def _atomic_write_text(path: Path, data: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(data, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _build_chunker_from_env():
+    """Mirror pipeline.ingest's CHUNKER_TYPE selection (cache-less). Imported
+    lazily so plain extraction stays dependency-light."""
+    chunker_type = os.environ.get("CHUNKER_TYPE", "scientific").lower()
+    if chunker_type == "book":
+        from pipeline.book_chunker import BookChunkerConfig, make_book_chunker
+        return make_book_chunker(BookChunkerConfig.from_env())
+    if chunker_type == "auto":
+        from pipeline.book_chunker import BookChunkerConfig
+        from pipeline.document_router import RouterConfig, make_auto_chunker
+        from pipeline.scientific_chunker import ChunkerConfig
+        return make_auto_chunker(
+            sci_config=ChunkerConfig.from_env(),
+            book_config=BookChunkerConfig.from_env(),
+            router_config=RouterConfig.from_env(),
+        )
+    from pipeline.scientific_chunker import ChunkerConfig, make_scientific_chunker
+    return make_scientific_chunker(ChunkerConfig.from_env())
+
+
+def _chunk_and_write_sidecar(text: str, out_path: Path) -> None:
+    """Run the structure-aware chunker on the freshly extracted text and write
+    <out>.chunks (JSON). Same tokenizer convention as scripts/prechunk_papers.py
+    (tiktoken cl100k_base) and the same md5(text)-keyed value format the
+    chunk-cache consumers expect. Any failure is non-fatal (warn, no sidecar)."""
+    import tiktoken
+
+    tokenizer = tiktoken.get_encoding("cl100k_base")
+    chunker = _build_chunker_from_env()
+    chunks = chunker(tokenizer, text, None, False, 51, 512)
+    sidecar = out_path.with_name(out_path.name + ".chunks")
+    tmp = sidecar.with_name(sidecar.name + ".tmp")
+    tmp.write_text(json.dumps(chunks), encoding="utf-8")
+    os.replace(tmp, sidecar)
+
+
 def _main(argv: list[str]) -> int:
     """python -m pipeline.pdf_extract <pdf_path> <out_txt_path>."""
     if len(argv) != 2:
@@ -205,7 +264,14 @@ def _main(argv: list[str]) -> int:
         return 2
     pdf_path, out_path = Path(argv[0]), Path(argv[1])
     text = extract_pdf_text(pdf_path)  # may segfault natively → parent sees signal death
-    out_path.write_text(text, encoding="utf-8")
+    _atomic_write_text(out_path, text)  # complete-or-absent: parent may salvage
+    if text and os.environ.get("CHUNK_IN_EXTRACT", "0") == "1":
+        try:
+            _chunk_and_write_sidecar(text, out_path)
+        except Exception as exc:  # noqa: BLE001 — chunking is best-effort here
+            print(f"[pdf_extract] chunking failed on {pdf_path.name} "
+                  f"({type(exc).__name__}: {exc}); ingest will chunk live",
+                  file=sys.stderr, flush=True)
     return 0
 
 

@@ -7,6 +7,7 @@
 #SBATCH --nodes=1
 #SBATCH --partition=compute
 #SBATCH --gpus-per-node=h100:1
+#SBATCH --signal=B:TERM@300
 
 WORKDIR=/scratch/devon7y/westbury_rag
 VENV_DIR=$WORKDIR/venv_tril

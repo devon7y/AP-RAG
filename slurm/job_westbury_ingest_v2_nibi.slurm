@@ -8,6 +8,11 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=32G
 #SBATCH --gpus=h100:1
+#SBATCH --signal=B:TERM@600
+# ^ deliver SIGTERM to this shell 10 min BEFORE walltime: the trap below stops
+#   the ingest (its in-python handler flushes storages), leaving real time for
+#   the Qdrant stop + rsync-back. Without it, SLURM's ~30s KillWait silently
+#   dropped the cycle's Qdrant delta (vectors) on every walltime kill.
 
 WORKDIR=/scratch/devon7y/westbury_rag
 VENV_DIR=$WORKDIR/venv
@@ -116,9 +121,10 @@ if [ -n "$QDRANT_PID" ] && kill -0 $QDRANT_PID 2>/dev/null; then
     QDRANT_URL="http://localhost:6333"
 fi
 
-# ── Trap SIGTERM for auto-resubmission on walltime ──────────────────
+# ── Early SIGTERM → graceful stop with time to sync (see --signal above) ──────
+PYTHON_PID=""
 TIMED_OUT=0
-trap 'echo "[$(date)] SIGTERM received (walltime)"; TIMED_OUT=1' SIGTERM SIGINT
+trap 'echo "[$(date)] SIGTERM — stopping ingest for graceful sync"; TIMED_OUT=1; [ -n "$PYTHON_PID" ] && kill $PYTHON_PID 2>/dev/null' SIGTERM SIGINT
 
 # ── Run ingest (v2) ───────────────────────────────────────────────────
 REBUILD_EMBEDDINGS=${REBUILD_EMBEDDINGS:-0}
@@ -186,9 +192,16 @@ CHUNK_MIN_TOKENS=${CHUNK_MIN_TOKENS:-192} \
 CHUNK_OVERLAP_TOKENS=${CHUNK_OVERLAP_TOKENS:-51} \
 CHUNK_EXCLUDE_REFS=${CHUNK_EXCLUDE_REFS:-1} \
 CHUNK_EXCLUDE_ACK=${CHUNK_EXCLUDE_ACK:-1} \
-  PYTHONPATH="$WORKDIR" python -m pipeline.ingest
-
+  PYTHONPATH="$WORKDIR" python -m pipeline.ingest &
+PYTHON_PID=$!
+wait $PYTHON_PID
 EXIT_CODE=$?
+# A trap-interrupted wait returns >128 while the child may still be flushing —
+# wait again to reap the real exit status.
+if [ $EXIT_CODE -gt 128 ] && kill -0 $PYTHON_PID 2>/dev/null; then
+    wait $PYTHON_PID
+    EXIT_CODE=$?
+fi
 echo "[$(date)] Ingestion finished with exit code $EXIT_CODE."
 
 # ── Stop Qdrant and sync data back to persistent scratch ─────────────
