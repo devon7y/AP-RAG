@@ -62,6 +62,8 @@ vllm serve Qwen/Qwen3.6-35B-A3B \
   --host 0.0.0.0 \
   --port $PORT \
   --tensor-parallel-size 2 \
+  --enforce-eager \
+  --disable-custom-all-reduce \
   --max-model-len 40000 \
   --gpu-memory-utilization 0.90 \
   --dtype bfloat16 \

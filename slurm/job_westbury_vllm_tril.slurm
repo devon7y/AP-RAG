@@ -48,6 +48,8 @@ vllm serve "$MODEL_PATH" \
   --port $PORT \
   --served-model-name Qwen/Qwen3.6-35B-A3B \
   --tensor-parallel-size 2 \
+  --enforce-eager \
+  --disable-custom-all-reduce \
   --max-model-len 40000 \
   --gpu-memory-utilization 0.90 \
   --dtype bfloat16 \

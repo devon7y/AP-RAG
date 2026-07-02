@@ -28,7 +28,7 @@ export XDG_CACHE_HOME=$WORKDIR/cache
 export TRITON_CACHE_DIR=$WORKDIR/cache/triton
 export FLASHINFER_CACHE_DIR=$WORKDIR/cache/flashinfer
 export BNB_CUDA_VERSION=126
-export PYTORCH_ALLOC_CONF=expandable_segments:True
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 mkdir -p "$WORKDIR/logs" "$WORKDIR/$STORAGE_SUBDIR" "$WORKDIR/cache" "$WORKDIR/cache/flashinfer"
 
