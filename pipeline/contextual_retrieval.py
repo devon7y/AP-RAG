@@ -23,18 +23,38 @@ Behavioural parity with the old patch:
   * identical situating-context prompt,
   * the full-document text placed in the prompt can be capped (``cap_doc_content``)
     to honour ``MAX_DOC_TOKENS`` / the vLLM ``--max-model-len`` limit,
-  * concurrency bounded by a semaphore (``max_async`` ← ``CONTEXT_MAX_ASYNC``),
   * a failed contextualization call falls back to the original chunk content.
 
-The one intentional difference: LightRAG derives each chunk id from the returned
-``content``, so chunk ids are now hashed from the *contextualized* text rather than the
-raw chunk. Contextualization changes always require a fresh re-embed anyway, so this is
-a non-issue in practice.
+Efficiency layers (see docs/INGEST_EFFICIENCY_OPEN_PROBLEMS.md, P1/P2):
+  * **Global concurrency** — ``semaphore`` (shared across ALL in-flight documents)
+    makes ``CONTEXT_MAX_ASYNC`` a true global cap. The old per-document semaphore
+    allowed ``MAX_PARALLEL_INSERT × CONTEXT_MAX_ASYNC`` concurrent 20k-token prompts,
+    which oversubscribed the vLLM KV cache and evicted prefix caches.
+  * **Prefix warm-up** — the first *uncached* chunk of a document is contextualized
+    alone before the concurrent fan-out. vLLM's prefix cache only reuses KV blocks
+    already computed, so firing 30 identical-prefix requests simultaneously prefills
+    the same ~20k-token document up to CONTEXT_MAX_ASYNC times. Warming commits the
+    document prefix once; the fan-out then hits the cache.
+  * **Persistent blurb cache** — ``cache_get``/``cache_put`` hooks (content-addressed
+    on the exact prompt + a salt) make re-runs/resumes skip contextualization
+    entirely. Because chunk ids and the entity-extraction cache key both derive from
+    the *contextualized* content, a stable blurb also restores LightRAG's
+    extraction-cache hits across runs.
+  * **Endpoint affinity** — with >1 vLLM endpoint, all of a document's context calls
+    carry the same ``_endpoint_affinity`` value so the round-robin caller can pin
+    them to one endpoint and keep its prefix cache hot (instead of re-prefilling the
+    document on every endpoint).
+
+The one intentional difference from the old patch: LightRAG derives each chunk id
+from the returned ``content``, so chunk ids are hashed from the *contextualized*
+text rather than the raw chunk. Contextualization changes always require a fresh
+re-embed anyway, so this is a non-issue in practice.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import logging
 from typing import Any, Awaitable, Callable, Optional, Union
@@ -61,13 +81,36 @@ LLMFunc = Callable[..., Awaitable[Any]]
 CapDocFunc = Callable[[str], Union[str, "tuple[str, bool]"]]
 
 
+def context_cache_key(prompt: str, salt: str = "") -> str:
+    """Content-addressed cache key for one contextualization call.
+
+    The prompt embeds both the (capped) document text and the raw chunk, so the key
+    changes whenever either changes — including a MAX_DOC_TOKENS change. ``salt``
+    should identify anything else that alters the blurb distribution (LLM model,
+    temperature), so switching models never reuses stale blurbs.
+    """
+    h = hashlib.md5()
+    h.update(salt.encode("utf-8"))
+    h.update(b"\x00")
+    h.update(prompt.encode("utf-8"))
+    return h.hexdigest()
+
+
 def make_contextualizing_chunker(
     inner_chunker: ChunkingFunc,
     llm_func: LLMFunc,
     *,
     max_async: int = 8,
+    semaphore: Optional[asyncio.Semaphore] = None,
     cap_doc_content: Optional[CapDocFunc] = None,
     on_doc: Optional[Callable[[bool], None]] = None,
+    llm_kwargs: Optional[dict] = None,
+    cache_get: Optional[Callable[[str], Optional[str]]] = None,
+    cache_put: Optional[Callable[[str, str], None]] = None,
+    cache_salt: str = "",
+    use_affinity: bool = False,
+    warm_first: bool = True,
+    stats: Optional[dict] = None,
 ) -> ChunkingFunc:
     """Wrap ``inner_chunker`` so each produced chunk is prefixed with LLM-generated context.
 
@@ -75,18 +118,41 @@ def make_contextualizing_chunker(
         inner_chunker: the underlying structure-aware ``chunking_func`` (sync or async).
             It is called first and unchanged, so its SIGALRM watchdog / chunk cache / etc.
             keep working exactly as before.
-        llm_func: async LLM callable invoked as ``llm_func(prompt)`` — typically the same
-            function passed to ``LightRAG(llm_model_func=...)``.
-        max_async: max concurrent contextualization LLM calls per document.
+        llm_func: async LLM callable invoked as ``llm_func(prompt, **llm_kwargs)`` —
+            typically the same function passed to ``LightRAG(llm_model_func=...)``.
+        max_async: max concurrent contextualization LLM calls **per document** when no
+            shared ``semaphore`` is given (legacy behaviour).
+        semaphore: a shared semaphore making the cap global across all in-flight
+            documents. Prefer this: pass ``asyncio.Semaphore(CONTEXT_MAX_ASYNC)`` once.
         cap_doc_content: optional callable to shrink the document text placed in the
             prompt (mirrors ``MAX_DOC_TOKENS``). May return ``text`` or ``(text, truncated)``.
         on_doc: optional callback invoked once per document with ``was_truncated: bool``;
             use it to accumulate cap statistics.
+        llm_kwargs: extra kwargs forwarded to every context LLM call (e.g.
+            ``{"max_tokens": 300}`` so a runaway blurb can't decode for minutes).
+        cache_get / cache_put: persistent blurb cache hooks keyed by
+            ``context_cache_key(prompt, cache_salt)``. ``cache_put`` is only called for
+            successful, non-empty blurbs.
+        cache_salt: extra identity mixed into cache keys (LLM model, temperature, …).
+        use_affinity: pass ``_endpoint_affinity=<stable per-doc int>`` to ``llm_func``
+            so a multi-endpoint caller can route all of a doc's calls to one endpoint.
+        warm_first: contextualize the first uncached chunk alone before the concurrent
+            fan-out, committing the document prefix to the vLLM prefix cache once.
+        stats: optional dict accumulating ``context_cache_hits`` / ``context_llm_calls``
+            / ``context_failures`` counters (for the status monitor).
 
     Returns:
         An async ``chunking_func`` suitable for ``LightRAG(chunking_func=...)``.
     """
-    semaphore_size = max(1, int(max_async))
+    per_doc_async = max(1, int(max_async))
+    if stats is not None:
+        stats.setdefault("context_cache_hits", 0)
+        stats.setdefault("context_llm_calls", 0)
+        stats.setdefault("context_failures", 0)
+
+    def _bump(key: str) -> None:
+        if stats is not None:
+            stats[key] += 1
 
     async def contextualizing_chunker(
         tokenizer,
@@ -124,8 +190,16 @@ def make_contextualizing_chunker(
         if on_doc is not None:
             on_doc(bool(was_truncated))
 
-        # 3) Contextualize every chunk concurrently, prepending the situating blurb.
-        semaphore = asyncio.Semaphore(semaphore_size)
+        call_kwargs: dict[str, Any] = dict(llm_kwargs or {})
+        if use_affinity:
+            # One stable value per document: every chunk's call routes to the same
+            # endpoint, so the ~20k-token document prefix is prefilled (and cached)
+            # on exactly one vLLM instead of once per endpoint.
+            call_kwargs["_endpoint_affinity"] = int(
+                hashlib.md5(content[:4096].encode("utf-8")).hexdigest()[:8], 16
+            )
+
+        sem = semaphore if semaphore is not None else asyncio.Semaphore(per_doc_async)
 
         async def _contextualize_one(chunk: dict) -> dict:
             original = chunk.get("content", "")
@@ -134,18 +208,61 @@ def make_contextualizing_chunker(
             prompt = CONTEXT_PROMPT.format(
                 doc_content=doc_for_prompt, chunk_content=original
             )
-            async with semaphore:
+            if cache_get is not None:
+                key = context_cache_key(prompt, cache_salt)
+                cached = cache_get(key)
+                if cached:
+                    _bump("context_cache_hits")
+                    return {**chunk, "content": f"{cached}\n\n{original}"}
+            async with sem:
                 try:
-                    context = await llm_func(prompt)
+                    context = await llm_func(prompt, **call_kwargs)
                     context = str(context).strip()
+                    _bump("context_llm_calls")
                     if context:
+                        if cache_put is not None:
+                            cache_put(context_cache_key(prompt, cache_salt), context)
                         return {**chunk, "content": f"{context}\n\n{original}"}
                 except Exception as e:  # noqa: BLE001 — never let one chunk fail the doc
+                    _bump("context_failures")
                     logger.warning(
                         "Chunk contextualization failed (%s); using original content.", e
                     )
             return chunk
 
-        return list(await asyncio.gather(*[_contextualize_one(c) for c in chunks]))
+        # 3) Warm the prefix cache: run the FIRST chunk that will actually hit the
+        #    LLM by itself, so the shared document prefix is computed and committed
+        #    once. Only then fan out the rest concurrently — those calls now reuse
+        #    the cached prefix instead of racing N identical ~20k-token prefills.
+        out: list[Optional[dict]] = [None] * len(chunks)
+        remaining = list(range(len(chunks)))
+        if warm_first:
+            for i in list(remaining):
+                chunk = chunks[i]
+                original = chunk.get("content", "")
+                if not original or not original.strip():
+                    out[i] = chunk
+                    remaining.remove(i)
+                    continue
+                if cache_get is not None:
+                    key = context_cache_key(
+                        CONTEXT_PROMPT.format(
+                            doc_content=doc_for_prompt, chunk_content=original
+                        ),
+                        cache_salt,
+                    )
+                    if cache_get(key):
+                        continue  # cached chunks don't warm anything — skip ahead
+                out[i] = await _contextualize_one(chunk)
+                remaining.remove(i)
+                break
+
+        if remaining:
+            rest = await asyncio.gather(
+                *[_contextualize_one(chunks[i]) for i in remaining]
+            )
+            for i, done in zip(remaining, rest):
+                out[i] = done
+        return [c for c in out if c is not None]
 
     return contextualizing_chunker

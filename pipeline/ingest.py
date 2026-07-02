@@ -10,10 +10,19 @@ Changes from v1 (ingest_cml_octen.py):
       every 30s from kv_store_doc_status.json.
   2A. Qdrant support: if QDRANT_URL is set, uses QdrantVectorDBStorage
       instead of NanoVectorDB. Eliminates 10+ GB JSON files.
-  3A. Batched flush: INSERT_DONE_EVERY_N controls how often _insert_done()
-      is called (default: every doc). Higher values reduce GPU idle time.
+  3A. Throttled storage flush: KV_FLUSH_INTERVAL batches LightRAG's per-doc
+      full-file JSON/GraphML rewrites into ordered interval ticks
+      (pipeline/kv_flush_throttle.py). Replaces the dead INSERT_DONE_EVERY_N.
   3B. LLM retry with failover: 3 retries per call, exponential backoff,
-      endpoint removal + re-discovery on persistent failure.
+      endpoint removal + re-discovery on persistent failure; new endpoints
+      are also adopted periodically (ENDPOINT_REFRESH_S) so vLLM jobs that
+      start mid-run get used.
+  3C. Efficiency layers (docs/INGEST_EFFICIENCY_OPEN_PROBLEMS.md):
+      deterministic sampling + max_tokens caps (P2/P5), persistent
+      contextualization cache + global CONTEXT_MAX_ASYNC + prefix warm-up +
+      per-doc endpoint affinity (P1/P2), vLLM /metrics polling in the status
+      monitor (P1/P7), extraction-failure skip ledger + enqueue/drain
+      overlap (P8).
   4.  Rebuild embeddings mode: REBUILD_EMBEDDINGS=1 rebuilds vector DBs
       from cached intermediates (KV stores + graph) without any LLM calls.
       Use when switching embedding models or vector DB backends.
@@ -37,7 +46,20 @@ Environment variables (set by job_westbury_ingest_v2.slurm):
     EMBED_FUNC_MAX_ASYNC — max concurrent embedding calls (default 1)
     MAX_PARALLEL_INSERT  — LightRAG pipeline concurrency (default 2)
     QDRANT_URL           — if set, use QdrantVectorDBStorage instead of NanoVectorDB (2A)
-    INSERT_DONE_EVERY_N  — flush storage every N docs instead of every 1 (3A, default 1)
+    KV_FLUSH_INTERVAL    — seconds between full-file storage flushes (3A, default 300;
+                           0 = upstream per-doc flushing). Hard-kill loss window: docs
+                           processed in the last interval re-process on resume.
+    LLM_MAX_TOKENS       — max_tokens cap for every LLM call (default 4096) — P5
+    LLM_TEMPERATURE      — sampling temperature (default 0.0 = deterministic) — P2
+    LLM_SEED             — sampling seed (default 42; set -1 to omit) — P2
+    CONTEXT_MAX_TOKENS   — max_tokens for contextualization blurbs (default 300)
+    CONTEXT_CACHE        — "1"/"0" persistent blurb cache in STORAGE_DIR (default 1) — P2
+    CONTEXT_WARM_FIRST   — "1"/"0" warm the doc prefix before the fan-out (default 1) — P1
+    CONTEXT_AFFINITY     — "1"/"0" pin a doc's context calls to one endpoint (default 1) — P1
+    ENDPOINT_REFRESH_S   — seconds between endpoint re-discovery scans (default 300)
+    VLLM_METRICS         — "1"/"0" poll vLLM /metrics in the status monitor (default 1)
+    STREAM_OVERLAP       — "1"/"0" start draining while still enqueuing (default 1) — P8
+    RETRY_EXTRACT_FAILED — "1" to retry PDFs recorded in the extraction skip ledger
     REBUILD_EMBEDDINGS   — if "1", skip LLM pipeline and rebuild vector DBs from cache (4)
     REBUILD_BATCH_SIZE   — records per upsert batch during rebuild (default 50)
     CHUNK_TARGET_TOKENS  — target chunk size in tokens (5, default 512)
@@ -63,13 +85,13 @@ import hashlib
 import itertools
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -112,6 +134,32 @@ CONTEXT_MAX_ASYNC = int(os.environ.get("CONTEXT_MAX_ASYNC", 8))
 CONTEXTUALIZE_CHUNKS = os.environ.get("CONTEXTUALIZE_CHUNKS", "1") == "1"
 EMBED_FUNC_MAX_ASYNC = int(os.environ.get("EMBED_FUNC_MAX_ASYNC", 4))
 MAX_PARALLEL_INSERT  = int(os.environ.get("MAX_PARALLEL_INSERT", 2))
+
+# ── LLM sampling / determinism (P2 + P5 in INGEST_EFFICIENCY_OPEN_PROBLEMS.md) ──
+# max_tokens: without a cap vLLM defaults to (max-model-len − prompt) ≈ 40k, so one
+# runaway generation can decode for minutes (the TP=2 crash dump showed
+# max_tokens=39983). Real outputs here are short. temperature=0 (+ seed) makes
+# blurbs/extractions deterministic, which is what lets BOTH the contextualization
+# cache and LightRAG's content-addressed extraction cache hit across restarts —
+# with sampling on, every rerun produces different blurbs → different chunk ids →
+# zero extraction-cache hits (measured: a 100k+-record cache gave ~0 hits).
+LLM_MAX_TOKENS     = int(os.environ.get("LLM_MAX_TOKENS", 4096))
+LLM_TEMPERATURE    = float(os.environ.get("LLM_TEMPERATURE", 0.0))
+LLM_SEED           = int(os.environ.get("LLM_SEED", 42))  # -1 = don't send a seed
+CONTEXT_MAX_TOKENS = int(os.environ.get("CONTEXT_MAX_TOKENS", 300))
+
+# ── Contextualization efficiency (P1/P2) ─────────────────────────────────────────
+CONTEXT_CACHE      = os.environ.get("CONTEXT_CACHE", "1") == "1"
+CONTEXT_WARM_FIRST = os.environ.get("CONTEXT_WARM_FIRST", "1") == "1"
+CONTEXT_AFFINITY   = os.environ.get("CONTEXT_AFFINITY", "1") == "1"
+
+# ── Endpoint adoption + observability ────────────────────────────────────────────
+ENDPOINT_REFRESH_S = int(os.environ.get("ENDPOINT_REFRESH_S", 300))
+VLLM_METRICS       = os.environ.get("VLLM_METRICS", "1") == "1"
+
+# ── Streaming enqueue/drain overlap + extraction skip ledger (P8) ────────────────
+STREAM_OVERLAP       = os.environ.get("STREAM_OVERLAP", "1") == "1"
+RETRY_EXTRACT_FAILED = os.environ.get("RETRY_EXTRACT_FAILED", "0") == "1"
 
 # ── Concurrency-optimization knobs (see docs/INGEST_CONCURRENCY_PLAN.md) ─────────
 # All wrapper-side; none patch the nested LightRAG. Defaults preserve prior behavior
@@ -162,8 +210,12 @@ VLM_MAX_ASYNC   = int(os.environ.get("VLM_MAX_ASYNC", LLM_MAX_ASYNC))
 QDRANT_URL = os.environ.get("QDRANT_URL", "")
 USE_QDRANT = bool(QDRANT_URL)
 
-# 3A: Batched flush — flush storage every N docs instead of every 1
-INSERT_DONE_EVERY_N = int(os.environ.get("INSERT_DONE_EVERY_N", 1))
+# 3A: Throttled storage flush. LightRAG 1.5.3 rewrites EVERY JSON/GraphML store
+# after EVERY document (the old INSERT_DONE_EVERY_N knob was dead code on 1.5.3 —
+# flush cadence is internal). pipeline/kv_flush_throttle.py wraps the constructed
+# storages instead: one ordered flush per interval, doc_status last. 0 disables.
+KV_FLUSH_INTERVAL = int(os.environ.get("KV_FLUSH_INTERVAL", 300))
+_kv_throttle = None  # set in main() once the LightRAG storages exist
 
 # 4: Rebuild embeddings mode — skip LLM pipeline, recompute vectors from cache
 REBUILD_EMBEDDINGS = os.environ.get("REBUILD_EMBEDDINGS", "0") == "1"
@@ -183,7 +235,7 @@ if _CHUNKER_TYPE == "book":
         _CHUNK_CACHE = json.loads(_chunk_cache_path.read_text())
         print(f"[CACHE] Loaded {len(_CHUNK_CACHE)} pre-chunked docs from {_chunk_cache_path.name}")
     else:
-        print(f"[CACHE] No book chunk cache found — chunking will be computed live")
+        print("[CACHE] No book chunk cache found — chunking will be computed live")
     SCIENTIFIC_CHUNKER = make_book_chunker(CHUNKER_CONFIG, chunk_cache=_CHUNK_CACHE)
 elif _CHUNKER_TYPE == "auto":
     # Per-document structure routing: classify each PDF as book/paper from its
@@ -230,7 +282,7 @@ else:
         _CHUNK_CACHE = json.loads(_chunk_cache_path.read_text())
         print(f"[CACHE] Loaded {len(_CHUNK_CACHE)} pre-chunked docs from {_chunk_cache_path.name}")
     else:
-        print(f"[CACHE] No chunk cache found — chunking will be computed live")
+        print("[CACHE] No chunk cache found — chunking will be computed live")
     SCIENTIFIC_CHUNKER = make_scientific_chunker(CHUNKER_CONFIG, chunk_cache=_CHUNK_CACHE)
 
 # ── Chunker timeout (SIGALRM) ──────────────────────────────────────────────────
@@ -540,17 +592,22 @@ def _validate_endpoint_file(filepath: Path) -> str | None:
     return endpoint
 
 
+def _scan_endpoints_once() -> list[str]:
+    """One synchronous validation pass over the endpoints dir (no waiting).
+    Deletes stale endpoint files as a side effect (via _validate_endpoint_file)."""
+    endpoints = []
+    for f in sorted(ENDPOINTS_DIR.glob("*.txt")):
+        ep = _validate_endpoint_file(f)
+        if ep:
+            endpoints.append(ep)
+    return endpoints
+
+
 def discover_endpoints(timeout_s: int = 10800) -> list[str]:
     """Discover and validate vLLM endpoints. Deletes stale endpoint files."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        files = sorted(ENDPOINTS_DIR.glob("*.txt"))
-        endpoints = []
-        for f in files:
-            ep = _validate_endpoint_file(f)
-            if ep:
-                endpoints.append(ep)
-
+        endpoints = _scan_endpoints_once()
         if len(endpoints) >= N_VLLM:
             print(f"Discovered {len(endpoints)} validated vLLM endpoint(s):")
             for ep in endpoints:
@@ -560,17 +617,34 @@ def discover_endpoints(timeout_s: int = 10800) -> list[str]:
         time.sleep(15)
 
     # Timeout — try with whatever we have
-    files = sorted(ENDPOINTS_DIR.glob("*.txt"))
-    endpoints = []
-    for f in files:
-        ep = _validate_endpoint_file(f)
-        if ep:
-            endpoints.append(ep)
+    endpoints = _scan_endpoints_once()
     if not endpoints:
         print("ERROR: No valid vLLM endpoints discovered. Exiting.")
         sys.exit(1)
     print(f"WARNING: Timed out. Proceeding with {len(endpoints)} validated endpoint(s).")
     return endpoints
+
+
+async def endpoint_refresh_loop():
+    """Adopt NEW vLLM endpoints registered after startup (3B).
+
+    Eviction already removes dead endpoints, but without this loop an endpoint that
+    comes up mid-run (e.g. a fresh vLLM job replacing one nearing its walltime) was
+    only discovered once ALL live endpoints had died. The blocking squeue + health
+    scan runs in the IO executor so it never stalls the event loop.
+    """
+    loop = asyncio.get_event_loop()
+    while True:
+        await asyncio.sleep(ENDPOINT_REFRESH_S)
+        try:
+            found = await loop.run_in_executor(_IO_EXECUTOR, _scan_endpoints_once)
+            async with _endpoint_lock:
+                new = [ep for ep in found if ep not in _live_endpoints]
+                _live_endpoints.extend(new)
+            if new:
+                print(f"[ENDPOINTS] Adopted {len(new)} new endpoint(s): {', '.join(new)}", flush=True)
+        except Exception as e:  # noqa: BLE001 — a failed refresh must never kill the run
+            print(f"[ENDPOINTS] refresh scan failed: {type(e).__name__}: {e}", flush=True)
 
 
 # ── LLM with Retry & Failover (3B) ────────────────────────────────────────────
@@ -630,6 +704,22 @@ def build_round_robin_llm(endpoints: list[str]):
         if history_messages is None:
             history_messages = []
 
+        # P1: per-document endpoint affinity. The contextualization wrapper passes a
+        # stable per-doc integer so ALL of a doc's ~20k-token-prefix calls land on the
+        # SAME vLLM — its prefix cache is prefilled once instead of once per endpoint.
+        # Everything else (extraction, merge summaries — short shared prefixes) keeps
+        # round-robin. Never forwarded to the OpenAI client.
+        affinity = kwargs.pop("_endpoint_affinity", None)
+
+        # P5 + P2: cap decode length (vLLM otherwise allows ~max-model-len − prompt,
+        # so one runaway can decode 39k+ tokens) and make sampling deterministic so
+        # the contextualization + extraction caches hit across restarts. setdefault:
+        # explicit per-call kwargs (e.g. CONTEXT_MAX_TOKENS) always win.
+        kwargs.setdefault("max_tokens", LLM_MAX_TOKENS)
+        kwargs.setdefault("temperature", LLM_TEMPERATURE)
+        if LLM_SEED >= 0:
+            kwargs.setdefault("seed", LLM_SEED)
+
         # Fix 2c: the per-call debug prints are hundreds of flush=True writes/sec at
         # high LLM_MAX_ASYNC and throttle the event loop — gate them behind LLM_DEBUG.
         prompt_len = len(prompt)
@@ -645,7 +735,10 @@ def build_round_robin_llm(endpoints: list[str]):
                     print("[FAILOVER] All endpoints exhausted, re-discovering…", flush=True)
                     new_eps = discover_endpoints(timeout_s=300)
                     _live_endpoints.extend(new_eps)
-                idx = next(cycle) % len(_live_endpoints)
+                if affinity is not None:
+                    idx = affinity % len(_live_endpoints)
+                else:
+                    idx = next(cycle) % len(_live_endpoints)
                 endpoint = _live_endpoints[idx]
 
             try:
@@ -717,15 +810,173 @@ def cap_context_document(text: str) -> tuple[str, bool]:
     return truncate_to_tokens(text, MAX_DOC_TOKENS)
 
 
+# ── Contextualization blurb cache (P2) ────────────────────────────────────────
+# Persistent, content-addressed (exact prompt + model/temperature salt). JSONL
+# append-only ON PURPOSE: a rewritten JSON file here would recreate the exact
+# O(N²) flush disease the KV throttle removes elsewhere. Lives in STORAGE_DIR so
+# "fresh" mode (which preserves the LLM response cache) preserves blurbs too —
+# stable blurbs are ALSO what lets LightRAG's content-addressed extraction cache
+# hit across runs (chunk ids derive from the contextualized text).
+
+_context_cache: dict[str, str] = {}
+_context_cache_fh = None
+_context_stats: dict[str, int] = {}
+
+
+def _init_context_cache() -> None:
+    global _context_cache_fh
+    path = STORAGE_DIR / "context_cache.jsonl"
+    n_bad = 0
+    if path.exists():
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                    _context_cache[rec["k"]] = rec["v"]
+                except Exception:
+                    n_bad += 1  # torn tail line from a hard kill — safe to drop
+    _context_cache_fh = path.open("a", encoding="utf-8")
+    msg = f"[CTX_CACHE] Loaded {len(_context_cache)} cached context blurb(s)"
+    if n_bad:
+        msg += f" ({n_bad} corrupt line(s) skipped)"
+    print(msg, flush=True)
+
+
+def _context_cache_get(key: str) -> str | None:
+    return _context_cache.get(key)
+
+
+def _context_cache_put(key: str, value: str) -> None:
+    if key in _context_cache:
+        return
+    _context_cache[key] = value
+    if _context_cache_fh is not None:
+        _context_cache_fh.write(json.dumps({"k": key, "v": value}) + "\n")
+        _context_cache_fh.flush()
+
+
+# ── Extraction-failure skip ledger (P8) ───────────────────────────────────────
+# PDFs whose text extraction failed or came back empty are not recorded in
+# doc_status (they never enqueue), so every restart re-paid a subprocess
+# extraction per bad PDF. Record basename+size; skip on resume while the file is
+# unchanged (a re-OCR'd replacement has a different size, so it retries
+# automatically). RETRY_EXTRACT_FAILED=1 ignores the ledger for one run.
+
+_extract_ledger: dict[str, int] = {}  # basename -> file size when it failed
+_extract_ledger_fh = None
+
+
+def _init_extract_ledger() -> None:
+    global _extract_ledger_fh
+    path = STORAGE_DIR / "extract_skip_ledger.jsonl"
+    if path.exists():
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                    _extract_ledger[rec["f"]] = int(rec.get("size", -1))
+                except Exception:
+                    pass
+    _extract_ledger_fh = path.open("a", encoding="utf-8")
+    if _extract_ledger:
+        print(f"[EXTRACT_LEDGER] {len(_extract_ledger)} known-bad PDF(s) will be "
+              f"skipped (RETRY_EXTRACT_FAILED=1 to retry)", flush=True)
+
+
+def _extract_ledger_skip(pdf: Path) -> bool:
+    if RETRY_EXTRACT_FAILED:
+        return False
+    size = _extract_ledger.get(pdf.name)
+    if size is None:
+        return False
+    try:
+        return pdf.stat().st_size == size
+    except OSError:
+        return False
+
+
+def _record_extract_failure(pdf: Path) -> None:
+    try:
+        size = pdf.stat().st_size
+    except OSError:
+        size = -1
+    if _extract_ledger.get(pdf.name) == size:
+        return
+    _extract_ledger[pdf.name] = size
+    if _extract_ledger_fh is not None:
+        _extract_ledger_fh.write(json.dumps({"f": pdf.name, "size": size}) + "\n")
+        _extract_ledger_fh.flush()
+
+
+# ── vLLM /metrics polling (P1 measurement + P7 saturation) ────────────────────
+# One [VLLM] line per endpoint per status tick: queue depth, KV-cache usage and
+# the prefix-cache hit rate (delta since the previous poll). This is the
+# instrument that tells you whether CONTEXT_* tuning is working (target: high
+# prefix_hit while kv% stays under ~80 with waiting≈0). Metric names vary a bit
+# across vLLM versions, hence the alternates in the patterns.
+
+_VLLM_METRIC_PATTERNS = {
+    "running": re.compile(
+        r"^vllm:num_requests_running(?:\{[^}]*\})?\s+([0-9.eE+-]+)", re.M),
+    "waiting": re.compile(
+        r"^vllm:num_requests_waiting(?:\{[^}]*\})?\s+([0-9.eE+-]+)", re.M),
+    "kv_usage": re.compile(
+        r"^vllm:(?:gpu_cache_usage_perc|kv_cache_usage_perc)(?:\{[^}]*\})?\s+([0-9.eE+-]+)", re.M),
+    "prefix_hits": re.compile(
+        r"^vllm:(?:gpu_)?prefix_cache_hits(?:_total)?(?:\{[^}]*\})?\s+([0-9.eE+-]+)", re.M),
+    "prefix_queries": re.compile(
+        r"^vllm:(?:gpu_)?prefix_cache_queries(?:_total)?(?:\{[^}]*\})?\s+([0-9.eE+-]+)", re.M),
+}
+
+
+async def _poll_vllm_metrics(prev: dict) -> None:
+    async with _endpoint_lock:
+        eps = list(_live_endpoints)
+    client = _get_http_client()
+    for ep in eps:
+        url = ep.rstrip("/").removesuffix("/v1") + "/metrics"
+        try:
+            resp = await client.get(url)
+            body = resp.text
+        except Exception:
+            continue  # endpoint mid-restart — eviction/refresh handles it
+        vals = {}
+        for name, pat in _VLLM_METRIC_PATTERNS.items():
+            m = pat.search(body)
+            if m:
+                vals[name] = float(m.group(1))
+        rate_s = ""
+        hits, queries = vals.get("prefix_hits"), vals.get("prefix_queries")
+        if hits is not None and queries is not None:
+            ph, pq = prev.get(ep, (0.0, 0.0))
+            dh, dq = hits - ph, queries - pq
+            prev[ep] = (hits, queries)
+            if dq > 0:
+                rate_s = (f" prefix_hit={100 * dh / dq:.0f}%"
+                          f" (cum {100 * hits / max(queries, 1):.0f}%)")
+        parts = [f"[VLLM] {ep}"]
+        if "running" in vals:
+            parts.append(f"running={vals['running']:.0f}")
+        if "waiting" in vals:
+            parts.append(f"waiting={vals['waiting']:.0f}")
+        if "kv_usage" in vals:
+            parts.append(f"kv={100 * vals['kv_usage']:.0f}%")
+        print(" ".join(parts) + rate_s, flush=True)
+
+
 # ── Live Status Monitor (1C) ──────────────────────────────────────────────────
 
 async def status_monitor(storage_dir: Path, t_start: float):
-    """Background task that prints real extraction status and bottleneck stats every 30s."""
+    """Background task that prints real extraction status and bottleneck stats every 30s.
+
+    Note: with KV_FLUSH_INTERVAL > 0 the doc-status counts read from disk lag
+    in-memory state by up to one flush interval — expected, not a stall."""
     status_path = storage_dir / "kv_store_doc_status.json"
     last_processed = 0
     last_llm_calls = 0
     last_embed_calls = 0
     last_check_time = t_start
+    vllm_prev: dict = {}
     INTERVAL = 30
     while True:
         await asyncio.sleep(INTERVAL)
@@ -782,6 +1033,22 @@ async def status_monitor(storage_dir: Path, t_start: float):
                 f"batch={avg_batch:.0f} max_concurrent={_embed_stats['max_concurrent']}",
                 flush=True,
             )
+            if _context_stats:
+                print(
+                    f"[STATUS] Context: cache_hits={_context_stats.get('context_cache_hits', 0)} "
+                    f"llm_calls={_context_stats.get('context_llm_calls', 0)} "
+                    f"failures={_context_stats.get('context_failures', 0)}",
+                    flush=True,
+                )
+            if _kv_throttle is not None:
+                print(
+                    f"[STATUS] Flush: ticks={_kv_throttle.stats['flush_ticks']} "
+                    f"skipped={_kv_throttle.stats['flush_skips']} "
+                    f"(interval={KV_FLUSH_INTERVAL}s)",
+                    flush=True,
+                )
+            if VLLM_METRICS:
+                await _poll_vllm_metrics(vllm_prev)
 
             last_processed = processed
             last_llm_calls = llm_calls
@@ -1104,13 +1371,17 @@ async def ingest_streaming_text(rag, papers, known_doc_ids, enqueued_files=None)
         """Return (doc_id, text, path) for a new doc, or None to skip."""
         if pdf.name in _enqueued_names:
             return None  # resume-skip: already enqueued in a prior run — don't re-read the PDF
+        if _extract_ledger_skip(pdf):
+            return None  # P8: extraction already failed on this exact file — skip the subprocess
         async with read_sem:
             try:
                 text = await loop.run_in_executor(_IO_EXECUTOR, _extract_pdf_text, pdf)
             except Exception as e:  # noqa: BLE001 — one bad PDF must not abort the batch
                 print(f"  {pdf.name[:55]} [read failed]  {e}", flush=True)
+                _record_extract_failure(pdf)
                 return None
         if not text:
+            _record_extract_failure(pdf)
             return None
         doc_id = "doc-" + hashlib.md5(text.encode("utf-8")).hexdigest()
         if doc_id in known_doc_ids:
@@ -1119,10 +1390,12 @@ async def ingest_streaming_text(rag, papers, known_doc_ids, enqueued_files=None)
 
     print(
         f"Reading + enqueuing {len(papers)} PDFs "
-        f"(read concurrency={PARALLEL_DOCS}, enqueue batch={ENQUEUE_BATCH})…",
+        f"(read concurrency={PARALLEL_DOCS}, enqueue batch={ENQUEUE_BATCH}, "
+        f"overlap_drain={STREAM_OVERLAP})…",
         flush=True,
     )
     seen_ids = set()  # doc_ids enqueued this run — dedup text-identical PDFs
+    drain_task: asyncio.Task | None = None
     for bstart in range(0, len(papers), ENQUEUE_BATCH):
         batch = papers[bstart:bstart + ENQUEUE_BATCH]
         reads = await asyncio.gather(*[_read_one(p) for p in batch])
@@ -1154,6 +1427,14 @@ async def ingest_streaming_text(rag, papers, known_doc_ids, enqueued_files=None)
                     except Exception as e2:  # noqa: BLE001
                         print(f"    {Path(p).name[:50]} [enqueue failed] {e2}", flush=True)
                         skipped += 1
+        # P8: start draining as soon as the first batch is enqueued instead of
+        # letting the GPUs idle through the whole read/enqueue phase. LightRAG's
+        # busy/request_pending model is built for this: our task becomes the
+        # pipeline driver and refetches the queue whenever later enqueues land.
+        if STREAM_OVERLAP and drain_task is None and enqueued > 0:
+            print("[OVERLAP] First batch enqueued — starting pipeline drain "
+                  "concurrently with the remaining reads…", flush=True)
+            drain_task = asyncio.create_task(rag.apipeline_process_enqueue_documents())
         print(
             f"  read {min(bstart + ENQUEUE_BATCH, len(papers))}/{len(papers)} "
             f"(enqueued={enqueued}, skipped={skipped})",
@@ -1165,8 +1446,12 @@ async def ingest_streaming_text(rag, papers, known_doc_ids, enqueued_files=None)
         f"(MAX_PARALLEL_INSERT={MAX_PARALLEL_INSERT})…",
         flush=True,
     )
-    # Single drain: this call becomes the pipeline driver and processes the whole
-    # queue at MAX_PARALLEL_INSERT concurrency, returning when fully drained.
+    if drain_task is not None:
+        await drain_task
+    # Final drain. Covers (a) no-new-docs runs, where stranded pending docs from a
+    # prior cycle still need processing, and (b) the overlap race where the last
+    # enqueue lands after the overlapped driver's final queue refetch. A no-op
+    # returning immediately when the queue is empty.
     await rag.apipeline_process_enqueue_documents()
     print("Pipeline drained.", flush=True)
     return enqueued, skipped
@@ -1264,7 +1549,11 @@ async def main():
     else:
         print("MAX_DOC_TOKENS (context cap): disabled (contextualization off)")
     print(f"QDRANT_URL    : {QDRANT_URL or '(not set — using NanoVectorDB)'}")
-    print(f"INSERT_DONE_N : {INSERT_DONE_EVERY_N}")
+    print(f"KV_FLUSH      : every {KV_FLUSH_INTERVAL}s (0 = per-doc upstream flushing)")
+    print(f"LLM sampling  : temperature={LLM_TEMPERATURE} seed={LLM_SEED if LLM_SEED >= 0 else '(none)'} "
+          f"max_tokens={LLM_MAX_TOKENS} (context calls: {CONTEXT_MAX_TOKENS})")
+    print(f"Context opts  : cache={CONTEXT_CACHE} warm_first={CONTEXT_WARM_FIRST} "
+          f"affinity={CONTEXT_AFFINITY}")
     print(f"Chunker       : {_CHUNKER_TYPE} (target={CHUNKER_CONFIG.target_tokens}, "
           f"max={CHUNKER_CONFIG.max_tokens}, min={CHUNKER_CONFIG.min_tokens}, "
           f"overlap={CHUNKER_CONFIG.overlap_tokens})")
@@ -1273,7 +1562,7 @@ async def main():
           f"(batch_num={EMBEDDING_BATCH_NUM}, func_max_async={EMBED_FUNC_MAX_ASYNC})")
     if KV_STORAGE or DOC_STATUS_STORAGE:
         print(f"KV_STORAGE    : {KV_STORAGE or '(default)'} | DOC_STATUS_STORAGE: {DOC_STATUS_STORAGE or '(default)'}")
-    print(f"[v2] Endpoint validation, resume support, status monitor, LLM failover\n")
+    print("[v2] Endpoint validation, resume support, status monitor, LLM failover\n")
 
     # Pre-load embedding model now (takes ~1 min) while waiting for vLLM —
     # skipped when embedding is served remotely on its own GPU (Fix 3).
@@ -1302,12 +1591,27 @@ async def main():
 
     if CONTEXTUALIZE_CHUNKS:
         from pipeline.contextual_retrieval import make_contextualizing_chunker
+        if CONTEXT_CACHE:
+            _init_context_cache()
         active_chunker = make_contextualizing_chunker(
             SCIENTIFIC_CHUNKER,
             llm_func,
             max_async=CONTEXT_MAX_ASYNC,
+            # Global semaphore: CONTEXT_MAX_ASYNC is a TRUE global cap. The old
+            # per-document semaphore allowed MAX_PARALLEL_INSERT × CONTEXT_MAX_ASYNC
+            # concurrent ~20k-token prompts, thrashing the vLLM prefix cache.
+            semaphore=asyncio.Semaphore(max(1, CONTEXT_MAX_ASYNC)),
             cap_doc_content=(cap_context_document if MAX_DOC_TOKENS > 0 else None),
             on_doc=_record_context_cap,
+            llm_kwargs={"max_tokens": CONTEXT_MAX_TOKENS},
+            cache_get=(_context_cache_get if CONTEXT_CACHE else None),
+            cache_put=(_context_cache_put if CONTEXT_CACHE else None),
+            # Salt: switching the ingest LLM or its sampling must never reuse
+            # stale blurbs (chunk ids + extraction cache derive from them).
+            cache_salt=f"{LLM_MODEL}|t{LLM_TEMPERATURE}|s{LLM_SEED}",
+            use_affinity=CONTEXT_AFFINITY,
+            warm_first=CONTEXT_WARM_FIRST,
+            stats=_context_stats,
         )
     else:
         active_chunker = SCIENTIFIC_CHUNKER
@@ -1401,6 +1705,45 @@ async def main():
 
     await rag.initialize_storages()
 
+    # 3A: throttle the per-document full-file JSON/GraphML rewrites (O(N²) disk I/O
+    # + multi-second event-loop stalls late in a big run). Ordered ticks keep
+    # doc_status on disk never newer than the data stores (see kv_flush_throttle).
+    global _kv_throttle
+    if KV_FLUSH_INTERVAL > 0:
+        from pipeline.kv_flush_throttle import KVFlushThrottle
+        _kv_throttle = KVFlushThrottle.install(rag, interval_s=KV_FLUSH_INTERVAL)
+        if _kv_throttle is not None:
+            print(f"[3A] Flush throttle on ({KV_FLUSH_INTERVAL}s): "
+                  f"{', '.join(_kv_throttle.wrapped_names)}")
+
+    async def _flush_throttled_storages():
+        if _kv_throttle is not None:
+            await _kv_throttle.flush_all(final=True)
+        if _context_cache_fh is not None:
+            _context_cache_fh.flush()
+
+    # Walltime/scancel sends SIGTERM: flush the throttled storages so at most the
+    # docs processed since the last tick re-run next cycle, then exit hard (the
+    # SLURM script's own trap handles Qdrant sync). Without this, python's default
+    # SIGTERM handling would drop everything since the last tick anyway — this
+    # just makes the loss window ~zero on clean preemption.
+    def _on_sigterm():
+        print("[SIGTERM] Flushing throttled storages before exit…", flush=True)
+
+        async def _flush_and_exit():
+            try:
+                await _flush_throttled_storages()
+                print("[SIGTERM] Flush complete — exiting 143.", flush=True)
+            finally:
+                os._exit(143)
+
+        asyncio.get_event_loop().create_task(_flush_and_exit())
+
+    try:
+        asyncio.get_event_loop().add_signal_handler(signal.SIGTERM, _on_sigterm)
+    except (NotImplementedError, RuntimeError):
+        pass  # non-Unix or nested loop — throttle still flushes on normal exit
+
     print("Testing LLM connections…")
     for ep in endpoints:
         try:
@@ -1419,6 +1762,12 @@ async def main():
         await rag.finalize_storages()
         sys.exit(1)
 
+    # P8: skip PDFs whose extraction already failed on an unchanged file.
+    _init_extract_ledger()
+
+    # 3B: adopt vLLM endpoints that register after startup (rolling vLLM jobs).
+    refresh_task = asyncio.create_task(endpoint_refresh_loop())
+
     # ── (VLM) Native multimodal path: parser extracts figures/tables/equations, the
     #     `vlm` role captions them, then LightRAG chunks/extracts/embeds. LightRAG
     #     handles resume/dedup internally, so we skip the text-path doc-id precompute.
@@ -1430,11 +1779,13 @@ async def main():
         try:
             await ingest_native_multimodal(rag, papers)
         finally:
-            monitor_task.cancel()
-            try:
-                await monitor_task
-            except asyncio.CancelledError:
-                pass
+            for _t in (monitor_task, refresh_task):
+                _t.cancel()
+                try:
+                    await _t
+                except asyncio.CancelledError:
+                    pass
+            await _flush_throttled_storages()
             await rag.finalize_storages()
 
         elapsed = time.time() - t_start
@@ -1521,11 +1872,16 @@ async def main():
             t_sem_acquired = time.time()
             sem_wait_s = t_sem_acquired - t_queued
             try:
+                if _extract_ledger_skip(pdf_path):
+                    async with counter_lock:
+                        skipped += 1
+                    return
                 # Fix 2a: PDF extraction is CPU-bound, pure-Python — run it off the
                 # event loop so it can't stall every other in-flight document.
                 text = await loop.run_in_executor(_IO_EXECUTOR, _extract_pdf_text, pdf_path)
                 if not text:
                     print(f"[{idx:04d}/{len(papers)}] {pdf_path.name[:55]} ⚠  Empty — skipping", flush=True)
+                    _record_extract_failure(pdf_path)
                     async with counter_lock:
                         skipped += 1
                     return
@@ -1607,13 +1963,18 @@ async def main():
         tasks = [process_one(i, p) for i, p in enumerate(papers, 1)]
         await asyncio.gather(*tasks)
 
-    # Stop status monitor
-    monitor_task.cancel()
-    try:
-        await monitor_task
-    except asyncio.CancelledError:
-        pass
+    # Stop status monitor + endpoint refresh
+    for _t in (monitor_task, refresh_task):
+        _t.cancel()
+        try:
+            await _t
+        except asyncio.CancelledError:
+            pass
 
+    # Final ordered flush of the throttled storages BEFORE finalize (LightRAG's
+    # finalize only auto-flushes *_cache namespaces — text_chunks/full_docs/graph
+    # rely on this call when KV_FLUSH_INTERVAL is on).
+    await _flush_throttled_storages()
     await rag.finalize_storages()
 
     # Final status report from doc_status.json

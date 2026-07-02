@@ -5,7 +5,7 @@
 #SBATCH --error=/scratch/devon7y/westbury_rag/logs/westbury_ingest_%j.err
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=6
+#SBATCH --cpus-per-task=12
 #SBATCH --mem=32G
 #SBATCH --gpus=h100:1
 
@@ -128,20 +128,57 @@ else
     echo "[$(date)] Starting ingestion v2 ($STORAGE_SUBDIR, 1x H100)..."
 fi
 
+# ── Optional dedicated embedder (P4): adopt a live registered endpoint ────────
+# slurm/job_westbury_embed.slurm serves scripts/server.py on its own GPU and
+# registers $WORKDIR/embed_endpoints/<jobid>.txt. If one is healthy, embed
+# remotely (frees this job's GPU + decouples embed throughput from the LLM).
+EMBED_ENDPOINTS_DIR="$WORKDIR/${EMBED_ENDPOINTS_SUBDIR:-embed_endpoints}"
+EMBED_ENDPOINT="${EMBED_ENDPOINT:-}"
+if [ -z "$EMBED_ENDPOINT" ] && ls "$EMBED_ENDPOINTS_DIR"/*.txt >/dev/null 2>&1; then
+    for f in "$EMBED_ENDPOINTS_DIR"/*.txt; do
+        ep=$(cat "$f")
+        if [ -n "$ep" ] && curl -sf "$ep/health" >/dev/null 2>&1; then
+            EMBED_ENDPOINT="$ep"
+            echo "[$(date)] Dedicated embedder adopted: $EMBED_ENDPOINT"
+            break
+        fi
+    done
+fi
+[ -z "$EMBED_ENDPOINT" ] && echo "[$(date)] No dedicated embedder — embedding in-process on this job's GPU."
+
+# Defaults = the validated production TUNE set (2026-07-01 run: ~75 docs/hr, 0
+# failures) + the efficiency knobs from docs/INGEST_EFFICIENCY_OPEN_PROBLEMS.md
+# (P1 prefix reuse, P2 determinism+caches, P5 max_tokens caps, P8 resume/overlap,
+# 3A flush throttle). Override anything at submit: --export=ALL,VAR=value.
 WORKDIR=$WORKDIR \
 N_VLLM=${N_VLLM:-1} \
 ENDPOINTS_SUBDIR=${ENDPOINTS_SUBDIR:-vllm_endpoints_westbury_qwen3_32b} \
 PAPERS_SUBDIR=${PAPERS_SUBDIR:-papers} \
 STORAGE_SUBDIR=${STORAGE_SUBDIR:-rag_storage_aprag} \
 LLM_MODEL=${LLM_MODEL:-Qwen/Qwen3.6-35B-A3B} \
-PARALLEL_DOCS=${PARALLEL_DOCS:-4} \
-LLM_MAX_ASYNC=${LLM_MAX_ASYNC:-16} \
-CONTEXT_MAX_ASYNC=${CONTEXT_MAX_ASYNC:-16} \
+PARALLEL_DOCS=${PARALLEL_DOCS:-24} \
+LLM_MAX_ASYNC=${LLM_MAX_ASYNC:-48} \
+CONTEXT_MAX_ASYNC=${CONTEXT_MAX_ASYNC:-48} \
 MAX_DOC_TOKENS=${MAX_DOC_TOKENS:-20000} \
-EMBED_FUNC_MAX_ASYNC=${EMBED_FUNC_MAX_ASYNC:-4} \
-MAX_PARALLEL_INSERT=${MAX_PARALLEL_INSERT:-4} \
+EMBED_FUNC_MAX_ASYNC=${EMBED_FUNC_MAX_ASYNC:-2} \
+EMBED_BATCH=${EMBED_BATCH:-64} \
+EMBEDDING_BATCH_NUM=${EMBEDDING_BATCH_NUM:-128} \
+EMBED_ENDPOINT="$EMBED_ENDPOINT" \
+MAX_PARALLEL_INSERT=${MAX_PARALLEL_INSERT:-24} \
 QDRANT_URL=$QDRANT_URL \
-INSERT_DONE_EVERY_N=${INSERT_DONE_EVERY_N:-1} \
+KV_FLUSH_INTERVAL=${KV_FLUSH_INTERVAL:-300} \
+LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-4096} \
+CONTEXT_MAX_TOKENS=${CONTEXT_MAX_TOKENS:-300} \
+LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.0} \
+LLM_SEED=${LLM_SEED:-42} \
+CONTEXT_CACHE=${CONTEXT_CACHE:-1} \
+CONTEXT_WARM_FIRST=${CONTEXT_WARM_FIRST:-1} \
+CONTEXT_AFFINITY=${CONTEXT_AFFINITY:-1} \
+STREAM_OVERLAP=${STREAM_OVERLAP:-1} \
+ENDPOINT_REFRESH_S=${ENDPOINT_REFRESH_S:-300} \
+MAX_GLEANING=${MAX_GLEANING:-1} \
+FORCE_LLM_SUMMARY_ON_MERGE=${FORCE_LLM_SUMMARY_ON_MERGE:-8} \
+SUMMARY_MAX_TOKENS=${SUMMARY_MAX_TOKENS:-1200} \
 REBUILD_EMBEDDINGS=$REBUILD_EMBEDDINGS \
 CHUNK_TARGET_TOKENS=${CHUNK_TARGET_TOKENS:-512} \
 CHUNK_MAX_TOKENS=${CHUNK_MAX_TOKENS:-640} \

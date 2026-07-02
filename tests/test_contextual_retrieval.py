@@ -189,3 +189,152 @@ def test_inner_chunker_exception_propagates():
         assert "chunker hung" in str(e)
     else:
         raise AssertionError("expected inner chunker error to propagate")
+
+
+# ── Efficiency layers (docs/INGEST_EFFICIENCY_OPEN_PROBLEMS.md P1/P2) ──────────
+
+from pipeline.contextual_retrieval import context_cache_key  # noqa: E402
+
+
+def _chunks(n=4):
+    return [{"content": f"chunk {i}", "chunk_order_index": i} for i in range(n)]
+
+
+class _RecordingLLM:
+    """Async LLM stub recording concurrency, kwargs, and warm-up ordering."""
+
+    def __init__(self, delay=0.01):
+        self.calls = []
+        self.kwargs = []
+        self.active = 0
+        self.max_active = 0
+        self.first_done_before_others = None
+        self._first_finished = False
+        self.delay = delay
+
+    async def __call__(self, prompt, **kwargs):
+        started_after_first = self._first_finished
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        self.calls.append(prompt)
+        self.kwargs.append(kwargs)
+        await asyncio.sleep(self.delay)
+        self.active -= 1
+        if len(self.calls) == 1:
+            self._first_finished = True
+        elif self.first_done_before_others is None:
+            self.first_done_before_others = started_after_first
+        return f"CTX{len(self.calls)}"
+
+
+def test_cache_second_run_makes_no_llm_calls():
+    cache, stats = {}, {}
+    llm = _RecordingLLM()
+    chunker = make_contextualizing_chunker(
+        lambda *a: _chunks(), llm,
+        cache_get=cache.get, cache_put=cache.__setitem__, cache_salt="m1",
+    )
+    first = _run(chunker)
+    assert len(llm.calls) == 4 and len(cache) == 4
+
+    llm2 = _RecordingLLM()
+    chunker2 = make_contextualizing_chunker(
+        lambda *a: _chunks(), llm2,
+        cache_get=cache.get, cache_put=cache.__setitem__, cache_salt="m1",
+        stats=stats,
+    )
+    second = _run(chunker2)
+    assert len(llm2.calls) == 0                     # fully served from cache
+    assert stats["context_cache_hits"] == 4
+    assert [c["content"] for c in second] == [c["content"] for c in first]
+
+
+def test_cache_salt_prevents_stale_blurb_reuse():
+    cache = {}
+    chunker = make_contextualizing_chunker(
+        lambda *a: _chunks(), _RecordingLLM(),
+        cache_get=cache.get, cache_put=cache.__setitem__, cache_salt="model-A",
+    )
+    _run(chunker)
+    llm_b = _RecordingLLM()
+    chunker_b = make_contextualizing_chunker(
+        lambda *a: _chunks(), llm_b,
+        cache_get=cache.get, cache_put=cache.__setitem__, cache_salt="model-B",
+    )
+    _run(chunker_b)
+    assert len(llm_b.calls) == 4  # different salt → cache miss, fresh blurbs
+    p = CONTEXT_PROMPT.format(doc_content="d", chunk_content="c")
+    assert context_cache_key(p, "model-A") != context_cache_key(p, "model-B")
+
+
+def test_warm_first_serializes_first_chunk_before_fanout():
+    llm = _RecordingLLM()
+    chunker = make_contextualizing_chunker(lambda *a: _chunks(), llm, warm_first=True)
+    _run(chunker)
+    assert len(llm.calls) == 4
+    # The first (prefix-warming) call fully completed before any other started.
+    assert llm.first_done_before_others is True
+
+
+def test_shared_semaphore_caps_across_documents():
+    llm = _RecordingLLM(delay=0.02)
+    sem = asyncio.Semaphore(1)
+
+    async def two_docs():
+        chunker = make_contextualizing_chunker(
+            lambda *a: _chunks(), llm, semaphore=sem, warm_first=False,
+        )
+        await asyncio.gather(
+            chunker(None, "doc A", None, False, 51, 512),
+            chunker(None, "doc B", None, False, 51, 512),
+        )
+
+    asyncio.run(two_docs())
+    assert len(llm.calls) == 8
+    assert llm.max_active == 1  # a true GLOBAL cap, not per-document
+
+
+def test_llm_kwargs_and_per_doc_affinity():
+    llm = _RecordingLLM()
+    chunker = make_contextualizing_chunker(
+        lambda *a: _chunks(), llm,
+        llm_kwargs={"max_tokens": 300}, use_affinity=True, warm_first=False,
+    )
+    _run(chunker, doc="document alpha")
+    affinities = {kw["_endpoint_affinity"] for kw in llm.kwargs}
+    assert len(affinities) == 1 and isinstance(next(iter(affinities)), int)
+    assert all(kw["max_tokens"] == 300 for kw in llm.kwargs)
+    _run(chunker, doc="a completely different document")
+    assert len({kw["_endpoint_affinity"] for kw in llm.kwargs}) == 2
+
+
+def test_all_cached_with_warm_first_makes_zero_calls():
+    cache = {}
+    chunker = make_contextualizing_chunker(
+        lambda *a: _chunks(), _RecordingLLM(),
+        cache_get=cache.get, cache_put=cache.__setitem__, warm_first=True,
+    )
+    _run(chunker)
+    llm2 = _RecordingLLM()
+    chunker2 = make_contextualizing_chunker(
+        lambda *a: _chunks(), llm2,
+        cache_get=cache.get, cache_put=cache.__setitem__, warm_first=True,
+    )
+    out = _run(chunker2)
+    assert len(llm2.calls) == 0
+    assert len(out) == 4 and all(c["content"].startswith("CTX") for c in out)
+
+
+def test_failed_blurbs_are_not_cached():
+    cache = {}
+
+    async def boom(prompt, **kwargs):
+        raise RuntimeError("endpoint down")
+
+    chunker = make_contextualizing_chunker(
+        lambda *a: _chunks(1), boom,
+        cache_get=cache.get, cache_put=cache.__setitem__,
+    )
+    out = _run(chunker)
+    assert out[0]["content"] == "chunk 0"
+    assert cache == {}  # failures must never poison the persistent cache

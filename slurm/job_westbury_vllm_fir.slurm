@@ -58,16 +58,34 @@ fi
 PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('0.0.0.0', 0)); print(s.getsockname()[1]); s.close()")
 echo "[$(date)] Selected free port $PORT for vLLM (avoids shared-node collisions)."
 echo "[$(date)] Starting Qwen/Qwen3.6-35B-A3B (BF16, MoE) on 2× H100 (TP=2, 40K context, gpu-util 0.90)..."
+# ── P3: stability workarounds, parametrized (docs/INGEST_EFFICIENCY_OPEN_PROBLEMS.md)
+# --enforce-eager costs ~10-20% throughput but stops the TP=2 shm-broadcast
+# TimeoutError (mid-run recompile stall; crashed at ~2h50m). To A/B the recovery,
+# submit with --export=ALL,VLLM_ENFORCE_EAGER=0 and soak >=4h before trusting.
+# VLLM_KV_CACHE_DTYPE=fp8 ~doubles KV capacity (more 20k-token context prefixes
+# stay cached -> fewer prefix evictions) at negligible quality cost - worth an A/B.
+VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-1}
+VLLM_KV_CACHE_DTYPE=${VLLM_KV_CACHE_DTYPE:-auto}
+VLLM_EXTRA_ARGS=${VLLM_EXTRA_ARGS:-}
+STABILITY_FLAGS=""
+if [ "$VLLM_ENFORCE_EAGER" = "1" ]; then
+  STABILITY_FLAGS="--enforce-eager --disable-custom-all-reduce"
+fi
+KV_DTYPE_FLAGS=""
+if [ "$VLLM_KV_CACHE_DTYPE" != "auto" ]; then
+  KV_DTYPE_FLAGS="--kv-cache-dtype $VLLM_KV_CACHE_DTYPE"
+fi
+
 vllm serve Qwen/Qwen3.6-35B-A3B \
   --host 0.0.0.0 \
   --port $PORT \
   --tensor-parallel-size 2 \
-  --enforce-eager \
-  --disable-custom-all-reduce \
+  $STABILITY_FLAGS \
   --max-model-len 40000 \
   --gpu-memory-utilization 0.90 \
   --dtype bfloat16 \
   --enable-prefix-caching \
+  $KV_DTYPE_FLAGS $VLLM_EXTRA_ARGS \
   --default-chat-template-kwargs '{"enable_thinking": false}' &
 VLLM_PID=$!
 

@@ -10,10 +10,9 @@
 #SBATCH --gpus=nvidia_h100_80gb_hbm3_3g.40gb:1
 
 # v2 ingest job — changes from v1:
-#   - No destructive pre-run cleanup (resume support via ingest_cml_octen_v2.py)
+#   - No destructive pre-run cleanup (resume support via pipeline/ingest.py)
 #   - Read-only status report before ingestion
-#   - Auto-resubmission: if unprocessed docs remain, submits a new job pair
-#   - References ingest_cml_octen_v2.py instead of ingest_cml_octen.py
+#   - NO auto-resubmission (removed — it spawned runaway job chains; hard rule)
 #   - REBUILD_EMBEDDINGS=1 mode: rebuild vector DBs from cached intermediates
 #     (no vLLM needed, no auto-resubmission)
 #   - Structure-aware chunking via CHUNK_* env vars (section/paragraph/sentence)
@@ -29,8 +28,6 @@
 
 WORKDIR=/home/devon7y/scratch/devon7y/westbury_rag
 VENV_DIR=$WORKDIR/venv
-
-# Auto-resubmission: track iteration count (default 1, max 15)
 
 export HF_HOME=$WORKDIR/hf_cache
 export XDG_CACHE_HOME=$WORKDIR/cache
@@ -148,9 +145,23 @@ LLM_MAX_ASYNC=${LLM_MAX_ASYNC:-16} \
 CONTEXT_MAX_ASYNC=${CONTEXT_MAX_ASYNC:-16} \
 MAX_DOC_TOKENS=${MAX_DOC_TOKENS:-20000} \
 EMBED_FUNC_MAX_ASYNC=${EMBED_FUNC_MAX_ASYNC:-1} \
+EMBED_BATCH=${EMBED_BATCH:-64} \
+EMBEDDING_BATCH_NUM=${EMBEDDING_BATCH_NUM:-128} \
 MAX_PARALLEL_INSERT=${MAX_PARALLEL_INSERT:-4} \
 QDRANT_URL=$QDRANT_URL \
-INSERT_DONE_EVERY_N=${INSERT_DONE_EVERY_N:-1} \
+KV_FLUSH_INTERVAL=${KV_FLUSH_INTERVAL:-300} \
+LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-4096} \
+CONTEXT_MAX_TOKENS=${CONTEXT_MAX_TOKENS:-300} \
+LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.0} \
+LLM_SEED=${LLM_SEED:-42} \
+CONTEXT_CACHE=${CONTEXT_CACHE:-1} \
+CONTEXT_WARM_FIRST=${CONTEXT_WARM_FIRST:-1} \
+CONTEXT_AFFINITY=${CONTEXT_AFFINITY:-1} \
+STREAM_OVERLAP=${STREAM_OVERLAP:-1} \
+ENDPOINT_REFRESH_S=${ENDPOINT_REFRESH_S:-300} \
+MAX_GLEANING=${MAX_GLEANING:-1} \
+FORCE_LLM_SUMMARY_ON_MERGE=${FORCE_LLM_SUMMARY_ON_MERGE:-8} \
+SUMMARY_MAX_TOKENS=${SUMMARY_MAX_TOKENS:-1200} \
 REBUILD_EMBEDDINGS=$REBUILD_EMBEDDINGS \
 CHUNK_TARGET_TOKENS=${CHUNK_TARGET_TOKENS:-512} \
 CHUNK_MAX_TOKENS=${CHUNK_MAX_TOKENS:-640} \
