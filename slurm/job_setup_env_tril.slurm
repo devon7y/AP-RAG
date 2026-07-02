@@ -37,11 +37,13 @@ pip uninstall -y vllm 2>/dev/null || true
 
 echo "[$(date)] Installing vllm 0.17.1+computecanada from wheelhouse..."
 pip install --no-index vllm==0.17.1+computecanada
+# py-spy for the vLLM hang watchdog (offline node: wheelhouse only)
+pip install --no-index py-spy 2>/dev/null || echo "[setup] py-spy not in wheelhouse - hang diagnostics will note it as missing"
 
 echo "[$(date)] Installing remaining packages..."
 pip install --quiet --no-index pypdf tiktoken numpy
 pip install --quiet --no-index "accelerate>=1.1.0" bitsandbytes sentence-transformers
-pip install --quiet pypdf tiktoken  # ensure latest from PyPI as fallback
+pip install --quiet pypdf pymupdf tiktoken  # ensure latest from PyPI as fallback (pymupdf: column-aware extraction)
 pip install --quiet "git+https://github.com/devon7y/LightRAG.git"
 pip install --quiet qdrant-client
 

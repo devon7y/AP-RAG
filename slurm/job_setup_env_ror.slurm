@@ -44,6 +44,8 @@ pip install --quiet uv
 # docs/INGEST_EFFICIENCY_OPEN_PROBLEMS.md P3) before trusting a new build.
 VLLM_PIN=${VLLM_PIN:-0.23.1rc1.dev245+g9037498c2}
 uv pip install "vllm==${VLLM_PIN}" --pre --extra-index-url https://wheels.vllm.ai/nightly
+# py-spy: the vLLM hang watchdog dumps worker stacks with it (docs/VLLM_TP_CRASH_DEBUG.md)
+pip install --quiet py-spy
 uv pip install git+https://github.com/huggingface/transformers.git
 pip install --quiet pypdf pymupdf tiktoken numpy   # pymupdf: column-aware PDF extraction
 pip install --quiet "accelerate>=1.1.0" bitsandbytes sentence-transformers

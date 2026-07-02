@@ -1,6 +1,6 @@
 # Ingest Efficiency Changes — Complete Inventory
 
-**Date:** 2026-07-02 (two passes, same day).
+**Date:** 2026-07-02 (two efficiency passes + the vLLM TP-hang fix package, same day).
 **Scope:** ingestion only (`pipeline/`, `slurm/`). All changes are **wrapper-side**
 — nothing under `LightRAG/` was edited (the patch-free rule holds).
 **Problem statements:** [INGEST_EFFICIENCY_OPEN_PROBLEMS.md](INGEST_EFFICIENCY_OPEN_PROBLEMS.md)
@@ -176,6 +176,33 @@ Tuning playbook: raise `MAX_PARALLEL_INSERT`/`LLM_MAX_ASYNC` until `waiting>0` o
 `prefix_hit%` drops (prefix eviction); target `kv%` ~60–80. On a resume,
 `Context: cache_hits` should climb and `docs/hr` should far exceed the 75/hr
 fresh-run baseline.
+
+## 9.5 vLLM TP=2 hang fix package (same day, third batch)
+
+The intermittent TP=2 engine hang (worker rank stalls mid-decode → `sample_tokens`
+RPC timeout → engine death every ~3–9 h; full evidence and research in
+[VLLM_TP_CRASH_DEBUG.md](VLLM_TP_CRASH_DEBUG.md)) was costing 1/3 to all of the
+LLM capacity on long runs — the ingest survived via failover, but each dead vLLM
+idled its 2 H100s for the rest of the job. Deployed in the vLLM jobs:
+
+- **Node-local JIT caches** (`VLLM_LOCAL_JIT_CACHE=1`): Triton/FlashInfer caches
+  move to `$SLURM_TMPDIR` (seeded from the shared Lustre dir). The shared
+  network-FS cache — written concurrently by 2 TP ranks × up to 3 jobs — is the
+  prime aggravator for mid-serve JIT stalls/deadlocks.
+- **`VLLM_SKIP_FLASHINFER_AUTOTUNE=1`** and **`VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=1200`**
+  (finite stalls become latency blips instead of engine death at the 300 s default).
+- **Pre-warm** (`VLLM_PREWARM=1`): decode-kernel JIT is forced before the endpoint
+  registers, not mid-serve.
+- **Hang watchdog + auto-diagnostics**: engine logs to
+  `logs/vllm_engine_<jobid>_rN.log`; on the first shm-broadcast stall warning,
+  py-spy stacks of every vLLM process + nvidia-smi land in
+  `logs/vllm_hang_diag_<jobid>_rN.txt` — the evidence that names the hung kernel.
+- **In-job auto-restart** (`VLLM_MAX_RESTARTS=3`): a dead engine deregisters its
+  endpoint, restarts in-place on a fresh port, pre-warms, re-registers; the
+  ingest's endpoint re-discovery adopts it. Not a SLURM resubmission — the
+  no-job-chains rule is untouched. A crash now costs ~10 min of one endpoint
+  instead of the remainder of that job's walltime.
+- `py-spy` added to the setup jobs.
 
 ## 10. Files touched
 
