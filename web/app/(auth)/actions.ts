@@ -7,15 +7,14 @@ import { createUser, getUser } from "@/lib/db/queries";
 
 import { signIn } from "./auth";
 
-// Registration enforces a valid email + a minimum password length.
+// No password length limits — only require a valid email and a non-empty password.
 const authFormSchema = z.object({
   email: z.string().email(),
-  password: z.string().min(6),
+  password: z.string().min(1),
 });
 
-// Login only checks that both fields are present — length/format rules don't belong on a
-// sign-in form (they would permanently lock out any account whose password is short or
-// was created outside the register form). authorize() does the real credential check.
+// Login only checks that both fields are present; authorize() does the real credential
+// check (allowlist + user lookup + bcrypt compare).
 const loginFormSchema = z.object({
   email: z.string().min(1),
   password: z.string().min(1),
