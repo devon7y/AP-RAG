@@ -54,7 +54,7 @@ export function CitationAnchor({
     .filter((c): c is RagChunk => Boolean(c));
 
   if (chunks.length === 0) {
-    return <span>{children}</span>;
+    return <span className="whitespace-nowrap">{children}</span>;
   }
 
   return (
@@ -148,7 +148,7 @@ function CitationCard({
     >
       <PopoverAnchor asChild>
         <button
-          className="cursor-pointer rounded-sm font-medium text-primary underline decoration-dotted underline-offset-2 hover:text-primary/80"
+          className="cursor-pointer whitespace-nowrap rounded-sm font-medium text-primary underline decoration-dotted underline-offset-2 hover:text-primary/80"
           onClick={togglePin}
           onMouseEnter={openNow}
           onMouseLeave={scheduleClose}
