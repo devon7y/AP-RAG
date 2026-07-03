@@ -29,7 +29,13 @@ function emailToHue(email: string): number {
   return Math.abs(hash) % 360;
 }
 
-export function SidebarUserNav({ user }: { user: User }) {
+export function SidebarUserNav({
+  user,
+  onDeleteAll,
+}: {
+  user: User;
+  onDeleteAll?: () => void;
+}) {
   const router = useRouter();
   const { data, status } = useSession();
   const { setTheme, resolvedTheme } = useTheme();
@@ -86,6 +92,15 @@ export function SidebarUserNav({ user }: { user: User }) {
               {`Toggle ${resolvedTheme === "light" ? "dark" : "light"} mode`}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
+            {!isGuest && onDeleteAll && (
+              <DropdownMenuItem
+                className="cursor-pointer text-[13px] text-destructive focus:text-destructive"
+                data-testid="user-nav-item-delete-all"
+                onSelect={() => onDeleteAll()}
+              >
+                Delete all chats
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem asChild data-testid="user-nav-item-auth">
               <button
                 className="w-full cursor-pointer text-[13px]"

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
 import { AppTitle } from "./app-title";
 import { ConnectDialog } from "./connect-dialog";
+import { PersonaIndicator } from "./persona-indicator";
 import { VisibilitySelector, type VisibilityType } from "./visibility-selector";
 
 function PureChatHeader({
@@ -35,6 +36,8 @@ function PureChatHeader({
       </Button>
 
       <AppTitle />
+
+      <PersonaIndicator />
 
       <div className="ml-auto flex items-center gap-2">
         <ConnectDialog />

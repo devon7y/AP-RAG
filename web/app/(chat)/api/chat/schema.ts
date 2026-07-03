@@ -50,6 +50,9 @@ export const postRequestBodySchema = z.object({
   mode: z.enum(["auto", "hybrid", "local", "global", "mix", "naive"]).optional(),
   chunkMode: z.boolean().optional(),
   filters: filtersSchema.optional(),
+  // "Talk to Author": on the FIRST message of a new author-scoped chat, the surname this
+  // chat is pinned to. Persisted onto the Chat row; ignored thereafter (read from the row).
+  personaAuthor: z.string().min(1).max(120).optional(),
   // Filter keys ("authors:caplan", "year_from:2020") the user dismissed in the preview,
   // so the server's second-pass extraction won't re-add them.
   dismissed: z.array(z.string()).optional(),

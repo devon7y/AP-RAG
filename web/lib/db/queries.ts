@@ -79,11 +79,14 @@ export async function saveChat({
   userId,
   title,
   visibility,
+  personaAuthor,
 }: {
   id: string;
   userId: string;
   title: string;
   visibility: VisibilityType;
+  // "Talk to Author": the author this chat is scoped to (null for a normal chat).
+  personaAuthor?: string | null;
 }) {
   try {
     return await db.insert(chat).values({
@@ -92,6 +95,7 @@ export async function saveChat({
       userId,
       title,
       visibility,
+      personaAuthor: personaAuthor ?? null,
     });
   } catch (_error) {
     throw new ChatbotError("bad_request:database", "Failed to save chat");

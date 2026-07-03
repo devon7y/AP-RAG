@@ -22,6 +22,7 @@ export async function GET(request: Request) {
       visibility: "private",
       userId: null,
       isReadonly: false,
+      personaAuthor: null,
     });
   }
 
@@ -39,5 +40,6 @@ export async function GET(request: Request) {
     visibility: chat.visibility,
     userId: chat.userId,
     isReadonly,
+    personaAuthor: chat.personaAuthor ?? null,
   });
 }

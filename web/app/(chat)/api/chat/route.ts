@@ -18,6 +18,10 @@ import { retrieve } from "@/lib/aprag/client";
 import { buildContext, SYNTH_SYSTEM_PROMPT } from "@/lib/aprag/citations";
 import { condenseAndExtract, type HistoryTurn } from "@/lib/aprag/condense";
 import { dropDismissed, mergeFilters } from "@/lib/aprag/filters";
+import {
+  buildPersonaContext,
+  buildPersonaSystemPrompt,
+} from "@/lib/aprag/persona";
 import type { RagRetrieval } from "@/lib/aprag/types";
 import { isProductionEnvironment } from "@/lib/constants";
 import {
@@ -87,6 +91,7 @@ export async function POST(request: Request) {
       chunkMode = false,
       filters,
       dismissed,
+      personaAuthor,
     } = requestBody;
 
     const [, session] = await Promise.all([
@@ -122,6 +127,13 @@ export async function POST(request: Request) {
     let messagesFromDb: DBMessage[] = [];
     let titlePromise: Promise<string> | null = null;
 
+    // "Talk to Author": an existing chat's author comes from its row; a brand-new author
+    // chat carries it in the body's `personaAuthor` on the first message. When set, the
+    // synthesis below runs the author-persona path (forced author filter + persona prompt).
+    const persona: string | null = chat
+      ? (chat.personaAuthor ?? null)
+      : (personaAuthor?.trim() || null);
+
     if (chat) {
       if (chat.userId !== session.user.id) {
         return new ChatbotError("forbidden:chat").toResponse();
@@ -131,10 +143,15 @@ export async function POST(request: Request) {
       await saveChat({
         id,
         userId: session.user.id,
-        title: "New chat",
+        title: persona ? `Talk to ${persona}` : "New chat",
         visibility: selectedVisibilityType,
+        personaAuthor: persona,
       });
-      titlePromise = generateTitleFromUserMessage({ message });
+      // Persona chats get a stable "Talk to {Author}" title (identifies the author in the
+      // sidebar); only general chats get an LLM topic title.
+      titlePromise = persona
+        ? null
+        : generateTitleFromUserMessage({ message });
     }
 
     const uiMessages: ChatMessage[] = [
@@ -179,9 +196,17 @@ export async function POST(request: Request) {
           requestedMode === "auto" ? (suggestedMode ?? "hybrid") : requestedMode;
 
         // Honor the user's pre-send cancellations, then combine the client-confirmed
-        // filters with the server's second-pass extraction.
+        // filters with the server's second-pass extraction. In a persona chat the filter
+        // is FORCED to the author (their voice must only draw on their own papers) — this
+        // still surfaces papers they co-authored, since the query server's author filter
+        // matches any author position; the persona prompt handles the "my work" framing.
         const inferredKept = dropDismissed(inferred, dismissed ?? []);
-        const effectiveFilters = mergeFilters(filters ?? null, inferredKept);
+        const effectiveFilters = persona
+          ? { authors: [persona] }
+          : mergeFilters(filters ?? null, inferredKept);
+
+        // Persona chats are always answer-mode (a first-person voice, not raw chunk cards).
+        const effectiveChunkMode = persona ? false : chunkMode;
 
         // 2. Retrieve from the AP-RAG query server (PC, over the tunnel).
         const retrieved = await retrieve({
@@ -192,17 +217,20 @@ export async function POST(request: Request) {
 
         // 3. Build the synthesis context first (answer mode) — this stamps a per-passage
         //    citeIndex onto each chunk, which must be present BEFORE we serialize the
-        //    chunks into the data part below.
-        const context = chunkMode
+        //    chunks into the data part below. Persona chats use the authorship-tagged
+        //    variant so the model knows which passages are the author's own (led) work.
+        const context = effectiveChunkMode
           ? ""
-          : buildContext(retrieved.references, retrieved.chunks);
+          : persona
+            ? buildPersonaContext(retrieved.references, retrieved.chunks, persona)
+            : buildContext(retrieved.references, retrieved.chunks);
 
         // 4. Attach the retrieval payload to the assistant message (persisted, so the
         //    UI re-renders references / inline citations / chunk cards on reload).
         const ragRetrieval: RagRetrieval = {
           query: retrievalQuery,
           mode: retrievalMode,
-          chunkMode,
+          chunkMode: effectiveChunkMode,
           references: retrieved.references,
           chunks: retrieved.chunks,
           entities: retrieved.entities,
@@ -216,7 +244,7 @@ export async function POST(request: Request) {
         });
 
         // 4a. Chunk mode: no synthesis — the UI renders the raw chunk cards.
-        if (chunkMode) {
+        if (effectiveChunkMode) {
           return;
         }
 
@@ -240,7 +268,7 @@ export async function POST(request: Request) {
 
         const result = streamText({
           model: getLanguageModel(DEFAULT_CHAT_MODEL),
-          system: SYNTH_SYSTEM_PROMPT,
+          system: persona ? buildPersonaSystemPrompt(persona) : SYNTH_SYSTEM_PROMPT,
           messages: synthesisMessages,
           providerOptions: {
             openai: { reasoningEffort: reasoning },

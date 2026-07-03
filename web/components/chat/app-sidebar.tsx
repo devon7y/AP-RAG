@@ -5,7 +5,7 @@ import {
   MessageSquareIcon,
   PanelLeftIcon,
   PenSquareIcon,
-  TrashIcon,
+  UserRoundIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -44,12 +44,14 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
+import { TalkToAuthorDialog } from "./talk-to-author-dialog";
 
 export function AppSidebar({ user }: { user: User | undefined }) {
   const router = useRouter();
   const { setOpenMobile, toggleSidebar } = useSidebar();
   const { mutate } = useSWRConfig();
   const [showDeleteAllDialog, setShowDeleteAllDialog] = useState(false);
+  const [showTalkToAuthor, setShowTalkToAuthor] = useState(false);
 
   const handleDeleteAll = () => {
     setShowDeleteAllDialog(false);
@@ -120,6 +122,19 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                 </SidebarMenuItem>
                 <SidebarMenuItem>
                   <SidebarMenuButton
+                    className="h-8 rounded-lg text-[13px] text-sidebar-foreground/70 transition-colors duration-150 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                    onClick={() => {
+                      setOpenMobile(false);
+                      setShowTalkToAuthor(true);
+                    }}
+                    tooltip="Talk to Author — interview a researcher in the corpus"
+                  >
+                    <UserRoundIcon className="size-4" />
+                    <span className="font-medium">Talk to Author</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
                     asChild
                     className="h-8 rounded-lg text-[13px] text-sidebar-foreground/70 transition-colors duration-150 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
                     tooltip="Atlas of Mind — games over the corpus"
@@ -130,28 +145,26 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                     </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
-                {user && (
-                  <SidebarMenuItem>
-                    <SidebarMenuButton
-                      className="rounded-lg text-sidebar-foreground/40 transition-colors duration-150 hover:bg-destructive/10 hover:text-destructive"
-                      onClick={() => setShowDeleteAllDialog(true)}
-                      tooltip="Delete All Chats"
-                    >
-                      <TrashIcon className="size-4" />
-                      <span className="text-[13px]">Delete all</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                )}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
           <SidebarHistory user={user} />
         </SidebarContent>
         <SidebarFooter className="border-t border-sidebar-border pt-2 pb-3">
-          {user && <SidebarUserNav user={user} />}
+          {user && (
+            <SidebarUserNav
+              onDeleteAll={() => setShowDeleteAllDialog(true)}
+              user={user}
+            />
+          )}
         </SidebarFooter>
         <SidebarRail />
       </Sidebar>
+
+      <TalkToAuthorDialog
+        onOpenChange={setShowTalkToAuthor}
+        open={showTalkToAuthor}
+      />
 
       <AlertDialog
         onOpenChange={setShowDeleteAllDialog}
@@ -168,7 +181,7 @@ export function AppSidebar({ user }: { user: User | undefined }) {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleDeleteAll}>
-              Delete All
+              Delete all chats
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

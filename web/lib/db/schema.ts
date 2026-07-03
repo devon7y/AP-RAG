@@ -35,6 +35,9 @@ export const chat = pgTable("Chat", {
   visibility: varchar("visibility", { enum: ["public", "private"] })
     .notNull()
     .default("private"),
+  // "Talk to Author": when set, this chat is scoped to one author — retrieval is
+  // pinned to their papers and the answer speaks in their first-person persona.
+  personaAuthor: text("personaAuthor"),
 });
 
 export type Chat = InferSelectModel<typeof chat>;

@@ -12,7 +12,7 @@ import type { RagChunk, RagReference } from "./types";
 
 // Same citation-style instruction the server feeds LightRAG, so the answer emits clean
 // bracketed [n] markers we can rewrite to (Author, Year).
-const CITATION_STYLE_PROMPT =
+export const CITATION_STYLE_PROMPT =
   'Citation style (APA7): cite each supporting source by placing its bracketed ' +
   'reference number directly after the statement it supports, e.g. "Lexical decision ' +
   'times fall as word frequency rises [2]." Use the bracket only — do NOT add words ' +

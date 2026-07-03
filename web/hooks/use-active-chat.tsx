@@ -63,6 +63,8 @@ type ActiveChatContextValue = {
   setChunkMode: Dispatch<SetStateAction<boolean>>;
   filters: RagFilters | null;
   setFilters: Dispatch<SetStateAction<RagFilters | null>>;
+  // "Talk to Author": the author this chat is scoped to (null for a normal chat).
+  personaAuthor: string | null;
 };
 
 const ActiveChatContext = createContext<ActiveChatContextValue | null>(null);
@@ -127,6 +129,17 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     filtersRef.current = filters;
   }, [filters]);
+
+  // "Talk to Author": the author a chat is pinned to. Sourced from the `?author=` param on
+  // a fresh author chat, or from /api/messages on reload; remembered per chat id so it
+  // survives the URL-param strip and chat switches. Sent on the first message so the route
+  // can persist it onto the new Chat row (thereafter the row is authoritative).
+  const [personaAuthor, setPersonaAuthor] = useState<string | null>(null);
+  const personaAuthorRef = useRef(personaAuthor);
+  useEffect(() => {
+    personaAuthorRef.current = personaAuthor;
+  }, [personaAuthor]);
+  const personaByChat = useRef(new Map<string, string>());
 
   const { data: chatData, isLoading } = useSWR(
     isNewChat
@@ -196,6 +209,9 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
             mode: retrievalModeRef.current,
             chunkMode: chunkModeRef.current,
             ...(filtersRef.current ? { filters: filtersRef.current } : {}),
+            ...(personaAuthorRef.current
+              ? { personaAuthor: personaAuthorRef.current }
+              : {}),
             ...request.body,
           },
         };
@@ -245,14 +261,48 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
     if (prevChatIdRef.current !== chatId) {
       prevChatIdRef.current = chatId;
       // Switching chats (new or existing): start fresh — clear the composer text and any
-      // active metadata filters so they don't leak across conversations.
+      // active metadata filters so they don't leak across conversations. Restore this
+      // chat's remembered author (if any); the ?author= / chatData effects fill it in for
+      // a chat we haven't seen yet.
       setInput("");
       setFilters(null);
+      setPersonaAuthor(personaByChat.current.get(chatId) ?? null);
       if (isNewChat) {
         setMessages([]);
       }
     }
   }, [chatId, isNewChat, setMessages]);
+
+  // Restore an existing author chat's persona from the messages payload (reload / deep
+  // link). The row is authoritative once it exists.
+  useEffect(() => {
+    const author = (chatData as { personaAuthor?: string | null } | undefined)
+      ?.personaAuthor;
+    if (author) {
+      personaByChat.current.set(chatId, author);
+      setPersonaAuthor(author);
+    }
+  }, [chatId, chatData]);
+
+  // Capture the author of a freshly-opened Talk-to-Author chat from `?author=`, remember
+  // it for this chat id, then strip the param (keeping any other params, e.g. ?query=).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const author = params.get("author")?.trim();
+    if (!author) {
+      return;
+    }
+    personaByChat.current.set(chatId, author);
+    setPersonaAuthor(author);
+    personaAuthorRef.current = author;
+    params.delete("author");
+    const qs = params.toString();
+    window.history.replaceState(
+      {},
+      "",
+      `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/chat/${chatId}${qs ? `?${qs}` : ""}`
+    );
+  }, [chatId]);
 
   useEffect(() => {
     if (chatData && !isNewChat) {
@@ -329,6 +379,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       setChunkMode,
       filters,
       setFilters,
+      personaAuthor,
     }),
     [
       chatId,
@@ -351,6 +402,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       retrievalMode,
       chunkMode,
       filters,
+      personaAuthor,
     ]
   );
 
