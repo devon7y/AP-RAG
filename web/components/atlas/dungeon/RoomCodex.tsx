@@ -3,6 +3,13 @@
 import { AnimatePresence, motion } from "motion/react";
 import { ENTRANCE_ID, type Floor, type Room } from "./types";
 
+/** Truncate at a word boundary so the codex never cuts mid-word. */
+function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(" "), max - 40))}…`;
+}
+
 const TYPE_LABEL: Record<string, string> = {
   concept: "Concept",
   method: "Method",
@@ -71,9 +78,7 @@ export default function RoomCodex({
             <h2 className="font-display mt-2 text-xl leading-tight">{room.entity?.id}</h2>
             {room.entity?.desc && (
               <p className="mt-3 text-sm leading-relaxed text-ink-2">
-                {room.entity.desc.length > 480
-                  ? `${room.entity.desc.slice(0, 480)}…`
-                  : room.entity.desc}
+                {clip(room.entity.desc, 480)}
               </p>
             )}
           </>
@@ -94,9 +99,7 @@ export default function RoomCodex({
                       {c.bossGate && " · boss gate"}
                     </span>
                     {c.desc && (
-                      <span className="mt-0.5 block text-ink-3">
-                        {c.desc.length > 160 ? `${c.desc.slice(0, 160)}…` : c.desc}
-                      </span>
+                      <span className="mt-0.5 block text-ink-3">{clip(c.desc, 160)}</span>
                     )}
                   </li>
                 );

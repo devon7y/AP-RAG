@@ -4,7 +4,7 @@ import { useEffect, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { useAtlasStore } from "@/lib/atlas/store";
-import { glowTexture, NEBULA_COUNT, type ObservatoryData } from "./derive";
+import { glowTexture, NEBULA_COUNT, TYPE_FALLBACK, type ObservatoryData } from "./derive";
 import { useObservatory } from "./store";
 
 /**
@@ -97,7 +97,8 @@ export default function Nebulae({ data }: { data: ObservatoryData }) {
   const show = useObservatory((s) => s.showNebulae);
 
   const sites = useMemo<NebulaSite[]>(() => {
-    const top = data.entities.slice(0, NEBULA_COUNT);
+    // untyped/"other" entities would render as gray smoke — leave them dark
+    const top = data.entities.filter((e) => e.color !== TYPE_FALLBACK).slice(0, NEBULA_COUNT);
     const maxDeg = top[0]?.deg ?? 1;
     return top.map((e, i) => {
       const strength = Math.pow(e.deg / maxDeg, 0.7);

@@ -39,7 +39,7 @@ function pick<T>(rng: () => number, arr: T[]): T {
 // The KG extractor tags paper furniture as entities ("Table 2", "Experiment 1",
 // "Corollary 4.3"…). None of that makes a room worth entering.
 const JUNK_NAME =
-  /^(table|figure|fig|experiment|exp|study|studies|session|appendix|corollary|theorem|lemma|proposition|equation|eq|section|chapter|page|block|trial|phase|step|item|list|box|panel|note|model|models|method|methods|task|tasks|participants?|subjects?|results?|discussion|introduction|abstract|conclusion|analysis|analyses|data|stimuli|stimulus|procedure|materials?|measures?|general discussion|current study|present study|pilot( study)?|(study|test|encoding|retrieval|learning|practice) phase|the (authors?|study|model|task)|authors?|paper|article|researchers?|reference|references)\s*\.?\s*\d*([.\-]\d+)*[a-z]?$/i;
+  /^(table|figure|fig|experiment|exp|study|studies|session|appendix|corollary|theorem|lemma|proposition|equation|eq|section|chapter|page|block|trial|phase|step|item|list|box|panel|note|model|models|method|methods|task|tasks|participants?|subjects?|results?|discussion|introduction|abstract|conclusion|analysis|analyses|data|stimuli|stimulus|procedure|materials?|measures?|general discussion|current study|present study|pilot( study)?|(study|test|encoding|retrieval|learning|practice) phase|hypothes[ie]s|prediction|condition|group|sample|the (authors?|study|model|task)|authors?|paper|article|researchers?|reference|references)\s*\.?\s*\d*([.\-]\d+)*[a-z]?$/i;
 
 const ROOM_TYPES = new Set([
   "concept", "method", "theory", "dataset", "finding", "result",

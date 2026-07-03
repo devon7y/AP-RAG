@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useFrame } from "@react-three/fiber";
-import { Billboard, Line, OrbitControls, Text } from "@react-three/drei";
+import { Html, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import HDRCanvas from "@/components/atlas/HDRCanvas";
 import { useAtlasStore } from "@/lib/atlas/store";
@@ -163,39 +163,52 @@ function RoomNode({
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
 
-      {/* label */}
-      <Billboard position={[0, room.isBoss ? 10.5 : 2.4, 0]}>
-        <Text
-          fontSize={room.isBoss ? 1.7 : 1.0}
-          color={dim ? "#6b6a64" : room.isBoss ? ACCENT_HOT : "#e8e6dd"}
-          anchorX="center"
-          anchorY="bottom"
-          outlineWidth={0.035}
-          outlineColor="#0a0908"
-          maxWidth={18}
-          textAlign="center"
-        >
-          {label}
-        </Text>
-        {room.isBoss && (
-          <Text
-            position={[0, -0.35, 0]}
-            fontSize={0.75}
-            color={bossUnsealed ? ACCENT : "#6b6a64"}
-            anchorX="center"
-            anchorY="top"
-            letterSpacing={0.18}
+      {/* label — DOM via drei Html: troika <Text> is a GLSL-derived material and
+          crashes the WebGPU renderer (infinite drawIndexed) if mounted at t=0 */}
+      <Html
+        position={[0, room.isBoss ? 12 : 2.6, 0]}
+        center
+        distanceFactor={52}
+        zIndexRange={[30, 0]}
+        style={{ pointerEvents: "none" }}
+      >
+        <div className="select-none text-center" style={{ whiteSpace: "nowrap" }}>
+          <p
+            style={{
+              fontSize: room.isBoss ? 22 : 13,
+              lineHeight: 1.15,
+              maxWidth: 240,
+              whiteSpace: "normal",
+              color: dim ? "#6b6a64" : room.isBoss ? ACCENT_HOT : "#e8e6dd",
+              textShadow: "0 0 6px #0a0908, 0 1px 2px #0a0908",
+            }}
           >
-            {bossUnsealed ? "BOSS · GATE OPEN" : "BOSS · SEALED"}
-          </Text>
-        )}
-      </Billboard>
+            {label}
+          </p>
+          {room.isBoss && (
+            <p
+              style={{
+                fontSize: 10,
+                letterSpacing: "0.2em",
+                marginTop: 2,
+                color: bossUnsealed ? ACCENT : "#6b6a64",
+                textShadow: "0 0 6px #0a0908",
+              }}
+            >
+              {bossUnsealed ? "BOSS · GATE OPEN" : "BOSS · SEALED"}
+            </p>
+          )}
+        </div>
+      </Html>
     </group>
   );
 }
 
 /* ── corridors ──────────────────────────────────────────────────────────── */
 
+// Drawn as THREE.LineSegments + LineBasicMaterial (core materials only): drei's
+// <Line> is a GLSL ShaderMaterial that the WebGPU renderer cannot compile — it
+// kills the whole canvas. Dashes for sealed gates are generated as segments.
 function CorridorLine({
   corridor,
   rooms,
@@ -211,24 +224,47 @@ function CorridorLine({
 }) {
   const a = rooms.get(corridor.a);
   const b = rooms.get(corridor.b);
-  if (!a || !b || !visible) return null;
   const sealed = corridor.bossGate && !bossUnsealed;
-  const color = corridor.bossGate ? (sealed ? "#7a3a24" : ACCENT) : active ? "#e8e6dd" : "#4a4944";
-  return (
-    <Line
-      points={[
-        [a.pos[0], 0.15, a.pos[1]],
-        [b.pos[0], 0.15, b.pos[1]],
-      ]}
-      color={color}
-      lineWidth={active || corridor.bossGate ? 2.2 : 1.2}
-      dashed={sealed}
-      dashSize={1.1}
-      gapSize={0.8}
-      transparent
-      opacity={active ? 0.95 : 0.5}
-    />
-  );
+  const color = corridor.bossGate ? (sealed ? "#8a4228" : ACCENT) : active ? "#e8e6dd" : "#4a4944";
+  const opacity = active ? 0.95 : corridor.bossGate ? 0.8 : 0.5;
+
+  const object = useMemo(() => {
+    if (!a || !b) return null;
+    const start = new THREE.Vector3(a.pos[0], 0.15, a.pos[1]);
+    const end = new THREE.Vector3(b.pos[0], 0.15, b.pos[1]);
+    const pts: THREE.Vector3[] = [];
+    if (sealed) {
+      const dir = end.clone().sub(start);
+      const len = dir.length();
+      dir.normalize();
+      for (let d = 0; d < len; d += 1.9) {
+        pts.push(start.clone().addScaledVector(dir, d));
+        pts.push(start.clone().addScaledVector(dir, Math.min(d + 1.1, len)));
+      }
+    } else {
+      pts.push(start, end);
+    }
+    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+    return new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ transparent: true }));
+  }, [a, b, sealed]);
+
+  useEffect(() => {
+    return () => {
+      if (!object) return;
+      object.geometry.dispose();
+      (object.material as THREE.Material).dispose();
+    };
+  }, [object]);
+
+  useEffect(() => {
+    if (!object) return;
+    const m = object.material as THREE.LineBasicMaterial;
+    m.color.set(color);
+    m.opacity = opacity;
+  }, [object, color, opacity]);
+
+  if (!object || !visible) return null;
+  return <primitive object={object} />;
 }
 
 /* ── player token ───────────────────────────────────────────────────────── */

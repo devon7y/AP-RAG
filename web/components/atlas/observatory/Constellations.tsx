@@ -1,10 +1,15 @@
 "use client";
 
 import { useEffect, useMemo } from "react";
-import { Billboard, Text } from "@react-three/drei";
+import { Html } from "@react-three/drei";
 import * as THREE from "three";
 import { useAtlasStore } from "@/lib/atlas/store";
-import { LABELED_ENTITIES, type EntityView, type ObservatoryData } from "./derive";
+import {
+  isGenericEntityName,
+  LABELED_ENTITIES,
+  type EntityView,
+  type ObservatoryData,
+} from "./derive";
 import { useObservatory } from "./store";
 
 /**
@@ -12,6 +17,11 @@ import { useObservatory } from "./store";
  * constellations: line figures threading each entity's member stars, named in
  * small caps, plus an ultra-faint web of the strongest entity–entity relations.
  * Focusing an entity brightens its figure and reveals its relation lines.
+ *
+ * Labels are drei <Html> (DOM), not troika <Text>: troika's GlyphsGeometry
+ * leaves instanceCount = Infinity until its async sync, and three r185's
+ * WebGPU backend passes that straight to drawIndexed — one mounted label
+ * kills the whole render pass. DOM labels also give native click targets.
  */
 
 function segmentsGeometry(segments: Float32Array): THREE.BufferGeometry {
@@ -25,11 +35,14 @@ function LineLayer({
   color,
   opacity,
   renderOrder = 1,
+  boostK = 0.25,
 }: {
   segments: Float32Array;
   color: string;
   opacity: number;
   renderOrder?: number;
+  /** how much of the HDR headroom the layer uses (hairlines burn out at full boost) */
+  boostK?: number;
 }) {
   const boost = useAtlasStore((s) => s.hdrBoost);
   const obj = useMemo(() => {
@@ -44,10 +57,10 @@ function LineLayer({
   }, [segments]);
 
   useEffect(() => {
-    obj.material.color.set(color).multiplyScalar(boost);
+    obj.material.color.set(color).multiplyScalar(1 + (boost - 1) * boostK);
     obj.material.opacity = opacity;
     obj.renderOrder = renderOrder;
-  }, [obj, color, opacity, boost, renderOrder]);
+  }, [obj, color, opacity, boost, boostK, renderOrder]);
 
   useEffect(
     () => () => {
@@ -65,65 +78,51 @@ function ConstellationLabel({ entity, focused }: { entity: EntityView; focused: 
   const setHoveredEntity = useObservatory((s) => s.setHoveredEntity);
   const hoveredEntity = useObservatory((s) => s.hoveredEntity);
   const hovered = hoveredEntity === entity.idx;
+  const active = focused || hovered;
 
   const t = 1 - Math.min(1, entity.rank / LABELED_ENTITIES);
-  const fontSize = 1.1 + 1.05 * Math.pow(t, 1.4);
-  const active = focused || hovered;
-  const hitW = Math.min(17, entity.id.length * fontSize * 0.52) + 1.5;
-  const hitH = fontSize * 2.2;
+  const namePx = 13 + Math.round(10 * Math.pow(t, 1.4));
 
   return (
-    <Billboard position={[entity.pos.x, entity.pos.y + 1.4, entity.pos.z]}>
-      <Text
-        fontSize={fontSize}
-        color={active ? "#ffffff" : entity.color}
-        fillOpacity={active ? 1 : 0.62}
-        anchorX="center"
-        anchorY="bottom"
-        outlineWidth={0.035}
-        outlineColor="#05060e"
-        maxWidth={17}
-        textAlign="center"
-        letterSpacing={0.06}
-        renderOrder={10}
+    <Html
+      position={[entity.pos.x, entity.pos.y + 1.2, entity.pos.z]}
+      center
+      distanceFactor={62}
+      zIndexRange={[20, 0]}
+      style={{ pointerEvents: "none" }}
+    >
+      <button
+        onClick={() => selectEntity(entity.idx)}
+        onPointerEnter={() => setHoveredEntity(entity.idx)}
+        onPointerLeave={() => setHoveredEntity(null)}
+        className="block cursor-pointer select-none text-center"
+        style={{ pointerEvents: "auto", background: "none", border: "none", padding: "2px 6px" }}
       >
-        {entity.id}
-      </Text>
-      <Text
-        position={[0, -0.42, 0]}
-        fontSize={Math.max(0.55, fontSize * 0.34)}
-        color={entity.color}
-        fillOpacity={active ? 0.95 : 0.5}
-        anchorX="center"
-        anchorY="top"
-        letterSpacing={0.28}
-        outlineWidth={0.02}
-        outlineColor="#05060e"
-        renderOrder={10}
-      >
-        {`${entity.type.toUpperCase()} · ${entity.deg}`}
-      </Text>
-      {/* invisible hit plate so the name is reliably clickable */}
-      <mesh
-        position={[0, hitH * 0.25, -0.01]}
-        onPointerOver={(e) => {
-          e.stopPropagation();
-          setHoveredEntity(entity.idx);
-          document.body.style.cursor = "pointer";
-        }}
-        onPointerOut={() => {
-          setHoveredEntity(null);
-          document.body.style.cursor = "auto";
-        }}
-        onClick={(e) => {
-          e.stopPropagation();
-          selectEntity(entity.idx);
-        }}
-      >
-        <planeGeometry args={[hitW, hitH]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-      </mesh>
-    </Billboard>
+        <span
+          className="font-display block leading-tight whitespace-nowrap"
+          style={{
+            fontSize: namePx,
+            color: active ? "#ffffff" : entity.color,
+            opacity: active ? 1 : 0.78,
+            textShadow: `0 0 10px ${entity.color}${active ? "cc" : "55"}, 0 1px 3px #05060e`,
+          }}
+        >
+          {entity.id}
+        </span>
+        <span
+          className="block whitespace-nowrap uppercase"
+          style={{
+            fontSize: Math.max(8, Math.round(namePx * 0.5)),
+            letterSpacing: "0.28em",
+            color: entity.color,
+            opacity: active ? 0.95 : 0.55,
+            textShadow: "0 1px 3px #05060e",
+          }}
+        >
+          {entity.type} · {entity.deg}
+        </span>
+      </button>
+    </Html>
   );
 }
 
@@ -151,8 +150,11 @@ export default function Constellations({ data }: { data: ObservatoryData }) {
   }, [focus, data]);
 
   const labeled = useMemo(() => {
-    const list = data.entities.slice(0, LABELED_ENTITIES);
-    if (focusIdx !== null && focusIdx >= LABELED_ENTITIES) list.push(data.entities[focusIdx]);
+    const list = data.entities
+      .filter((e) => !isGenericEntityName(e.id))
+      .slice(0, LABELED_ENTITIES);
+    if (focusIdx !== null && !list.includes(data.entities[focusIdx]))
+      list.push(data.entities[focusIdx]);
     return list;
   }, [data, focusIdx]);
 
@@ -162,10 +164,16 @@ export default function Constellations({ data }: { data: ObservatoryData }) {
         <LineLayer segments={data.webSegments} color="#9085e9" opacity={0.05} renderOrder={1} />
       )}
       {showFigures && (
-        <LineLayer segments={data.ambientFigures} color="#8f9bd9" opacity={0.13} renderOrder={2} />
+        <LineLayer segments={data.ambientFigures} color="#8f9bd9" opacity={0.1} renderOrder={2} />
       )}
       {focus && focus.figure.length > 0 && (
-        <LineLayer segments={focus.figure} color="#dfe6ff" opacity={0.8} renderOrder={3} />
+        <LineLayer
+          segments={focus.figure}
+          color="#dfe6ff"
+          opacity={0.8}
+          renderOrder={3}
+          boostK={1}
+        />
       )}
       {focus && focusEdges && (
         <LineLayer segments={focusEdges} color={focus.color} opacity={0.38} renderOrder={2} />

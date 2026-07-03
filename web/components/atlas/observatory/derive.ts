@@ -155,6 +155,15 @@ function buildFigure(anchor: THREE.Vector3, members: number[], positions: Float3
   return seg;
 }
 
+/** Paper-furniture entity names (Table 3, Study 1, Experiment 4…) — real KG
+ *  nodes, but noise as constellation names on the sky chart. */
+const GENERIC_ID =
+  /^(table|figure|fig|study|experiment|exp|appendix|equation|section|chapter|participants?|stimuli|procedure|methods?|results?|discussion|introduction|abstract|model|step|phase|task|item|block)\.?\s*\d*[a-z]?$/i;
+
+export function isGenericEntityName(id: string): boolean {
+  return GENERIC_ID.test(id.trim());
+}
+
 /** How many ambient figures / web edges the resting sky shows. */
 export const AMBIENT_FIGURES = 28;
 export const WEB_EDGES = 170;
@@ -277,8 +286,13 @@ export function deriveObservatory(corpus: CorpusData, constellations: Constellat
   }
   for (const list of edgesByEntity.values()) list.sort((x, y) => y.w - x.w);
 
-  // --- ambient constellation figures (top entities with a drawable figure) ---
-  const figureSources = entities.filter((e) => e.members.length >= 3).slice(0, AMBIENT_FIGURES);
+  // --- ambient constellation figures ---
+  // Only compact entities read as asterisms; sprawling ones (members scattered
+  // across the whole embedding) would smear lines over the entire sky. Those
+  // still get their figure drawn on focus.
+  const figureSources = entities
+    .filter((e) => e.members.length >= 3 && e.radius < 16)
+    .slice(0, AMBIENT_FIGURES);
   let figLen = 0;
   for (const e of figureSources) figLen += e.figure.length;
   const ambientFigures = new Float32Array(figLen);

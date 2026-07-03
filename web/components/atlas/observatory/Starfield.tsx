@@ -336,7 +336,7 @@ function StarTooltip({ data, corpus }: { data: ObservatoryData; corpus: CorpusDa
       style={{ pointerEvents: "none", transform: "translate(14px, -50%)" }}
     >
       <div className="hud-panel w-64 px-3 py-2">
-        <p className="text-[10px] tracking-[0.25em] text-ink-3 uppercase">
+        <p className="line-clamp-1 text-[10px] tracking-[0.25em] text-ink-3 uppercase">
           {section && section !== "Untitled" ? section : "passage"}
         </p>
         <p className="mt-1 line-clamp-2 text-xs leading-snug text-ink">{title}</p>
