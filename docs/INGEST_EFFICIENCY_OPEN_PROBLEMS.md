@@ -320,3 +320,42 @@ Commits: `e545d48` (code + ror slurm), `db58843` (slurm propagation).
 4. **P4** (offload/quantize embedder) — unblocks scaling the LLM side.
 5. **P3** (recover enforce-eager cost) — only after a proper TP=2 soak harness exists.
 6. **P6/P7/P8** — tuning + operational, lower priority.
+
+---
+
+## 9. INCIDENT 2026-07-03 — embedder CUDA-OOM cascade at scale (FIXED; do not regress)
+
+**What happened:** the first full-corpus run of the efficiency build (Nibi, resume from 535)
+OOM'd the in-process embedder from ~6h in and at 7.2h the retry storm (18k errors) halted the
+pipeline and **failed all 9,041 remaining docs** (`processed=663, failed=9041`, exit 0).
+Error signature: `QdrantVectorDBStorage[lightrag_vdb_entities]: CUDA out of memory. Tried to
+allocate 4.68 GiB … 74.38 GiB is allocated by PyTorch` during entity/relation VDB flushes.
+
+**Root cause (DB-size-driven, NOT a leak, NOT introduced by the efficiency layer):**
+Qwen3-Embedding-8B's SentenceTransformer config defaults `max_seq_length=32768`. LightRAG's
+merged entity/relation descriptions grow with the KG; one `EMBED_BATCH=64` micro-batch padded
+to a long straggler allocates multi-GiB activation tensors (4.68 GiB ≈ one 64×8k×4096 bf16
+tensor), and `EMBED_FUNC_MAX_ASYNC=2` concurrent forwards ratchet allocated memory to 74/79 GiB.
+It appears "after hours" only because descriptions lengthen as docs accumulate — the
+pre-efficiency code has the same latent bug and would hit it as the store grows.
+
+**Fix (shipped in `pipeline/ingest.py`, 2026-07-03):**
+- `EMBED_MAX_SEQ` (default **4096**) — caps the model's `max_seq_length` at load. Chunks
+  (≤640 tok + blurb) are unaffected; only pathological merged descriptions truncate.
+- `_encode_oom_safe()` — wraps `model.encode`; on any OOM `RuntimeError` (incl. cuBLAS alloc
+  failures) it `torch.cuda.empty_cache()`s and halves the micro-batch down to 1, so a single
+  long-text batch degrades one call instead of storming every embed for the rest of the run.
+- `EMBED_TRIM_GB` (default **40**) — post-encode `empty_cache()` whenever reserved memory
+  exceeds this, so hours-long runs don't ratchet toward the 80 GiB ceiling.
+- `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` set via `os.environ.setdefault` in
+  `ingest.py` (slurm-exported value wins).
+- Observability: `oom_retries=` / `cache_trims=` appended to the `[STATUS] LLM/Embed` line.
+
+**Recovery recipe for a cascade-failed run:** the failed docs are storm casualties, not bad
+inputs — back up `kv_store_doc_status.json`, flip `failed → pending`, resubmit (resume mode
+reuses the LLM-response cache). Also: submit ingest with the CURRENT slurm script — it carries
+`#SBATCH --signal=B:TERM@600` (P11); older copies lose vectors at walltime.
+
+**Interaction with P4 (dedicated embed server):** P4 remains the cleaner long-term shape (the
+ingest H100 freed for a 4th vLLM), but is no longer *required* for stability. If P4 lands,
+apply the same `max_seq_length` cap + OOM-halving inside `scripts/server.py`.

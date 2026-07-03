@@ -99,6 +99,12 @@ from pathlib import Path
 
 import numpy as np
 
+# Let the CUDA caching allocator hand fragmented segments back to the driver
+# instead of ratcheting reserved memory over an hours-long run (part of the 07-03
+# embedder-OOM fix). Must be set before torch's first CUDA allocation; a value
+# exported by the slurm script wins.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 # ── Configuration ──────────────────────────────────────────────────────────────
 
 WORKDIR       = Path(os.environ["WORKDIR"])
@@ -118,6 +124,20 @@ EMBED_DEVICE   = os.environ.get("EMBED_DEVICE", "cuda")
 # 40 GB MIG (~16 GiB); SentenceTransformer's float32 default would be ~32 GiB
 # and OOM. Override with EMBED_TORCH_DTYPE if needed.
 EMBED_TORCH_DTYPE = os.environ.get("EMBED_TORCH_DTYPE", "bfloat16")
+# Hard cap on the embedder's sequence length (0 = leave the model default).
+# Qwen3-Embedding-8B ships with max_seq_length=32768; merged entity/relation
+# descriptions grow with the KG, and one EMBED_BATCH micro-batch padded to a long
+# straggler allocates multi-GiB activation tensors. With 2 concurrent forwards this
+# ratcheted the 07-03 full-corpus run to 74/79 GiB allocated by ~6h, then the
+# entity-flush embed OOM'd (4.68 GiB alloc = one 64×8k×4096 bf16 tensor) and the
+# retry storm cascade-failed all 9,041 remaining docs. 4096 covers every chunk
+# (≤640-token chunks + blurb + query prompt) with 8× headroom over the worst batch;
+# only pathological merged descriptions truncate, which is harmless for embedding.
+EMBED_MAX_SEQ = int(os.environ.get("EMBED_MAX_SEQ", 4096))
+# After an encode, if the CUDA caching allocator still holds more than this many
+# GiB reserved, release it back to the driver (0 disables). Stops hours-long runs
+# from ratcheting reserved memory toward the 80 GiB ceiling.
+EMBED_TRIM_GB = float(os.environ.get("EMBED_TRIM_GB", 40))
 
 # Task-aware (asymmetric) embedding: queries get a Qwen3 instruction, documents get
 # none. This string MUST match scripts/server.py exactly. During ingest local_embed
@@ -383,11 +403,62 @@ def get_embed_model():
             _embed_model = SentenceTransformer(_local_path, device=EMBED_DEVICE, model_kwargs=model_kwargs)
         else:
             _embed_model = SentenceTransformer(EMBED_MODEL_ID, device=EMBED_DEVICE, model_kwargs=model_kwargs)
+        if EMBED_MAX_SEQ > 0:
+            try:
+                _orig_seq = int(getattr(_embed_model, "max_seq_length", 0) or 0)
+                if _orig_seq == 0 or _orig_seq > EMBED_MAX_SEQ:
+                    _embed_model.max_seq_length = EMBED_MAX_SEQ
+                    print(f"Embedder max_seq_length capped: {_orig_seq or 'unset'} → {EMBED_MAX_SEQ}", flush=True)
+            except Exception as _e:  # never fail the load over the cap
+                print(f"[EMBED] could not cap max_seq_length: {_e}", flush=True)
         print("Embedding model ready.", flush=True)
     return _embed_model
 
 
-_embed_stats = {"calls": 0, "total_s": 0.0, "texts": 0, "concurrent": 0, "max_concurrent": 0}
+_embed_stats = {"calls": 0, "total_s": 0.0, "texts": 0, "concurrent": 0, "max_concurrent": 0,
+                "oom_retries": 0, "cache_trims": 0}
+
+
+def _encode_oom_safe(model, texts: list[str], prompt):
+    """model.encode with CUDA-OOM protection (07-03 cascade fix, with EMBED_MAX_SEQ).
+
+    On an out-of-memory error: release the caching allocator and retry at half the
+    micro-batch, down to 1 — so one long-text batch degrades that call instead of
+    poisoning every embed for the rest of the run (LightRAG's retries all re-OOM'd:
+    18k-error storm → pipeline halt → 9,041 docs failed). Catches RuntimeError with
+    an OOM message rather than only torch.cuda.OutOfMemoryError because cuBLAS
+    workspace allocation failures surface as plain RuntimeError."""
+    import torch
+    bs = EMBED_BATCH
+    while True:
+        try:
+            out = model.encode(
+                texts,
+                prompt=prompt,
+                normalize_embeddings=True,
+                batch_size=bs,
+                show_progress_bar=False,
+            )
+            break
+        except RuntimeError as e:
+            if "out of memory" not in str(e).lower():
+                raise
+            if EMBED_DEVICE.startswith("cuda"):
+                torch.cuda.empty_cache()
+            if bs <= 1:
+                raise
+            bs = max(1, bs // 2)
+            _embed_stats["oom_retries"] += 1
+            print(f"[EMBED] CUDA OOM at batch_size={bs * 2} — cache emptied, retrying at {bs} "
+                  f"({len(texts)} texts, max_len={max(len(t) for t in texts)} chars)", flush=True)
+    if EMBED_TRIM_GB > 0 and EMBED_DEVICE.startswith("cuda"):
+        try:
+            if torch.cuda.memory_reserved() > EMBED_TRIM_GB * (1 << 30):
+                torch.cuda.empty_cache()
+                _embed_stats["cache_trims"] += 1
+        except Exception:
+            pass
+    return out
 
 _http_client = None
 
@@ -475,13 +546,7 @@ async def local_embed(texts: list[str], context: str = "document") -> np.ndarray
             prompt = QUERY_PROMPT if context == "query" else None
             embeddings = await loop.run_in_executor(
                 _EMBED_EXECUTOR,
-                lambda: model.encode(
-                    texts,
-                    prompt=prompt,
-                    normalize_embeddings=True,
-                    batch_size=EMBED_BATCH,
-                    show_progress_bar=False,
-                ),
+                lambda: _encode_oom_safe(model, texts, prompt),
             )
     finally:
         _embed_stats["concurrent"] -= 1
@@ -1106,7 +1171,8 @@ async def status_monitor(storage_dir: Path, t_start: float):
             print(
                 f"[STATUS] LLM: {llm_calls} calls (+{delta_llm}) avg={avg_llm_s:.1f}s/call | "
                 f"Embed: {embed_calls} calls (+{delta_embed}) avg={avg_embed_s:.1f}s/call "
-                f"batch={avg_batch:.0f} max_concurrent={_embed_stats['max_concurrent']}",
+                f"batch={avg_batch:.0f} max_concurrent={_embed_stats['max_concurrent']} "
+                f"oom_retries={_embed_stats['oom_retries']} cache_trims={_embed_stats['cache_trims']}",
                 flush=True,
             )
             if _context_stats:
