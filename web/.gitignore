@@ -25,3 +25,8 @@ yarn-error.log*
 /playwright/*
 next-env.d.ts
 tsconfig.tsbuildinfo
+
+# atlas data-pipeline intermediates (regenerable; hundreds of MB)
+data-pipeline/raw/
+data-pipeline/.venv/
+data-pipeline/__pycache__/

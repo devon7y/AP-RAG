@@ -10,6 +10,11 @@ Endpoints:
     GET  /health          — liveness check + capability flags
     POST /query           — synthesized answer (LLM over retrieved context)
     POST /retrieve        — structured retrieval only (entities/relationships/chunks), no LLM
+    POST /search          — metadata-filtered semantic search → ranked papers
+    POST /embed           — raw query/document embeddings (Atlas of Mind support)
+    POST /qsearch         — raw chunk-vector search over Qdrant (Atlas of Mind support)
+    POST /vectors         — fetch stored chunk vectors by Qdrant point id (Atlas support)
+    POST /paper_centroid  — unit-norm mean vector of one paper's chunks (Atlas support)
 """
 
 import asyncio
@@ -641,6 +646,129 @@ async def search_papers(req: SearchRequest):
                                 drive_map=apa.load_drive_map(APRAG_DRIVE_MAP))
     return {"status": "success", "papers": papers, "count": len(papers),
             "matched_files": (None if filenames is None else len(filenames))}
+
+
+# ── Atlas of Mind support (web/app/(atlas) proxies these over the tunnel) ─────
+# Raw vector-space primitives the atlas experiences need beyond /query·/retrieve:
+# embeddings for arbitrary text, direct chunk-vector search, stored-vector fetch,
+# and per-paper centroids (the Semantle daily target). All key-gated like the rest.
+
+
+class EmbedRequest(BaseModel):
+    texts: list[str]
+    context: str = "query"          # "query" applies the Qwen3 task instruction
+
+
+class QSearchRequest(BaseModel):
+    """Chunk-vector search. Provide text (embedded server-side) OR a raw vector."""
+    text: str | None = None
+    vector: list[float] | None = None
+    limit: int = 10
+
+
+class VectorsRequest(BaseModel):
+    qids: list[str]                 # Qdrant point ids (from /qsearch hits)
+
+
+class PaperCentroidRequest(BaseModel):
+    file: str                       # file_path payload value (paper filename)
+
+
+def _chunks_qdrant():
+    """(client, collection, workspace) for the chunk store, or 501 when absent."""
+    vdb = getattr(_rag, "chunks_vdb", None)
+    client = getattr(vdb, "_client", None)
+    collection = getattr(vdb, "final_namespace", None) or getattr(vdb, "namespace", None)
+    if not (client and collection):
+        raise HTTPException(status_code=501, detail="Qdrant chunk store unavailable")
+    return client, collection, getattr(vdb, "effective_workspace", "_")
+
+
+@app.post("/embed", dependencies=[Depends(require_api_key)])
+async def embed(req: EmbedRequest):
+    if not 1 <= len(req.texts) <= 16:
+        raise HTTPException(status_code=400, detail="texts: 1-16 strings")
+    context = "document" if req.context == "document" else "query"
+    vecs = await pc_embed([t[:2000] for t in req.texts], context=context)
+    return {"embeddings": np.asarray(vecs).tolist()}
+
+
+@app.post("/qsearch", dependencies=[Depends(require_api_key)])
+async def qsearch(req: QSearchRequest):
+    if _rag is None:
+        raise HTTPException(status_code=503, detail="RAG not initialized")
+    from qdrant_client import models
+    client, collection, workspace = _chunks_qdrant()
+    vector = req.vector
+    if vector is None:
+        if not (req.text and req.text.strip()):
+            raise HTTPException(status_code=400, detail="text or vector required")
+        vector = await _embed_query(req.text)
+    flt = models.Filter(must=[models.FieldCondition(
+        key="workspace_id", match=models.MatchValue(value=workspace))])
+    resp = await asyncio.to_thread(
+        client.query_points, collection_name=collection, query=vector,
+        limit=max(1, min(req.limit, 100)), with_payload=True, query_filter=flt,
+    )
+    hits = []
+    for p in resp.points:
+        payload = p.payload or {}
+        hits.append({
+            "qid": str(p.id),
+            "chunkId": payload.get("id", ""),
+            "file": payload.get("file_path", ""),
+            "score": getattr(p, "score", None),
+        })
+    return {"hits": hits}
+
+
+@app.post("/vectors", dependencies=[Depends(require_api_key)])
+async def vectors(req: VectorsRequest):
+    if _rag is None:
+        raise HTTPException(status_code=503, detail="RAG not initialized")
+    if not 1 <= len(req.qids) <= 64:
+        raise HTTPException(status_code=400, detail="qids: 1-64 ids")
+    client, collection, _workspace = _chunks_qdrant()
+    points = await asyncio.to_thread(
+        client.retrieve, collection_name=collection, ids=req.qids,
+        with_vectors=True, with_payload=False,
+    )
+    return {"vectors": {str(p.id): p.vector for p in points if p.vector is not None}}
+
+
+_CENTROID_CACHE: dict[str, list[float]] = {}
+
+
+@app.post("/paper_centroid", dependencies=[Depends(require_api_key)])
+async def paper_centroid(req: PaperCentroidRequest):
+    """Unit-norm mean of all chunk vectors of one paper (cached; corpus is read-only)."""
+    if _rag is None:
+        raise HTTPException(status_code=503, detail="RAG not initialized")
+    cached = _CENTROID_CACHE.get(req.file)
+    if cached is not None:
+        return {"centroid": cached, "cached": True}
+    from qdrant_client import models
+    client, collection, workspace = _chunks_qdrant()
+    flt = models.Filter(must=[
+        models.FieldCondition(key="workspace_id", match=models.MatchValue(value=workspace)),
+        models.FieldCondition(key="file_path", match=models.MatchValue(value=req.file)),
+    ])
+    vecs: list[list[float]] = []
+    offset = None
+    while True:
+        points, offset = await asyncio.to_thread(
+            client.scroll, collection_name=collection, scroll_filter=flt,
+            limit=256, with_vectors=True, with_payload=False, offset=offset,
+        )
+        vecs.extend(p.vector for p in points if p.vector is not None)
+        if offset is None:
+            break
+    if not vecs:
+        raise HTTPException(status_code=404, detail="no chunks for that file")
+    mean = np.asarray(vecs, dtype=np.float64).mean(axis=0)
+    centroid = (mean / (np.linalg.norm(mean) + 1e-9)).tolist()
+    _CENTROID_CACHE[req.file] = centroid
+    return {"centroid": centroid, "n_chunks": len(vecs)}
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

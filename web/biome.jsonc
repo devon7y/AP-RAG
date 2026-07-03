@@ -16,7 +16,13 @@
       "!components/elements",
       "!components/ui",
       "!lib/utils.ts",
-      "!hooks/use-mobile.ts"
+      "!hooks/use-mobile.ts",
+      // Atlas of Mind code imported from the standalone atlas app — keeps its
+      // original (eslint-flavored) style, so ultracite doesn't police it.
+      "!app/(atlas)",
+      "!components/atlas",
+      "!lib/atlas",
+      "!data-pipeline"
     ]
   },
   "linter": {

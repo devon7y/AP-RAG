@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  CompassIcon,
   MessageSquareIcon,
   PanelLeftIcon,
   PenSquareIcon,
@@ -115,6 +116,18 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                   >
                     <PenSquareIcon className="size-4" />
                     <span className="font-medium">New chat</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    asChild
+                    className="h-8 rounded-lg text-[13px] text-sidebar-foreground/70 transition-colors duration-150 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                    tooltip="Atlas of Mind — games over the corpus"
+                  >
+                    <Link href="/atlas" onClick={() => setOpenMobile(false)}>
+                      <CompassIcon className="size-4" />
+                      <span className="font-medium">Atlas of Mind</span>
+                    </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
                 {user && (

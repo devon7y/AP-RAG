@@ -498,3 +498,83 @@ textarea:focus-visible {
 [data-testid="artifact"] {
   isolation: isolate;
 }
+
+/* ── Atlas of Mind (app/(atlas)) ──────────────────────────────────────────────
+   The atlas experiences are always-dark, full-viewport scenes with their own
+   token set. All raw vars are --atlas-* and defined on .atlas-app (never :root)
+   so nothing collides with the chat UI's --border/--accent/... tokens. The
+   @theme entries below only add ink/page/surface/hairline utilities that the
+   chat theme does not define; "accent" stays chat-owned (atlas code uses
+   text-atlas-accent etc.). */
+
+@theme inline {
+  --color-surface: var(--atlas-surface);
+  --color-page: var(--atlas-page);
+  --color-ink: var(--atlas-ink);
+  --color-ink-2: var(--atlas-ink-2);
+  --color-ink-3: var(--atlas-ink-3);
+  --color-hairline: var(--atlas-hairline);
+  --color-atlas-accent: var(--atlas-accent);
+}
+
+.atlas-app {
+  --atlas-surface: #1a1a19;
+  --atlas-page: #0d0d0d;
+  --atlas-ink: #ffffff;
+  --atlas-ink-2: #c3c2b7;
+  --atlas-ink-3: #898781;
+  --atlas-grid-line: #2c2c2a;
+  --atlas-baseline: #383835;
+  --atlas-hairline: rgba(255, 255, 255, 0.1);
+  --atlas-accent: #3987e5;
+  --atlas-accent-2: #9085e9;
+  --atlas-good: #0ca30c;
+  --atlas-warm: #e66767;
+
+  min-height: 100dvh;
+  background: var(--atlas-page);
+  color: var(--atlas-ink);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  overscroll-behavior: none;
+}
+
+.atlas-app .font-display {
+  font-family: var(--font-display), Georgia, serif;
+}
+
+/* Panel chrome shared by every experience's HUD */
+.atlas-app .hud-panel {
+  background: color-mix(in srgb, var(--atlas-surface) 88%, transparent);
+  border: 1px solid var(--atlas-hairline);
+  border-radius: 12px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+/* On EDR displays let key accents overshoot into HDR headroom (CSS side). */
+body[data-edr="on"] .atlas-app .edr-glow {
+  color: color(display-p3 0.35 0.62 1.2);
+  text-shadow: 0 0 24px color(display-p3 0.25 0.5 1 / 0.55);
+}
+
+.atlas-app ::selection {
+  background: rgba(57, 135, 229, 0.4);
+}
+
+.atlas-app .hud-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--atlas-baseline) transparent;
+}
+
+@keyframes atlas-pulse-soft {
+  0%,
+  100% {
+    opacity: 0.75;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.atlas-app .pulse-soft {
+  animation: atlas-pulse-soft 2.4s ease-in-out infinite;
+}

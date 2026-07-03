@@ -1,0 +1,21 @@
+# Overrides .gitignore for `vercel deploy` uploads — keep the build context lean.
+.git
+.vercel
+node_modules
+.next
+out
+coverage
+test-results
+playwright-report
+blob-report
+
+# local env files must never reach the remote build (Next would load them)
+.env
+.env*.local
+
+# atlas data-pipeline intermediates (regenerable, 300+ MB; includes a >100MB .npy)
+data-pipeline/raw
+data-pipeline/.venv
+data-pipeline/__pycache__
+
+tsconfig.tsbuildinfo
