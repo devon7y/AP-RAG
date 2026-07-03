@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+:root {
+  --surface-1: #1a1a19;
+  --page: #0d0d0d;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --grid-line: #2c2c2a;
+  --baseline: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+  --accent: #3987e5;
+  --accent-2: #9085e9;
+  --good: #0ca30c;
+  --warm: #e66767;
+}
+
+@theme inline {
+  --color-surface: var(--surface-1);
+  --color-page: var(--page);
+  --color-ink: var(--text-primary);
+  --color-ink-2: var(--text-secondary);
+  --color-ink-3: var(--text-muted);
+  --color-hairline: var(--border);
+  --color-accent: var(--accent);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--page);
+  color: var(--text-primary);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  overscroll-behavior: none;
+}
+
+.font-display {
+  font-family: var(--font-display), Georgia, serif;
+}
+
+/* Panel chrome shared by every experience's HUD */
+.hud-panel {
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+/* On EDR displays let key accents overshoot into HDR headroom (CSS side). */
+body[data-edr="on"] .edr-glow {
+  color: color(display-p3 0.35 0.62 1.2);
+  text-shadow: 0 0 24px color(display-p3 0.25 0.5 1 / 0.55);
+}
+
+::selection {
+  background: rgba(57, 135, 229, 0.4);
+}
+
+.hud-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--baseline) transparent;
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 0.75;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.pulse-soft {
+  animation: pulse-soft 2.4s ease-in-out infinite;
+}
