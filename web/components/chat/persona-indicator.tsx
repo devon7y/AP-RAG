@@ -16,8 +16,9 @@ export function PersonaIndicator() {
   const stat = formatAuthorStat(byAuthor.get(personaAuthor));
 
   return (
-    <div className="flex min-w-0 items-center gap-1.5 rounded-full border border-border/60 bg-muted/40 py-1 pr-2.5 pl-2 text-xs">
-      <UserRoundIcon className="size-3.5 shrink-0 text-muted-foreground" />
+    <div className="flex min-w-0 items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 py-1 pr-2.5 pl-2 text-xs">
+      <UserRoundIcon className="size-3.5 shrink-0 text-primary/80" />
+      <span className="shrink-0 font-semibold text-foreground">Author Chat:</span>
       <span className="truncate font-medium text-foreground">{personaAuthor}</span>
       {stat && (
         <span className="hidden shrink-0 text-muted-foreground sm:inline">

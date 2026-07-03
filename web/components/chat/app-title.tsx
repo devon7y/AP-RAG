@@ -4,8 +4,9 @@ import useSWR from "swr";
 import { cn, fetcher } from "@/lib/utils";
 
 // Header title — "AP-RAG — Academic Paper Retrieval-Augmented Generation" with each
-// acronym letter bold. The expansion collapses on small screens.
-export function AppTitle() {
+// acronym letter bold. The expansion collapses on small screens. `showBackend` hides the
+// paper-count + status badges (author chats drop them to make room for the persona label).
+export function AppTitle({ showBackend = true }: { showBackend?: boolean }) {
   return (
     <div className="flex min-w-0 items-center gap-2">
       <span className="shrink-0 font-semibold text-sm tracking-tight">
@@ -19,8 +20,12 @@ export function AppTitle() {
         <b className="font-semibold text-foreground">A</b>ugmented{" "}
         <b className="font-semibold text-foreground">G</b>eneration
       </span>
-      <PaperCount />
-      <BackendStatus />
+      {showBackend && (
+        <>
+          <PaperCount />
+          <BackendStatus />
+        </>
+      )}
     </div>
   );
 }

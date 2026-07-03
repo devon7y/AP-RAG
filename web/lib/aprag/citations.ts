@@ -159,13 +159,24 @@ export function rewriteIntext(
     if (byPaper.size === 0) {
       return ""; // all unknown → strip the stray cluster
     }
-    const parts = [...byPaper.values()]
-      .sort((a, b) => a.intext.toLowerCase().localeCompare(b.intext.toLowerCase()))
-      .map((p) => {
-        const enc = [...p.indices].sort((x, y) => x - y).join("_");
-        return `[${p.intext}](#cite-${enc})`;
-      });
-    return `(${parts.join("; ")})`;
+    const papers = [...byPaper.values()].sort((a, b) =>
+      a.intext.toLowerCase().localeCompare(b.intext.toLowerCase())
+    );
+    // Put the parentheses INSIDE the link text (opening on the first citation, closing on
+    // the last) so the "(" / ")" travel with the adjacent citation and never wrap onto
+    // their own line. The anchor renders with white-space: nowrap.
+    const parts = papers.map((p, i) => {
+      const enc = [...p.indices].sort((x, y) => x - y).join("_");
+      let label = p.intext;
+      if (i === 0) {
+        label = `(${label}`;
+      }
+      if (i === papers.length - 1) {
+        label = `${label})`;
+      }
+      return `[${label}](#cite-${enc})`;
+    });
+    return parts.join("; ");
   });
 }
 

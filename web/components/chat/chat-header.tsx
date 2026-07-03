@@ -4,6 +4,7 @@ import { PanelLeftIcon } from "lucide-react";
 import { memo } from "react";
 import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
+import { useActiveChat } from "@/hooks/use-active-chat";
 import { AppTitle } from "./app-title";
 import { ConnectDialog } from "./connect-dialog";
 import { PersonaIndicator } from "./persona-indicator";
@@ -19,6 +20,8 @@ function PureChatHeader({
   isReadonly: boolean;
 }) {
   const { state, toggleSidebar, isMobile } = useSidebar();
+  const { personaAuthor } = useActiveChat();
+  const isAuthorChat = Boolean(personaAuthor);
 
   if (state === "collapsed" && !isMobile) {
     return null;
@@ -35,12 +38,13 @@ function PureChatHeader({
         <PanelLeftIcon className="size-4" />
       </Button>
 
-      <AppTitle />
+      <AppTitle showBackend={!isAuthorChat} />
 
       <PersonaIndicator />
 
       <div className="ml-auto flex items-center gap-2">
-        <ConnectDialog />
+        {/* Author chats hide the corpus connect/status badge to spotlight the persona. */}
+        {!isAuthorChat && <ConnectDialog />}
         {!isReadonly && (
           <VisibilitySelector
             chatId={chatId}

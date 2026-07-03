@@ -143,15 +143,16 @@ export async function POST(request: Request) {
       await saveChat({
         id,
         userId: session.user.id,
-        title: persona ? `Talk to ${persona}` : "New chat",
+        title: persona ? `(${persona})` : "New chat",
         visibility: selectedVisibilityType,
         personaAuthor: persona,
       });
-      // Persona chats get a stable "Talk to {Author}" title (identifies the author in the
-      // sidebar); only general chats get an LLM topic title.
+      // Author chats get an auto topic title like normal chats, prefixed with the author —
+      // e.g. "(Westbury) Language and Humor" — so history reads clearly.
+      const rawTitlePromise = generateTitleFromUserMessage({ message });
       titlePromise = persona
-        ? null
-        : generateTitleFromUserMessage({ message });
+        ? rawTitlePromise.then((t) => `(${persona}) ${t}`)
+        : rawTitlePromise;
     }
 
     const uiMessages: ChatMessage[] = [
