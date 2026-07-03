@@ -7,9 +7,18 @@ import { createUser, getUser } from "@/lib/db/queries";
 
 import { signIn } from "./auth";
 
+// Registration enforces a valid email + a minimum password length.
 const authFormSchema = z.object({
   email: z.string().email(),
   password: z.string().min(6),
+});
+
+// Login only checks that both fields are present — length/format rules don't belong on a
+// sign-in form (they would permanently lock out any account whose password is short or
+// was created outside the register form). authorize() does the real credential check.
+const loginFormSchema = z.object({
+  email: z.string().min(1),
+  password: z.string().min(1),
 });
 
 export type LoginActionState = {
@@ -21,7 +30,7 @@ export const login = async (
   formData: FormData
 ): Promise<LoginActionState> => {
   try {
-    const validatedData = authFormSchema.parse({
+    const validatedData = loginFormSchema.parse({
       email: formData.get("email"),
       password: formData.get("password"),
     });
