@@ -1,8 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useSession } from "next-auth/react";
 import { useActionState, useEffect, useState } from "react";
 
 import { AuthForm } from "@/components/chat/auth-form";
@@ -11,7 +9,6 @@ import { toast } from "@/components/chat/toast";
 import { type LoginActionState, login } from "../actions";
 
 export default function Page() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [isSuccessful, setIsSuccessful] = useState(false);
 
@@ -20,9 +17,6 @@ export default function Page() {
     { status: "idle" }
   );
 
-  const { update: updateSession } = useSession();
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: router and updateSession are stable refs
   useEffect(() => {
     if (state.status === "failed") {
       toast({ type: "error", description: "Invalid credentials!" });
@@ -33,8 +27,10 @@ export default function Page() {
       });
     } else if (state.status === "success") {
       setIsSuccessful(true);
-      updateSession();
-      router.refresh();
+      // Hard-navigate so the request re-runs the auth middleware with the freshly-set
+      // session cookie and lands on the app. (router.refresh() alone can leave you
+      // stranded on /login.)
+      window.location.assign(`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/`);
     }
   }, [state.status]);
 

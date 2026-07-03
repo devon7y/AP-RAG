@@ -321,11 +321,10 @@ function PureMultimodalInput({
       `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/chat/${chatId}`
     );
 
-    // Apply the previewed filters (manual + non-dismissed detections) and tell the
-    // server which detections the user cancelled. Sent in the request body so they
-    // take effect this turn without waiting for the filter-state ref to update.
+    // Filters are one-shot per message: the previewed filters (manual + non-dismissed
+    // detections) are sent in THIS request's body (with any cancelled detections), then
+    // the active-filter state is cleared below so they don't leak onto the next message.
     const merged = mergeFilters(filters, pendingToFilters());
-    setFilters(merged);
     const extraBody: Record<string, unknown> = {};
     if (merged) {
       extraBody.filters = merged;
@@ -354,6 +353,7 @@ function PureMultimodalInput({
     );
 
     setDismissedKeys(new Set());
+    setFilters(null);
     setAttachments([]);
     setLocalStorageInput("");
     setInput("");

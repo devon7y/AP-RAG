@@ -29,7 +29,7 @@ import {
   type ReasoningEffort,
   type RetrievalMode,
 } from "@/lib/ai/models";
-import type { RagFilters, RagRetrieval } from "@/lib/aprag/types";
+import type { RagFilters } from "@/lib/aprag/types";
 import type { Vote } from "@/lib/db/schema";
 import { ChatbotError } from "@/lib/errors";
 import type { ChatMessage } from "@/lib/types";
@@ -203,14 +203,9 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
     }),
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
-      // Sync the active filter chips to what the server actually applied this turn
-      // (manual + previewed + second-pass extraction, minus dismissals).
-      if (dataPart.type === "data-retrieval") {
-        const applied = (dataPart.data as RagRetrieval).appliedFilters;
-        if (applied !== undefined) {
-          setFilters(applied);
-        }
-      }
+      // Note: we deliberately do NOT sync the composer's active-filter chips to the
+      // server's appliedFilters here — filters are one-shot per message (cleared on send),
+      // so re-populating them would make them "stick" onto the next message.
     },
     onFinish: () => {
       mutate(unstable_serialize(getChatHistoryPaginationKey));

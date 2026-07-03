@@ -1,8 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useSession } from "next-auth/react";
 import { useActionState, useEffect, useState } from "react";
 import { AuthForm } from "@/components/chat/auth-form";
 import { SubmitButton } from "@/components/chat/submit-button";
@@ -10,7 +8,6 @@ import { toast } from "@/components/chat/toast";
 import { type RegisterActionState, register } from "../actions";
 
 export default function Page() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [isSuccessful, setIsSuccessful] = useState(false);
 
@@ -19,9 +16,6 @@ export default function Page() {
     { status: "idle" }
   );
 
-  const { update: updateSession } = useSession();
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: router and updateSession are stable refs
   useEffect(() => {
     if (state.status === "user_exists") {
       toast({ type: "error", description: "Account already exists!" });
@@ -33,10 +27,10 @@ export default function Page() {
         description: "Failed validating your submission!",
       });
     } else if (state.status === "success") {
-      toast({ type: "success", description: "Account created!" });
       setIsSuccessful(true);
-      updateSession();
-      router.refresh();
+      // Hard-navigate so the request re-runs the auth middleware with the freshly-set
+      // session cookie and lands on the app.
+      window.location.assign(`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/`);
     }
   }, [state.status]);
 
