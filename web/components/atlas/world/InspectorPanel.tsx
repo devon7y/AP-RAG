@@ -78,11 +78,12 @@ export default function InspectorPanel({
 
   return (
     <aside className="hud-panel hud-scroll absolute top-20 right-4 bottom-24 z-40 w-[330px] max-w-[85vw] overflow-y-auto p-4">
-      <div className="absolute top-2.5 right-3 flex items-center gap-2">
+      {/* in-flow header row so the buttons never sit on top of card titles */}
+      <div className="-mt-1 mb-2 flex items-center justify-end gap-1 border-b hairline pb-1.5">
         {hasBack && (
           <button
             type="button"
-            className="text-ink-3 transition-colors hover:text-ink"
+            className="rounded px-1.5 text-sm text-ink-3 transition-colors hover:bg-white/5 hover:text-ink"
             onClick={() => useWorld.getState().back()}
             aria-label="Back"
             title="Back"
@@ -92,9 +93,10 @@ export default function InspectorPanel({
         )}
         <button
           type="button"
-          className="text-ink-3 transition-colors hover:text-ink"
+          className="rounded px-1.5 text-sm text-ink-3 transition-colors hover:bg-white/5 hover:text-ink"
           onClick={() => useWorld.getState().select(null)}
           aria-label="Close"
+          title="Close"
         >
           ✕
         </button>
@@ -117,7 +119,7 @@ export default function InspectorPanel({
       {selection.kind === "author" && (
         <AuthorCard corpus={corpus} authors={authors} idx={selection.idx} />
       )}
-      {selection.kind === "ghost" && <GhostCard id={selection.id} />}
+      {selection.kind === "ghost" && <GhostCard corpus={corpus} id={selection.id} />}
     </aside>
   );
 }
@@ -465,9 +467,10 @@ function AuthorCard({
 
 /* ---------------- ghost ---------------- */
 
-function GhostCard({ id }: { id: string }) {
+function GhostCard({ corpus, id }: { corpus: CorpusData; id: string }) {
   const ghosts = useWorld((s) => s.ghosts);
   const removeGhost = useWorld((s) => s.removeGhost);
+  const select = useWorld((s) => s.select);
 
   let ghost: GhostPaper | null = null;
   let neighbors: string[] = [];
@@ -508,12 +511,12 @@ function GhostCard({ id }: { id: string }) {
           <div className="flex flex-wrap gap-1">
             <Chip>{ghost.fields}</Chip>
           </div>
-          <p className="text-[11px] leading-relaxed text-ink-3">
+          <p className="text-xs leading-relaxed text-ink-3">
             <span className="text-ink-2">Methods it would use: </span>
             {ghost.methods}
           </p>
-          <p className="text-[11px] leading-relaxed text-ink-2">{ghost.abstract}</p>
-          <p className="rounded-md border hairline p-2 text-[10px] leading-relaxed text-ink-3">
+          <p className="text-xs leading-relaxed text-ink-2">{ghost.abstract}</p>
+          <p className="rounded-md border hairline p-2 text-[11px] leading-relaxed text-ink-3">
             Generated, not real — a brainstorming aid for what's missing here.
             {echoScore !== null && (
               <>
@@ -528,13 +531,25 @@ function GhostCard({ id }: { id: string }) {
       )}
       {neighbors.length > 0 && (
         <div>
-          <p className="text-[11px] text-ink-2">The surrounding literature</p>
-          <ul className="mt-1 space-y-1">
-            {neighbors.slice(0, 6).map((n) => (
-              <li key={n} className="line-clamp-1 text-[11px] text-ink-3">
-                · {n}
-              </li>
-            ))}
+          <p className="text-xs text-ink-2">The surrounding literature</p>
+          <ul className="mt-1 space-y-0.5">
+            {neighbors.slice(0, 6).map((n) => {
+              const paperIdx = corpus.papers.findIndex((p) => p.title === n);
+              return (
+                <li key={n}>
+                  <button
+                    type="button"
+                    disabled={paperIdx < 0}
+                    className="w-full rounded px-1.5 py-1 text-left text-xs text-ink-3 hover:bg-white/5 hover:text-ink disabled:hover:bg-transparent"
+                    onClick={() =>
+                      paperIdx >= 0 && select({ kind: "paper", idx: paperIdx })
+                    }
+                  >
+                    <span className="line-clamp-2">· {n}</span>
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

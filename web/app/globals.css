@@ -548,8 +548,15 @@ textarea:focus-visible {
   background: color-mix(in srgb, #08080c 55%, transparent);
   border: 1px solid var(--atlas-hairline);
   border-radius: 12px;
+  isolation: isolate;
   backdrop-filter: blur(22px) saturate(1.15);
   -webkit-backdrop-filter: blur(22px) saturate(1.15);
+}
+
+/* True-HDR canvases composite as hardware overlays that backdrop-filter cannot
+   sample (the blur silently no-ops), so the glass goes darker instead. */
+body[data-canvas-mode="webgpu-hdr"] .atlas-app .hud-panel {
+  background: color-mix(in srgb, #060609 82%, transparent);
 }
 
 /* On EDR displays let key accents overshoot into HDR headroom (CSS side). */

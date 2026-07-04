@@ -190,13 +190,22 @@ export const useWorld = create<WorldState>((set) => ({
   set: (k, v) => set({ [k]: v } as Partial<WorldState>),
   setView: (v) => set({ view: v }),
   setInstrument: (i) =>
-    set((s) => ({
-      instrument: i,
-      paneOpen: true,
-      // lenses are scoped to their menu; the gap tool arms map-planting on entry
-      lens: s.instrument === "lenses" && i !== "lenses" ? NO_LENS : s.lens,
-      planting: i === "ghosts",
-    })),
+    set((s) => {
+      const leavingLenses = s.instrument === "lenses" && i !== "lenses";
+      const leavingInterp = s.instrument === "interpolate" && i !== "interpolate";
+      // closing the lens menu closes the author card the lens opened
+      const dropAuthor = leavingLenses && s.selection?.kind === "author";
+      // leaving the engine clears its arc and the auto-opened passage
+      const dropChunk = leavingInterp && s.selection?.kind === "chunk";
+      return {
+        instrument: i,
+        paneOpen: true,
+        lens: leavingLenses ? NO_LENS : s.lens,
+        planting: i === "ghosts", // the gap tool arms map-planting on entry
+        ...(leavingInterp ? { trace: null, arith: null } : {}),
+        ...(dropAuthor || dropChunk ? { selection: null, selectionStack: [] } : {}),
+      };
+    }),
   select: (s) =>
     set((st) => {
       const same =
@@ -212,7 +221,12 @@ export const useWorld = create<WorldState>((set) => ({
           : s === null
             ? []
             : st.selectionStack;
-      return { selection: s, selectionStack: stack };
+      // closing an author card also clears their lens (and vice versa, in setLens)
+      const lens =
+        s === null && st.selection?.kind === "author" && st.lens.author !== null
+          ? { ...st.lens, author: null }
+          : st.lens;
+      return { selection: s, selectionStack: stack, lens };
     }),
   back: () =>
     set((st) => {
@@ -224,7 +238,18 @@ export const useWorld = create<WorldState>((set) => ({
   setSearch: (query, hits) => set({ searchQuery: query, searchHits: hits }),
   requestWarp: (center, standoff, duration = 2.0) =>
     set({ warp: { seq: ++warpSeq, center, standoff, duration } }),
-  setLens: (patch) => set((s) => ({ lens: { ...s.lens, ...patch } })),
+  setLens: (patch) =>
+    set((s) => {
+      // clearing the author lens closes the author card it opened
+      const closing =
+        patch.author === null &&
+        s.lens.author !== null &&
+        s.selection?.kind === "author";
+      return {
+        lens: { ...s.lens, ...patch },
+        ...(closing ? { selection: null, selectionStack: [] } : {}),
+      };
+    }),
   clearLens: () => set({ lens: NO_LENS }),
   addGhost: (g) => set((s) => ({ ghosts: [...s.ghosts, g] })),
   updateGhost: (id, patch) =>

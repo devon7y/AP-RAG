@@ -6,7 +6,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import HDRCanvas from "@/components/atlas/HDRCanvas";
 import { loadAuthors, loadPaperMeta, WORLD_SIZE } from "@/lib/atlas/data";
-import { useEDR } from "@/lib/atlas/edr";
+import { useAtlasStore } from "@/lib/atlas/store";
 import type { AuthorRec, GhostPaper, PaperMeta } from "@/lib/atlas/types";
 import { LoadingVeil, useConstellations, useCorpus, useKnn } from "@/lib/atlas/useCorpus";
 import ArcLayer from "./ArcLayer";
@@ -347,7 +347,7 @@ function World({
         >
           ← Chat
         </Link>
-        <h1 className="font-display edr-glow text-2xl">Papers Atlas</h1>
+        <h1 className="font-display text-2xl text-ink">Papers Atlas</h1>
       </header>
 
       <LeftPane data={data} corpus={corpus} authors={authors} paperMeta={paperMeta} />
@@ -369,11 +369,20 @@ function World({
 }
 
 export default function WorldSceneRoot() {
-  useEDR(); // keeps body[data-edr] current for the CSS HDR accents
   const { corpus, error } = useCorpus();
   const constellations = useConstellations();
   const authors = useAuthors();
   const paperMeta = usePaperMeta();
+
+  // HDR canvases get promoted to hardware overlays that backdrop-filter can't
+  // sample — stamp the mode so the CSS can fall back to darker glass there.
+  const canvasMode = useAtlasStore((s) => s.canvasMode);
+  useEffect(() => {
+    document.body.dataset.canvasMode = canvasMode;
+    return () => {
+      delete document.body.dataset.canvasMode;
+    };
+  }, [canvasMode]);
 
   const data = useMemo(
     () => (corpus && constellations ? deriveWorld(corpus, constellations) : null),

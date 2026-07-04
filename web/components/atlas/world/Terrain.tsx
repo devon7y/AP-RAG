@@ -33,6 +33,8 @@ export default function Terrain({ data }: { data: WorldData }) {
     const material = new MeshBasicNodeMaterial();
     material.transparent = true;
     material.depthWrite = true;
+    // the invisible "sea" (alpha≈0) must not write depth over the stars behind it
+    material.alphaTest = 0.02;
 
     const h = groundHeight(positionLocal);
     material.positionNode = positionLocal.add(vec3(0, h, 0));
@@ -88,6 +90,9 @@ export default function Terrain({ data }: { data: WorldData }) {
       geometry={geometry}
       material={material}
       frustumCulled={false}
+      // draw FIRST among transparents so its depth is written before the point
+      // sprites test against it — otherwise far hills paint over near orbs
+      renderOrder={-10}
     />
   );
 }

@@ -493,9 +493,9 @@ function GhostsPanel({ data }: { data: WorldData }) {
     <div className="space-y-4">
       <div>
         <H>Research gaps</H>
-        <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+        <p className="mt-2 text-xs leading-relaxed text-ink-2">
           A brainstorming tool for what's missing from the literature.{" "}
-          <span className="text-ink-2">Click any spot on the map</span> —
+          <span className="text-ink">Click any spot on the map</span> —
           especially the dark, empty regions between fields — and the AI drafts
           the paper that would live there: a concrete proposal built from the
           surrounding work. A bright marker then shows where that proposal
@@ -506,7 +506,7 @@ function GhostsPanel({ data }: { data: WorldData }) {
       <button
         type="button"
         onClick={() => set("planting", !planting)}
-        className={`w-full rounded-md border px-3 py-2 text-[11px] tracking-widest uppercase transition-colors ${
+        className={`w-full rounded-md border px-3 py-2 text-xs tracking-widest uppercase transition-colors ${
           planting
             ? "border-[#c98500] text-[#c98500]"
             : "border-[#9085e9]/60 text-[#9085e9]"
@@ -517,7 +517,7 @@ function GhostsPanel({ data }: { data: WorldData }) {
 
       {ghosts.length > 0 && (
         <div>
-          <p className="text-[11px] text-ink-2">Proposed papers</p>
+          <p className="text-xs text-ink-2">Proposed papers</p>
           <ul className="mt-1 space-y-0.5">
             {ghosts.map((g) => (
               <li key={g.id} className="flex items-center gap-1">
