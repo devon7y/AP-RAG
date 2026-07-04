@@ -318,12 +318,10 @@ function World({
 
   return (
     <div className="absolute inset-0">
-      {/* fixed negative-z scene layer — see .world-canvas in globals.css */}
-      <div className="world-canvas">
-        <HDRCanvas
-          camera={{ position: [0, 190, 260], fov: 55, near: 0.1, far: 1400 }}
-          clearColor={0x06070c}
-        >
+      <HDRCanvas
+        camera={{ position: [0, 190, 260], fov: 55, near: 0.1, far: 1400 }}
+        clearColor={0x06070c}
+      >
         <WorldDriver data={data} />
         <Atmosphere />
         <DustShell />
@@ -339,7 +337,6 @@ function World({
         <WorldPicker data={data} ghostSites={ghostSites} />
         <CameraRig getRoverPos={() => roverPosRef.current} />
       </HDRCanvas>
-      </div>
 
       {/* chrome */}
       <header className="pointer-events-none absolute top-0 left-0 z-40 flex items-center gap-4 p-5">
@@ -383,8 +380,7 @@ export default function WorldSceneRoot() {
   );
 
   return (
-    <div className="relative h-dvh w-full overflow-hidden">
-      <div className="world-backdrop" aria-hidden />
+    <div className="relative h-dvh w-full overflow-hidden bg-page">
       {error && (
         <div className="absolute inset-0 z-30 flex items-center justify-center text-ink-3">
           Failed to load corpus data: {error}

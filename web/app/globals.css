@@ -532,10 +532,7 @@ textarea:focus-visible {
   --atlas-warm: #e66767;
 
   min-height: 100dvh;
-  /* no background here: the world's canvas lives on a fixed negative-z layer
-     (devon7y.com recipe) — an opaque block background would paint over it.
-     The page base comes from the world's own fixed backdrop layer. */
-  background: transparent;
+  background: var(--atlas-page);
   color: var(--atlas-ink);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   overscroll-behavior: none;
@@ -556,27 +553,6 @@ textarea:focus-visible {
   -webkit-backdrop-filter: blur(22px) saturate(1.15);
 }
 
-/* The world's scene canvas: a fixed background layer at negative z (matching
-   devon7y.com, where backdrop-filter demonstrably samples the same HDR canvas).
-   Composited into the page rather than promoted to an overlay, so the panel
-   blur can actually see it. Pointer events re-enabled on the canvas itself
-   for orbit + picking. */
-.atlas-app .world-canvas {
-  position: fixed;
-  inset: 0;
-  z-index: -2;
-  pointer-events: none;
-}
-.atlas-app .world-canvas canvas {
-  pointer-events: auto;
-}
-.atlas-app .world-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: -3;
-  background: var(--atlas-page);
-  pointer-events: none;
-}
 
 /* On EDR displays let key accents overshoot into HDR headroom (CSS side). */
 body[data-edr="on"] .atlas-app .edr-glow {
