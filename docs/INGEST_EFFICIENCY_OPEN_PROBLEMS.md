@@ -359,3 +359,32 @@ reuses the LLM-response cache). Also: submit ingest with the CURRENT slurm scrip
 **Interaction with P4 (dedicated embed server):** P4 remains the cleaner long-term shape (the
 ingest H100 freed for a 4th vLLM), but is no longer *required* for stability. If P4 lands,
 apply the same `max_seq_length` cap + OOM-halving inside `scripts/server.py`.
+
+---
+
+## 10. DEFER-MODE (2026-07-03) — zero in-line merge summaries + one finalize pass
+
+At ~700 docs the in-line entity/relation merge summaries (`LLMmrg`) became ~45% of
+extraction-side LLM calls (throughput fell to ~15 docs/hr; the cost scales with graph
+density, plateauing near that level). Since we never query the in-progress store,
+summarization is now DEFERRED entirely:
+
+- **Ingest-time env (in the submit TUNE):** `FORCE_LLM_SUMMARY_ON_MERGE=1000000000
+  SUMMARY_MAX_TOKENS=1000000000 SUMMARY_CONTEXT_SIZE=1000000000` — all three are needed
+  (the trigger is fragments>=FORCE OR tokens>=SUMMARY_MAX_TOKENS, and the outer branch
+  gates on SUMMARY_CONTEXT_SIZE). Merges become pure concatenation; zero LLM rewrites.
+  Long un-summarized descriptions are safe to carry because of the §9 embedder guards
+  (EMBED_MAX_SEQ truncates their interim embeddings; finalize re-embeds properly).
+- **Finalize pass (run ONCE after the last document, before deploying to the PC):**
+  `scripts/finalize_summaries.py` + `slurm/job_finalize_summaries_fir.slurm`. Walks the
+  graph, and for every card with >=8 fragments or >=1200 tokens calls LightRAG's own
+  `_handle_entity_relation_summary` (map-reduce built in — cards larger than
+  FINALIZE_CONTEXT_SIZE are summarized hierarchically, so no window can be too small),
+  then re-embeds + upserts the entity/relation VDB records with the library's exact
+  payload composition. Checkpointed (`finalize_checkpoint.jsonl`) and resumable; summary
+  calls go through the LLM response cache. Run `--stats-only` first for a sizing report.
+  Serve the summary vLLM with the longest max-model-len the H100s allow (same Qwen3.6)
+  so ~99% of cards are one-gulp.
+- **Do not regress:** if a cycle is ever launched WITHOUT the three defer vars, in-line
+  summaries silently return and throughput collapses again — they are in the canonical
+  TUNE (docs/CANONICAL_INGEST_PARAMS.md) as of 2026-07-03.
