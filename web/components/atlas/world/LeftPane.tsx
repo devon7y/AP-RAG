@@ -5,10 +5,10 @@ import {
   CircleDashed,
   Clock,
   Compass,
-  Focus,
   PanelLeftClose,
   PanelLeftOpen,
   Radio,
+  RotateCcw,
   SlidersHorizontal,
   Spline,
   Trophy,
@@ -17,7 +17,14 @@ import { qsearch } from "@/lib/atlas/api";
 import type { AuthorRec, CorpusData, PaperMeta } from "@/lib/atlas/types";
 import { buildStation } from "./walk";
 import { primeVoices } from "./tts";
-import { sampleField, toWorldXZ, type WorldData } from "./derive";
+import {
+  AGE_MID,
+  AGE_NEW,
+  AGE_OLD,
+  sampleField,
+  toWorldXZ,
+  type WorldData,
+} from "./derive";
 import GamePanel from "./GamePanel";
 import InterpolatePanel from "./InterpolatePanel";
 import { useWorld, type Instrument } from "./store";
@@ -87,12 +94,12 @@ export default function LeftPane({
             st.requestWarp(
               st.view === "space" ? [0, 0, 0] : [0, 4, 0],
               st.view === "space" ? 130 : 105,
-              2.6,
+              1.3,
             );
           }}
           className="rounded-md p-2 text-ink-3 transition-colors hover:bg-white/5 hover:text-ink-2"
         >
-          <Focus className="size-4" />
+          <RotateCcw className="size-4" />
         </button>
         <button
           type="button"
@@ -183,19 +190,36 @@ function NavigatePanel({ data, corpus }: { data: WorldData; corpus: CorpusData }
             the graph's concepts.
           </p>
         ) : (
-          <p className="mt-2 text-xs leading-relaxed text-ink-3">
-            The same passages in raw 3D semantic space —{" "}
-            <span className="text-ink-2">closeness means related meaning, in
-            every direction</span>. Small stars are passages,{" "}
-            <span className="text-ink-2">colored by publication age</span>{" "}
-            (ember = older, ice-blue = newer). The spiked stars are{" "}
-            <span className="text-ink-2">knowledge-graph entities</span> —
-            concepts, methods, and theories LightRAG extracted while reading —
-            colored by their type and placed at the center of the passages
-            that mention them. Constellation lines thread an entity's passages
-            together; the fainter web joins entities the graph relates. Labels
-            are the entities' own names from the graph.
-          </p>
+          <>
+            <p className="mt-2 text-xs leading-relaxed text-ink-3">
+              The passages in raw 3D semantic space —{" "}
+              <span className="text-ink-2">closeness means related meaning</span>.
+              Small stars are passages; brighter = more connections in the
+              knowledge graph, and{" "}
+              <span className="text-ink-2">colors show publication age</span>.
+              The spiked stars are{" "}
+              <span className="text-ink-2">knowledge-graph entities</span> —
+              concepts, methods, and theories — colored by their type and
+              placed at the center of the passages that mention them.
+              Constellation lines connect an entity's passages together; the
+              fainter web joins entities the graph relates. The floating name
+              tags are those entities' names, exactly as the knowledge graph
+              recorded them while reading the papers.
+            </p>
+            <div className="mt-2.5">
+              <div
+                className="h-1.5 rounded-full"
+                style={{
+                  background: `linear-gradient(90deg, ${AGE_OLD}, ${AGE_MID}, ${AGE_NEW})`,
+                }}
+              />
+              <div className="mt-1 flex justify-between text-[10px] text-ink-3">
+                <span>{data.yearMin}</span>
+                <span>publication year</span>
+                <span>{data.yearMax}</span>
+              </div>
+            </div>
+          </>
         )}
       </div>
 

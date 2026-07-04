@@ -118,6 +118,11 @@ export default function CameraRig({
     // gentle idle orbit (never during a warp tween)
     ctl.autoRotate = st.autoRotate && !tween.current;
 
+    // pan speed compensates for zoomToCursor collapsing the orbit radius —
+    // without this, panning grinds to a halt when zoomed way in
+    const radius = camera.position.distanceTo(ctl.target);
+    ctl.panSpeed = 0.6 * THREE.MathUtils.clamp(40 / Math.max(radius, 1), 1, 14);
+
     // horizon discipline in atlas view
     const groundness = 1 - uMorph.value;
     ctl.maxPolarAngle = THREE.MathUtils.lerp(Math.PI, Math.PI / 2.06, groundness);
@@ -141,7 +146,7 @@ export default function CameraRig({
       maxDistance={300}
       screenSpacePanning
       zoomToCursor
-      autoRotateSpeed={0.35}
+      autoRotateSpeed={-0.35}
     />
   );
 }

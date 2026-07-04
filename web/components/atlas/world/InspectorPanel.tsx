@@ -53,7 +53,7 @@ function Action({
 
 function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded-full border hairline px-2 py-0.5 text-[10px] text-ink-3">
+    <span className="rounded-full border border-current px-2 py-0.5 text-[10px] text-ink-3">
       {children}
     </span>
   );

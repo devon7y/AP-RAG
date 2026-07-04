@@ -150,7 +150,7 @@ function HoverTooltip({
   if (hovered.kind === "paper") {
     const p = corpus.papers[hovered.idx];
     pos = paperWorldPos(data, hovered.idx, uMorph.value, tmp);
-    head = p.journal || "paper";
+    head = "paper";
     body = p.title;
     foot = `${shortCite(p)} · ${p.nChunks} passages · click to inspect`;
   } else {
@@ -164,8 +164,7 @@ function HoverTooltip({
       gy + (data.chunkSpace[i * 3 + 1] - gy) * uMorph.value,
       gz + (data.chunkSpace[i * 3 + 2] - gz) * uMorph.value,
     );
-    const section = corpus.atlas.section[i];
-    head = section && section !== "Untitled" ? section : "passage";
+    head = "passage";
     body = p?.title ?? "Unknown paper";
     foot = `${shortCite(p)} · click to read`;
   }

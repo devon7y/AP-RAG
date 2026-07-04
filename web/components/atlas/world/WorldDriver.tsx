@@ -35,10 +35,14 @@ export default function WorldDriver({ data }: { data: WorldData }) {
     const st = useWorld.getState();
     const dt = Math.min(rawDt, 0.1);
 
-    // morph spring (atlas ⇄ space)
+    // morph: lift-off eases out into space; touchdown lands at constant speed
     const target = st.view === "space" ? 1 : 0;
-    uMorph.value += (target - uMorph.value) * Math.min(1, dt * 2.4);
-    if (Math.abs(uMorph.value - target) < 0.001) uMorph.value = target;
+    if (target === 1) {
+      uMorph.value += (1 - uMorph.value) * Math.min(1, dt * 2.4);
+      if (1 - uMorph.value < 0.001) uMorph.value = 1;
+    } else {
+      uMorph.value = Math.max(0, uMorph.value - dt * 0.85);
+    }
 
     // time machine playback
     let y = st.year;

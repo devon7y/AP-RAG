@@ -27,6 +27,7 @@ import {
   uYear,
   uYearLo,
 } from "./uniforms";
+import { clusterColor } from "@/lib/atlas/palette";
 import { useAtlasStore } from "@/lib/atlas/store";
 
 /**
@@ -147,11 +148,12 @@ export default function PaperBeacons({
       .add(vec3(1, 1, 1).mul(recency).mul(uFlash).mul(uHit).mul(profile).mul(alive));
     mat.opacityNode = smoothstep(0.95, 0.55, d)
       .mul(alive)
-      .mul(dim.mul(0.85).add(0.15))
-      .add(white.mul(0.2));
+      .mul(dim.mul(0.85).add(0.15));
+    // white focus breathes at the same rate as the selection ring (4.6 rad/s)
+    const focusBreath = sin(time.mul(4.6)).mul(0.5).add(0.5).mul(0.18).add(0.12);
     mat.sizeNode = aSize
       .mul(goldPulse.mul(0.5).add(1.0))
-      .mul(white.mul(0.3).add(1.0))
+      .mul(white.mul(focusBreath).add(1.0))
       .mul(recency.mul(uFlash).mul(0.8).add(1.0));
 
     const sprite = new THREE.Sprite(mat as unknown as THREE.SpriteMaterial);
@@ -195,29 +197,24 @@ function SelectionRings({ data }: { data: WorldData }) {
   return (
     <>
       {hoverIdx !== null && hoverIdx !== selIdx && (
-        <Ring data={data} idx={hoverIdx} color="#c3c2b7" base={1.0} pulse={0.12} speed={5} />
+        <Ring data={data} idx={hoverIdx} baseOpacity={0.55} />
       )}
-      {selIdx !== null && (
-        <Ring data={data} idx={selIdx} color="#9ec5f4" base={1.15} pulse={0.22} speed={2.6} />
-      )}
+      {selIdx !== null && <Ring data={data} idx={selIdx} baseOpacity={0.95} />}
     </>
   );
 }
 
+/** The ring wears the paper's own color, breathes in sync with the beacon's
+ *  white focus glow (4.6 rad/s), and fades away as the camera closes in —
+ *  up close the glowing beacon itself is the indicator. */
 function Ring({
   data,
   idx,
-  color,
-  base,
-  pulse,
-  speed,
+  baseOpacity,
 }: {
   data: WorldData;
   idx: number;
-  color: string;
-  base: number;
-  pulse: number;
-  speed: number;
+  baseOpacity: number;
 }) {
   const boost = useAtlasStore((s) => s.hdrBoost);
   const sprite = useMemo(() => {
@@ -232,20 +229,36 @@ function Ring({
     s.renderOrder = 10; // last among transparents — never hidden by the grid
     return s;
   }, []);
-  useEffect(() => {
-    sprite.material.color.set(color).multiplyScalar(0.85 * boost);
-  }, [sprite, color, boost]);
   useEffect(() => () => sprite.material.dispose(), [sprite]);
 
+  const paperColor = useMemo(
+    () => new THREE.Color(clusterColor(data.paperCluster[idx])),
+    [data, idx],
+  );
+  const white = useMemo(() => new THREE.Color(1, 1, 1), []);
   const tmp = useMemo(() => new THREE.Vector3(), []);
-  useFrame((state) => {
+
+  useFrame((state, _dt) => {
     const t = state.clock.elapsedTime;
+    const breath = 0.5 + 0.5 * Math.sin(t * 4.6); // same phase as the beacon glow
     paperWorldPos(data, idx, uMorph.value, tmp);
     sprite.position.copy(tmp);
-    // tight ring — the focused beacon itself also glows white
+
     const size = 1.1 + data.paperSize[idx] * 0.5;
-    sprite.scale.setScalar(size * (base + pulse * (0.5 + 0.5 * Math.sin(t * speed))));
+    sprite.scale.setScalar(size * (1.05 + 0.18 * breath));
     sprite.material.rotation = t * 0.3;
+
+    // paper-colored ring, glowing toward white on the shared breath
+    sprite.material.color
+      .copy(paperColor)
+      .lerp(white, 0.35 + 0.45 * breath)
+      .multiplyScalar(0.9 * boost);
+
+    // fade out as the camera closes in — the beacon takes over up close
+    const dist = state.camera.position.distanceTo(tmp);
+    const near = THREE.MathUtils.clamp((dist - 9) / 12, 0, 1);
+    sprite.material.opacity = baseOpacity * near;
+    sprite.visible = near > 0.02;
   });
 
   return <primitive object={sprite} />;
