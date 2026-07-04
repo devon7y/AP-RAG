@@ -41,6 +41,23 @@ Defaults cover everything; override individual knobs only when experimenting, e.
 `--export=ALL,VLLM_KV_CACHE_DTYPE=fp8` on the vLLM job or
 `--export=ALL,MAX_PARALLEL_INSERT=32` on the ingest job.
 
+## Defer-mode summarization (MANDATORY since 2026-07-03)
+
+Every ingest cycle MUST export the three defer vars (they ride the standard TUNE):
+
+```
+FORCE_LLM_SUMMARY_ON_MERGE=1000000000
+SUMMARY_MAX_TOKENS=1000000000
+SUMMARY_CONTEXT_SIZE=1000000000
+```
+
+They turn OFF LightRAG's in-line entity/relation merge summaries (which reached ~45%
+of extraction-side LLM calls by ~700 docs and capped throughput at ~15 docs/hr).
+Merges become pure fragment concatenation; the one-time tidy-up runs at corpus end
+via `scripts/finalize_summaries.py` (see INGEST_EFFICIENCY_OPEN_PROBLEMS.md §10).
+Launching a cycle WITHOUT these silently reintroduces the rewrites. Validation
+signal: `grep -c LLMmrg <ingest .err>` must stay 0 during ingest.
+
 ## Notes
 
 - Always clean stale endpoint files before submitting vLLM jobs (the ingest also
