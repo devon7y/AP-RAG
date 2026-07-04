@@ -58,8 +58,10 @@ export default function CommandBar({
         const st = useWorld.getState();
         if (typing) (e.target as HTMLElement).blur();
         else if (st.planting) st.set("planting", false);
-        else if (st.searchHits) st.setSearch("", null);
-        else if (st.selection) st.select(null);
+        else if (st.searchHits) {
+          st.setSearch("", null);
+          setValue(""); // cancelling a search also empties the bar
+        } else if (st.selection) st.select(null);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -249,7 +251,10 @@ export default function CommandBar({
               </p>
               <button
                 type="button"
-                onClick={() => useWorld.getState().setSearch("", null)}
+                onClick={() => {
+                  useWorld.getState().setSearch("", null);
+                  setValue("");
+                }}
                 className="text-ink-3 transition-colors hover:text-ink"
                 aria-label="Clear search"
               >

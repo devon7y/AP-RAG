@@ -38,10 +38,10 @@ export default function WorldDriver({ data }: { data: WorldData }) {
     // morph: lift-off eases out into space; touchdown lands at constant speed
     const target = st.view === "space" ? 1 : 0;
     if (target === 1) {
-      uMorph.value += (1 - uMorph.value) * Math.min(1, dt * 2.4);
+      uMorph.value += (1 - uMorph.value) * Math.min(1, dt * 4.8);
       if (1 - uMorph.value < 0.001) uMorph.value = 1;
     } else {
-      uMorph.value = Math.max(0, uMorph.value - dt * 0.85);
+      uMorph.value = Math.max(0, uMorph.value - dt * 2.55);
     }
 
     // time machine playback

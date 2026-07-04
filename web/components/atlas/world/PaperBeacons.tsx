@@ -254,9 +254,9 @@ function Ring({
       .lerp(white, 0.35 + 0.45 * breath)
       .multiplyScalar(0.9 * boost);
 
-    // fade out as the camera closes in — the beacon takes over up close
+    // fade out well before the camera gets close — the beacon takes over
     const dist = state.camera.position.distanceTo(tmp);
-    const near = THREE.MathUtils.clamp((dist - 9) / 12, 0, 1);
+    const near = THREE.MathUtils.clamp((dist - 26) / 16, 0, 1);
     sprite.material.opacity = baseOpacity * near;
     sprite.visible = near > 0.02;
   });

@@ -13,7 +13,6 @@ import { paperWorldPos } from "./PaperBeacons";
 import { authorAnchors } from "./derive";
 import { useWorld } from "./store";
 import { uCalm, uMorph } from "./uniforms";
-import { useAtlasStore } from "@/lib/atlas/store";
 
 /**
  * Metadata made visible:
@@ -26,40 +25,95 @@ import { useAtlasStore } from "@/lib/atlas/store";
 
 const TRAIL_GOLD = "#ffd27a";
 
-/** Clickable waypoint dot on the trail — native title tooltip, morph-aware. */
-function Waypoint({
-  paperIdx,
-  g,
-  s,
-  title,
-  year,
-}: {
+interface TrailWaypoint {
   paperIdx: number;
   g: THREE.Vector3;
   s: THREE.Vector3;
-  title: string;
-  year: number;
+}
+
+/**
+ * Every paper on the trail gets an always-visible label chip, kept close to
+ * its beacon but de-overlapped in screen space each frame (labels are sorted
+ * by projected y and pushed apart to a minimum gap).
+ */
+function TrailLabels({
+  waypoints,
+  corpus,
+}: {
+  waypoints: TrailWaypoint[];
+  corpus: CorpusData;
 }) {
-  const group = useRef<THREE.Group>(null);
-  useFrame(() => {
-    group.current?.position.copy(g).lerp(s, uMorph.value);
+  const groupRefs = useRef<(THREE.Group | null)[]>([]);
+  const innerRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const proj = useMemo(() => new THREE.Vector3(), []);
+
+  useFrame(({ camera, size }) => {
+    const items: { i: number; y: number; visible: boolean }[] = [];
+    waypoints.forEach((w, i) => {
+      const g = groupRefs.current[i];
+      if (!g) return;
+      g.position.copy(w.g).lerp(w.s, uMorph.value);
+      proj.copy(g.position).project(camera);
+      items.push({
+        i,
+        y: ((1 - proj.y) / 2) * size.height,
+        visible: proj.z < 1,
+      });
+    });
+    items.sort((a, b) => a.y - b.y);
+    let prevY = Number.NEGATIVE_INFINITY;
+    for (const it of items) {
+      const el = innerRefs.current[it.i];
+      if (!el) continue;
+      if (!it.visible) {
+        el.style.display = "none";
+        continue;
+      }
+      el.style.display = "";
+      let y = it.y;
+      if (y < prevY + 19) y = prevY + 19;
+      prevY = y;
+      el.style.transform = `translate(10px, ${y - it.y - 9}px)`;
+    }
   });
+
   return (
-    <group ref={group}>
-      <Html center zIndexRange={[24, 0]} style={{ pointerEvents: "none" }}>
-        <button
-          type="button"
-          title={`${year || "n.d."} — ${title}`}
-          onClick={() => useWorld.getState().select({ kind: "paper", idx: paperIdx })}
-          className="pointer-events-auto block h-3 w-3 cursor-pointer rounded-full border transition-transform hover:scale-150"
-          style={{
-            borderColor: TRAIL_GOLD,
-            background: "rgba(255,210,122,0.35)",
-            boxShadow: "0 0 8px rgba(255,210,122,0.8)",
-          }}
-        />
-      </Html>
-    </group>
+    <>
+      {waypoints.map((w, i) => {
+        const p = corpus.papers[w.paperIdx];
+        return (
+          <group
+            key={w.paperIdx}
+            ref={(el) => {
+              groupRefs.current[i] = el;
+            }}
+          >
+            <Html zIndexRange={[22, 0]} style={{ pointerEvents: "none" }}>
+              <div
+                ref={(el) => {
+                  innerRefs.current[i] = el;
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() =>
+                    useWorld.getState().select({ kind: "paper", idx: w.paperIdx })
+                  }
+                  className="pointer-events-auto block max-w-[220px] cursor-pointer truncate rounded-full border px-2 py-0.5 text-left text-[10px] leading-4 whitespace-nowrap backdrop-blur-[2px]"
+                  style={{
+                    borderColor: `${TRAIL_GOLD}88`,
+                    color: TRAIL_GOLD,
+                    background: "rgba(10,10,14,0.55)",
+                  }}
+                >
+                  {p.year || "n.d."} · {p.title}
+                </button>
+              </div>
+            </Html>
+          </group>
+        );
+      })}
+    </>
   );
 }
 
@@ -72,8 +126,6 @@ function AuthorTrail({
   corpus: CorpusData;
   author: AuthorRec;
 }) {
-  const boost = useAtlasStore((s) => s.hdrBoost);
-
   const built = useMemo(() => {
     const papers = [...author.papers].sort(
       (a, b) => (corpus.papers[a].year || 3000) - (corpus.papers[b].year || 3000),
@@ -83,8 +135,9 @@ function AuthorTrail({
     const gPts: THREE.Vector3[] = [];
     const sPts: THREE.Vector3[] = [];
     for (const p of papers) {
+      // the trail threads straight through the beacons themselves
       paperWorldPos(data, p, 0, tmp);
-      gPts.push(tmp.clone().add(new THREE.Vector3(0, 1.2, 0)));
+      gPts.push(tmp.clone());
       paperWorldPos(data, p, 1, tmp);
       sPts.push(tmp.clone());
     }
@@ -112,7 +165,7 @@ function AuthorTrail({
     return { gCurve, sCurve, pos, spc, col, waypoints };
   }, [data, corpus, author]);
 
-  const { line, geo, mat, comet } = useMemo(() => {
+  const { line, geo, mat } = useMemo(() => {
     const geo = new THREE.BufferGeometry();
     const mat = new LineBasicNodeMaterial();
     mat.transparent = true;
@@ -123,16 +176,7 @@ function AuthorTrail({
     mat.opacityNode = uCalm.mul(0.75);
     const line = new THREE.Line(geo, mat);
     line.frustumCulled = false;
-    const comet = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: glowTexture(),
-        transparent: true,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-      }),
-    );
-    comet.material.color.set(TRAIL_GOLD);
-    return { line, geo, mat, comet };
+    return { line, geo, mat };
   }, []);
 
   useEffect(() => {
@@ -147,36 +191,15 @@ function AuthorTrail({
     () => () => {
       geo.dispose();
       mat.dispose();
-      comet.material.dispose();
     },
-    [geo, mat, comet],
+    [geo, mat],
   );
-
-  useFrame((state) => {
-    if (!built) return;
-    const t = (state.clock.elapsedTime * 0.07) % 1;
-    const gp = built.gCurve.getPoint(t);
-    const sp = built.sCurve.getPoint(t);
-    comet.position.lerpVectors(gp, sp, uMorph.value);
-    comet.scale.setScalar(2.0 + 0.3 * Math.sin(state.clock.elapsedTime * 4));
-    comet.material.opacity = 0.85 * boost;
-  });
 
   if (!built) return null;
   return (
     <group>
       <primitive object={line} />
-      <primitive object={comet} />
-      {built.waypoints.map((w) => (
-        <Waypoint
-          key={w.paperIdx}
-          paperIdx={w.paperIdx}
-          g={w.g}
-          s={w.s}
-          title={corpus.papers[w.paperIdx].title}
-          year={corpus.papers[w.paperIdx].year}
-        />
-      ))}
+      <TrailLabels waypoints={built.waypoints} corpus={corpus} />
     </group>
   );
 }

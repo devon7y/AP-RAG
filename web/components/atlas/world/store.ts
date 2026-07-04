@@ -260,7 +260,14 @@ export const useWorld = create<WorldState>((set) => ({
         ...(closing ? { selection: null, selectionStack: [] } : {}),
       };
     }),
-  clearLens: () => set({ lens: NO_LENS }),
+  clearLens: () =>
+    set((s) => ({
+      lens: NO_LENS,
+      // dropping the lens also closes the author card it opened
+      ...(s.selection?.kind === "author"
+        ? { selection: null, selectionStack: [] }
+        : {}),
+    })),
   addGhost: (g) => set((s) => ({ ghosts: [...s.ghosts, g] })),
   updateGhost: (id, patch) =>
     set((s) => ({
