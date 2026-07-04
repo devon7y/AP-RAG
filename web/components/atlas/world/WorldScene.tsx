@@ -361,8 +361,8 @@ function World({
       />
 
       <p className="pointer-events-none absolute right-5 bottom-4 z-40 hidden text-[11px] text-ink-3 sm:block">
-        drag to orbit · scroll to zoom · click to inspect · double-click to fly ·{" "}
-        <kbd className="rounded border border-white/15 px-1">/</kbd> to command
+        drag to orbit · ctrl+drag to pan · scroll to zoom · click to inspect ·
+        double-click to fly
       </p>
     </div>
   );
@@ -398,7 +398,7 @@ export default function WorldSceneRoot() {
           Failed to load corpus data: {error}
         </div>
       )}
-      {!error && !data && <LoadingVeil label="growing the world…" />}
+      {!error && !data && <LoadingVeil label="Loading the Papers Atlas…" />}
       {data && authors && (
         <World data={data} authors={authors} paperMeta={paperMeta} />
       )}

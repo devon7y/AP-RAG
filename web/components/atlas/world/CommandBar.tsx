@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Search as SearchIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { qsearch } from "@/lib/atlas/api";
 import { SEQ_BLUE } from "@/lib/atlas/palette";
@@ -305,13 +306,13 @@ export default function CommandBar({
       {notice && <p className="mb-2 text-center text-[11px] text-[#fab219]">{notice}</p>}
 
       <form onSubmit={run} className="hud-panel flex items-center gap-3 px-4 py-2.5">
-        <span
-          className={`shrink-0 text-[10px] font-medium tracking-[0.3em] uppercase ${
-            busy ? "pulse-soft text-[#3987e5]" : "text-ink-3"
-          }`}
-        >
-          {busy ?? "search"}
-        </span>
+        {busy ? (
+          <span className="pulse-soft shrink-0 text-[10px] font-medium tracking-[0.3em] text-[#3987e5] uppercase">
+            {busy}
+          </span>
+        ) : (
+          <SearchIcon className="size-4 shrink-0 text-ink-3" />
+        )}
         <input
           ref={inputRef}
           value={value}

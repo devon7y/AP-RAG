@@ -552,7 +552,7 @@ textarea:focus-visible {
   /* NOTE: no manual -webkit-backdrop-filter here — LightningCSS collapses the
      pair into ONLY the -webkit- form, which Chrome ignores (no blur at all).
      The standard property alone gets prefixed correctly per browserslist. */
-  backdrop-filter: blur(22px) saturate(1.15);
+  backdrop-filter: blur(14px) saturate(1.05);
 }
 
 /* Extended-tone-mapped (true HDR) canvases hand backdrop-filter a ~5×-dark
@@ -561,8 +561,10 @@ textarea:focus-visible {
    the HDR pipeline only — on SDR canvases the sample is correct and this
    would blow it out. */
 body[data-canvas-mode="webgpu-hdr"] .atlas-app .hud-panel {
-  background: color-mix(in srgb, #08080c 42%, transparent);
-  backdrop-filter: blur(22px) brightness(5) saturate(1.2);
+  /* neutral dark glass: desaturate the (often colorful) sampled scene and
+     keep the lift modest so text contrast holds */
+  background: color-mix(in srgb, #0a0a0e 62%, transparent);
+  backdrop-filter: blur(14px) brightness(3) saturate(0.85);
 }
 
 

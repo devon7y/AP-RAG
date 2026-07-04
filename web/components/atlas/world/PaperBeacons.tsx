@@ -103,7 +103,6 @@ export default function PaperBeacons({
 
     const aSize = aG4.z;
     const aYear = aG4.w;
-    const aSel = aFx.x;
     const aDim = aFx.y;
 
     const mat = new PointsNodeMaterial();
@@ -124,7 +123,12 @@ export default function PaperBeacons({
       .oneMinus()
       .mul(step(0.5, aYear));
     const dim = float(1).sub(aDim.mul(0.9));
-    const goldPulse = sin(time.mul(3.4)).mul(0.5).add(0.5).mul(0.6).add(0.4).mul(aSel);
+    // the sel lane carries two signals: 0..1 = lens-match gold, +2 = hovered/
+    // selected (the beacon itself glows white — no oversized ring needed)
+    const gold = aFx.x.clamp(0, 1);
+    const white = aFx.x.sub(1).clamp(0, 1);
+    const goldPulse = sin(time.mul(3.4)).mul(0.5).add(0.5).mul(0.6).add(0.4).mul(gold);
+    const whiteGlow = sin(time.mul(4.6)).mul(0.5).add(0.5).mul(0.3).add(0.7).mul(white);
 
     const d = uv().sub(0.5).length().mul(2.0).clamp(0, 1);
     // beacon profile: hot core + a distinct halo ring (reads different from chunks)
@@ -139,12 +143,15 @@ export default function PaperBeacons({
       .mul(dim)
       .mul(alive)
       .add(vec3(GOLD.r, GOLD.g, GOLD.b).mul(goldPulse).mul(uHit).mul(profile).mul(alive))
+      .add(vec3(1.2, 1.2, 1.25).mul(whiteGlow).mul(uHit).mul(profile))
       .add(vec3(1, 1, 1).mul(recency).mul(uFlash).mul(uHit).mul(profile).mul(alive));
     mat.opacityNode = smoothstep(0.95, 0.55, d)
       .mul(alive)
-      .mul(dim.mul(0.85).add(0.15));
+      .mul(dim.mul(0.85).add(0.15))
+      .add(white.mul(0.2));
     mat.sizeNode = aSize
       .mul(goldPulse.mul(0.5).add(1.0))
+      .mul(white.mul(0.3).add(1.0))
       .mul(recency.mul(uFlash).mul(0.8).add(1.0));
 
     const sprite = new THREE.Sprite(mat as unknown as THREE.SpriteMaterial);
@@ -153,14 +160,20 @@ export default function PaperBeacons({
     return { sprite, fxAttr };
   }, [data]);
 
+  const selection = useWorld((s) => s.selection);
+  const hovered = useWorld((s) => s.hovered);
+  const selIdx = selection?.kind === "paper" ? selection.idx : null;
+  const hovIdx = hovered?.kind === "paper" ? hovered.idx : null;
+
   useEffect(() => {
     const arr = fxAttr.array as Float32Array;
     for (let i = 0; i < data.nPapers; i++) {
-      arr[i * 2] = goldMask ? goldMask[i] : 0;
+      const focus = i === selIdx || i === hovIdx ? 2 : 0;
+      arr[i * 2] = (goldMask ? goldMask[i] : 0) + focus;
       arr[i * 2 + 1] = lensMask ? lensMask[i] : 0;
     }
     fxAttr.needsUpdate = true;
-  }, [lensMask, goldMask, fxAttr, data.nPapers]);
+  }, [lensMask, goldMask, fxAttr, data.nPapers, selIdx, hovIdx]);
 
   useEffect(() => () => sprite.material.dispose(), [sprite]);
 
@@ -215,7 +228,9 @@ function Ring({
       depthTest: false,
       blending: THREE.AdditiveBlending,
     });
-    return new THREE.Sprite(m);
+    const s = new THREE.Sprite(m);
+    s.renderOrder = 10; // last among transparents — never hidden by the grid
+    return s;
   }, []);
   useEffect(() => {
     sprite.material.color.set(color).multiplyScalar(0.85 * boost);
@@ -227,7 +242,8 @@ function Ring({
     const t = state.clock.elapsedTime;
     paperWorldPos(data, idx, uMorph.value, tmp);
     sprite.position.copy(tmp);
-    const size = 2.2 + data.paperSize[idx] * 1.6;
+    // tight ring — the focused beacon itself also glows white
+    const size = 1.1 + data.paperSize[idx] * 0.5;
     sprite.scale.setScalar(size * (base + pulse * (0.5 + 0.5 * Math.sin(t * speed))));
     sprite.material.rotation = t * 0.3;
   });

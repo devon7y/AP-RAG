@@ -5,6 +5,7 @@ import {
   CircleDashed,
   Clock,
   Compass,
+  Focus,
   PanelLeftClose,
   PanelLeftOpen,
   Radio,
@@ -77,6 +78,22 @@ export default function LeftPane({
           </button>
         ))}
         <div className="mx-1 my-1 border-t hairline" />
+        <button
+          type="button"
+          title="Reset camera"
+          onClick={() => {
+            const st = useWorld.getState();
+            st.set("autoRotate", true);
+            st.requestWarp(
+              st.view === "space" ? [0, 0, 0] : [0, 4, 0],
+              st.view === "space" ? 130 : 105,
+              2.6,
+            );
+          }}
+          className="rounded-md p-2 text-ink-3 transition-colors hover:bg-white/5 hover:text-ink-2"
+        >
+          <Focus className="size-4" />
+        </button>
         <button
           type="button"
           title={paneOpen ? "Collapse" : "Expand"}
@@ -153,27 +170,31 @@ function NavigatePanel({ data, corpus }: { data: WorldData; corpus: CorpusData }
         {view === "atlas" ? (
           <p className="mt-2 text-xs leading-relaxed text-ink-3">
             Every passage of every paper is embedded by the language model, then
-            flattened onto this map — <span className="text-ink-2">nearby
-            means similar in meaning</span>, so position is topic.{" "}
-            <span className="text-ink-2">Height is how much has been
-            written</span>: mountains are heavily-studied ideas, open water is
-            unexplored. The small lights are individual passages (brighter =
-            better connected in the knowledge graph); the haloed beacons are
-            whole papers, placed at the center of their passages; the spiked
-            stars floating above are the graph's concepts.
+            flattened onto this map —{" "}
+            <span className="text-ink-2">nearby means similar in meaning</span>.{" "}
+            <span className="text-ink-2">Height counts passages</span>:
+            mountains rise where many passages pile onto the same idea; empty
+            areas are unexplored.{" "}
+            <span className="text-ink-2">Color marks the semantic region</span>{" "}
+            — passages in the same topic cluster share a hue. The small lights
+            are individual passages (brighter = more connections in the
+            knowledge graph); the haloed beacons are whole papers, placed at
+            the center of their passages; the spiked stars floating above are
+            the graph's concepts.
           </p>
         ) : (
           <p className="mt-2 text-xs leading-relaxed text-ink-3">
             The same passages in raw 3D semantic space —{" "}
             <span className="text-ink-2">closeness means related meaning, in
-            every direction</span>. Small stars are passages, colored by age
+            every direction</span>. Small stars are passages,{" "}
+            <span className="text-ink-2">colored by publication age</span>{" "}
             (ember = older, ice-blue = newer). The spiked stars are{" "}
             <span className="text-ink-2">knowledge-graph entities</span> —
             concepts, methods, and theories LightRAG extracted while reading —
-            each placed at the center of the passages that mention it.
-            Constellation lines thread an entity's passages together; the
-            fainter web joins entities the graph relates. Labels are the
-            entities' own names from the graph.
+            colored by their type and placed at the center of the passages
+            that mention them. Constellation lines thread an entity's passages
+            together; the fainter web joins entities the graph relates. Labels
+            are the entities' own names from the graph.
           </p>
         )}
       </div>

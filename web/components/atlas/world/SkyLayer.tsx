@@ -246,7 +246,9 @@ function EntityRing({ data, idx, color }: { data: WorldData; idx: number; color:
       blending: THREE.AdditiveBlending,
     });
     m.color.set(color);
-    return new THREE.Sprite(m);
+    const s = new THREE.Sprite(m);
+    s.renderOrder = 10;
+    return s;
   }, [color]);
   useEffect(() => () => sprite.material.dispose(), [sprite]);
   const tmp = useMemo(() => new THREE.Vector3(), []);

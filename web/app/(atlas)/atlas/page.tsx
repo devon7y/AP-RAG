@@ -11,7 +11,7 @@ const WorldScene = dynamic(() => import("@/components/atlas/world/WorldScene"), 
   ssr: false,
   loading: () => (
     <div className="flex h-dvh items-center justify-center bg-page">
-      <p className="pulse-soft font-display text-xl text-ink-2">growing the world…</p>
+      <p className="pulse-soft font-display text-xl text-ink-2">Loading the Papers Atlas…</p>
     </div>
   ),
 });

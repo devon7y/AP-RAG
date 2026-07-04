@@ -97,6 +97,9 @@ interface WorldState {
   showWeb: boolean;
   showLabels: boolean;
 
+  /** gentle idle orbit — on until the user moves the camera themselves */
+  autoRotate: boolean;
+
   // interpolation engine
   trace: Trace | null;
   traceT: number; // probe position 0..1 along the geodesic
@@ -167,6 +170,8 @@ export const useWorld = create<WorldState>((set) => ({
   showSky: true,
   showWeb: true,
   showLabels: true,
+
+  autoRotate: true,
 
   trace: null,
   traceT: 0.5,

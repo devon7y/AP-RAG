@@ -44,6 +44,15 @@ export default function CameraRig({
   const baseFov = useRef<number | null>(null);
   const followTmp = useMemo(() => new THREE.Vector3(), []);
 
+  // the idle orbit stops for good the moment the user moves the camera
+  useEffect(() => {
+    const ctl = controls.current;
+    if (!ctl) return;
+    const stop = () => useWorld.getState().set("autoRotate", false);
+    ctl.addEventListener("start", stop);
+    return () => ctl.removeEventListener("start", stop);
+  }, []);
+
   useEffect(() => {
     if (!warp || !controls.current) return;
     baseFov.current ??= camera.fov;
@@ -106,6 +115,9 @@ export default function CameraRig({
       }
     }
 
+    // gentle idle orbit (never during a warp tween)
+    ctl.autoRotate = st.autoRotate && !tween.current;
+
     // horizon discipline in atlas view
     const groundness = 1 - uMorph.value;
     ctl.maxPolarAngle = THREE.MathUtils.lerp(Math.PI, Math.PI / 2.06, groundness);
@@ -129,6 +141,7 @@ export default function CameraRig({
       maxDistance={300}
       screenSpacePanning
       zoomToCursor
+      autoRotateSpeed={0.35}
     />
   );
 }
