@@ -6,6 +6,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import HDRCanvas from "@/components/atlas/HDRCanvas";
 import { loadAuthors, loadPaperMeta, WORLD_SIZE } from "@/lib/atlas/data";
+import { useAtlasStore } from "@/lib/atlas/store";
 import type { AuthorRec, GhostPaper, PaperMeta } from "@/lib/atlas/types";
 import { LoadingVeil, useConstellations, useCorpus, useKnn } from "@/lib/atlas/useCorpus";
 import ArcLayer from "./ArcLayer";
@@ -372,6 +373,17 @@ export default function WorldSceneRoot() {
   const constellations = useConstellations();
   const authors = useAuthors();
   const paperMeta = usePaperMeta();
+
+  // Extended-tone-mapped canvases hand backdrop-filter a drastically darker
+  // sample of the scene (measured ~5× dim in the blur lab); the CSS keys off
+  // this stamp to add a brightness() term that restores the sampled glass.
+  const canvasMode = useAtlasStore((s) => s.canvasMode);
+  useEffect(() => {
+    document.body.dataset.canvasMode = canvasMode;
+    return () => {
+      delete document.body.dataset.canvasMode;
+    };
+  }, [canvasMode]);
 
 
   const data = useMemo(
