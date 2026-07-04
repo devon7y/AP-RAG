@@ -6,7 +6,6 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import HDRCanvas from "@/components/atlas/HDRCanvas";
 import { loadAuthors, loadPaperMeta, WORLD_SIZE } from "@/lib/atlas/data";
-import { useAtlasStore } from "@/lib/atlas/store";
 import type { AuthorRec, GhostPaper, PaperMeta } from "@/lib/atlas/types";
 import { LoadingVeil, useConstellations, useCorpus, useKnn } from "@/lib/atlas/useCorpus";
 import ArcLayer from "./ArcLayer";
@@ -319,10 +318,12 @@ function World({
 
   return (
     <div className="absolute inset-0">
-      <HDRCanvas
-        camera={{ position: [0, 190, 260], fov: 55, near: 0.1, far: 1400 }}
-        clearColor={0x06070c}
-      >
+      {/* fixed negative-z scene layer — see .world-canvas in globals.css */}
+      <div className="world-canvas">
+        <HDRCanvas
+          camera={{ position: [0, 190, 260], fov: 55, near: 0.1, far: 1400 }}
+          clearColor={0x06070c}
+        >
         <WorldDriver data={data} />
         <Atmosphere />
         <DustShell />
@@ -338,6 +339,7 @@ function World({
         <WorldPicker data={data} ghostSites={ghostSites} />
         <CameraRig getRoverPos={() => roverPosRef.current} />
       </HDRCanvas>
+      </div>
 
       {/* chrome */}
       <header className="pointer-events-none absolute top-0 left-0 z-40 flex items-center gap-4 p-5">
@@ -374,15 +376,6 @@ export default function WorldSceneRoot() {
   const authors = useAuthors();
   const paperMeta = usePaperMeta();
 
-  // HDR canvases get promoted to hardware overlays that backdrop-filter can't
-  // sample — stamp the mode so the CSS can fall back to darker glass there.
-  const canvasMode = useAtlasStore((s) => s.canvasMode);
-  useEffect(() => {
-    document.body.dataset.canvasMode = canvasMode;
-    return () => {
-      delete document.body.dataset.canvasMode;
-    };
-  }, [canvasMode]);
 
   const data = useMemo(
     () => (corpus && constellations ? deriveWorld(corpus, constellations) : null),
@@ -390,7 +383,8 @@ export default function WorldSceneRoot() {
   );
 
   return (
-    <div className="relative h-dvh w-full overflow-hidden bg-page">
+    <div className="relative h-dvh w-full overflow-hidden">
+      <div className="world-backdrop" aria-hidden />
       {error && (
         <div className="absolute inset-0 z-30 flex items-center justify-center text-ink-3">
           Failed to load corpus data: {error}

@@ -104,6 +104,8 @@ export interface PaperMeta {
   affil: string[][];
   /** first author per paper — index into authors.json, -1 unknown */
   first: number[];
+  /** Google Drive webViewLink per paper ("" when unmapped) */
+  drive: string[];
 }
 
 export interface ChunkText {

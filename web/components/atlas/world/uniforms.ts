@@ -1,7 +1,7 @@
 "use client";
 
 import * as THREE from "three";
-import { mix, texture, uniform, vec2, vec3 } from "three/tsl";
+import { mix, smoothstep, texture, uniform, vec2, vec3 } from "three/tsl";
 import type { Node } from "three/webgpu";
 import { WORLD_SIZE } from "@/lib/atlas/data";
 
@@ -57,12 +57,16 @@ export function groundUV(worldPos: Node<"vec3">) {
   );
 }
 
-/** Era-blended terrain height (world units) at a world-space position node. */
+/** Era-blended terrain height (world units) at a world-space position node.
+ *  Height tapers to zero just past the data square so peaks near the map edge
+ *  get a skirt instead of being sliced by the mesh boundary. */
 export function groundHeight(worldPos: Node<"vec3">) {
   const uv = groundUV(worldPos);
   const hA = heightTexA.sample(uv).r;
   const hB = heightTexB.sample(uv).r;
-  return mix(hA, hB, uEraMix).mul(HEIGHT_SCALE);
+  const inX = smoothstep(-0.05, 0.0, uv.x).mul(smoothstep(1.0, 1.05, uv.x).oneMinus());
+  const inY = smoothstep(-0.05, 0.0, uv.y).mul(smoothstep(1.0, 1.05, uv.y).oneMinus());
+  return mix(hA, hB, uEraMix).mul(HEIGHT_SCALE).mul(inX).mul(inY);
 }
 
 /** Morphed position: ground (terrain-following) ⇄ space (embedding cube). */

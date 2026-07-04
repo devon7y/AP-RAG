@@ -68,6 +68,11 @@ def clean_str_list(v, cap: int) -> list[str]:
 papers = json.loads((PUB / "papers.json").read_text())
 manifest = json.loads((RAW / "papers_metadata.json").read_text())
 chunk_meta = json.loads((RAW / "chunk_meta.json").read_text())
+# repo-root Drive map (filename → webViewLink), built by scripts/build_drive_map.py
+drive_map_path = HERE.parent.parent / "data" / "drive_links.json"
+drive_map: dict[str, str] = (
+    json.loads(drive_map_path.read_text()) if drive_map_path.exists() else {}
+)
 vecs = np.load(RAW / "chunk_vectors.npy")
 vecs = vecs / (np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-9)
 
@@ -144,9 +149,18 @@ for p in papers:
     first_idx.append(fi)
 print(f"first authors resolved: {sum(1 for i in first_idx if i >= 0)}/{len(papers)}")
 
+drive = [str(drive_map.get(p["file"], "")) for p in papers]
+print(f"drive links: {sum(1 for d in drive if d)}/{len(papers)}")
+
 jdump(
     PUB / "papermeta.json",
-    {"keywords": keywords, "subjects": subjects, "affil": affils, "first": first_idx},
+    {
+        "keywords": keywords,
+        "subjects": subjects,
+        "affil": affils,
+        "first": first_idx,
+        "drive": drive,
+    },
 )
 
 # ── oeuvre centroids + eligible x all cosine matrix (daily game) ─────────────

@@ -193,17 +193,22 @@ export const useWorld = create<WorldState>((set) => ({
     set((s) => {
       const leavingLenses = s.instrument === "lenses" && i !== "lenses";
       const leavingInterp = s.instrument === "interpolate" && i !== "interpolate";
+      const leavingGaps = s.instrument === "ghosts" && i !== "ghosts";
       // closing the lens menu closes the author card the lens opened
       const dropAuthor = leavingLenses && s.selection?.kind === "author";
       // leaving the engine clears its arc and the auto-opened passage
       const dropChunk = leavingInterp && s.selection?.kind === "chunk";
+      // leaving the gap tool closes the open gap-paper card
+      const dropGhost = leavingGaps && s.selection?.kind === "ghost";
       return {
         instrument: i,
         paneOpen: true,
         lens: leavingLenses ? NO_LENS : s.lens,
         planting: i === "ghosts", // the gap tool arms map-planting on entry
         ...(leavingInterp ? { trace: null, arith: null } : {}),
-        ...(dropAuthor || dropChunk ? { selection: null, selectionStack: [] } : {}),
+        ...(dropAuthor || dropChunk || dropGhost
+          ? { selection: null, selectionStack: [] }
+          : {}),
       };
     }),
   select: (s) =>

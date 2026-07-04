@@ -310,14 +310,14 @@ export default function CommandBar({
             busy ? "pulse-soft text-[#3987e5]" : "text-ink-3"
           }`}
         >
-          {busy ?? "atlas"}
+          {busy ?? "search"}
         </span>
         <input
           ref={inputRef}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           disabled={busy !== null}
-          placeholder="an idea · a -> b · a - b + c · @author · year:1990..2005 …"
+          placeholder="search the papers for anything…"
           className="flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-3"
         />
         <button

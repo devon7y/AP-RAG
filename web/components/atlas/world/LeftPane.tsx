@@ -150,10 +150,32 @@ function NavigatePanel({ data, corpus }: { data: WorldData; corpus: CorpusData }
             </button>
           ))}
         </div>
-        <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-          The same passages, two shapes: a terrain grown from embedding density,
-          or the raw embedding cube. Switching unfolds one into the other.
-        </p>
+        {view === "atlas" ? (
+          <p className="mt-2 text-xs leading-relaxed text-ink-3">
+            Every passage of every paper is embedded by the language model, then
+            flattened onto this map — <span className="text-ink-2">nearby
+            means similar in meaning</span>, so position is topic.{" "}
+            <span className="text-ink-2">Height is how much has been
+            written</span>: mountains are heavily-studied ideas, open water is
+            unexplored. The small lights are individual passages (brighter =
+            better connected in the knowledge graph); the haloed beacons are
+            whole papers, placed at the center of their passages; the spiked
+            stars floating above are the graph's concepts.
+          </p>
+        ) : (
+          <p className="mt-2 text-xs leading-relaxed text-ink-3">
+            The same passages in raw 3D semantic space —{" "}
+            <span className="text-ink-2">closeness means related meaning, in
+            every direction</span>. Small stars are passages, colored by age
+            (ember = older, ice-blue = newer). The spiked stars are{" "}
+            <span className="text-ink-2">knowledge-graph entities</span> —
+            concepts, methods, and theories LightRAG extracted while reading —
+            each placed at the center of the passages that mention it.
+            Constellation lines thread an entity's passages together; the
+            fainter web joins entities the graph relates. Labels are the
+            entities' own names from the graph.
+          </p>
+        )}
       </div>
 
       <div>

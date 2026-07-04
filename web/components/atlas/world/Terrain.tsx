@@ -27,7 +27,9 @@ export default function Terrain({ data }: { data: WorldData }) {
   const meshRef = useRef<THREE.Mesh>(null);
 
   const { geometry, material } = useMemo(() => {
-    const geometry = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE, 255, 255);
+    // extend past the data square so edge peaks get their skirt (groundHeight
+    // tapers to zero just outside [0,1]²) instead of a sliced-off wall
+    const geometry = new THREE.PlaneGeometry(WORLD_SIZE + 14, WORLD_SIZE + 14, 271, 271);
     geometry.rotateX(-Math.PI / 2);
 
     const material = new MeshBasicNodeMaterial();
