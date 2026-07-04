@@ -40,9 +40,12 @@ function PureChatHeader({
 
       <AppTitle showBackend={!isAuthorChat} />
 
-      <PersonaIndicator />
+      {/* Persona pill sits centered in the space between the title and the right controls. */}
+      <div className="flex flex-1 justify-center">
+        <PersonaIndicator />
+      </div>
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="flex items-center gap-2">
         {/* Author chats hide the corpus connect/status badge to spotlight the persona. */}
         {!isAuthorChat && <ConnectDialog />}
         {!isReadonly && (
