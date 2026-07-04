@@ -30,7 +30,7 @@ export default function ExperienceShell({
           href="/atlas"
           className="hud-panel pointer-events-auto px-3 py-1.5 text-sm text-ink-2 transition-colors hover:text-ink"
         >
-          ← Atlas of Mind
+          ← Papers Atlas
         </Link>
         <div className="flex items-baseline gap-3">
           <h1 className="font-display text-2xl">{title}</h1>

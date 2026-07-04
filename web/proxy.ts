@@ -15,6 +15,15 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // Local visual smoke-testing of the atlas only (never set in production).
+  if (
+    isDevelopmentEnvironment &&
+    process.env.ATLAS_DEV_OPEN === "1" &&
+    (pathname.startsWith("/atlas") || pathname.startsWith("/data/"))
+  ) {
+    return NextResponse.next();
+  }
+
   const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const isAuthPage =
     pathname === "/login" ||

@@ -137,11 +137,11 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                   <SidebarMenuButton
                     asChild
                     className="h-8 rounded-lg text-[13px] text-sidebar-foreground/70 transition-colors duration-150 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                    tooltip="Atlas of Mind — games over the corpus"
+                    tooltip="Papers Atlas — the corpus as a 3D world"
                   >
                     <Link href="/atlas" onClick={() => setOpenMobile(false)}>
                       <CompassIcon className="size-4" />
-                      <span className="font-medium">Atlas of Mind</span>
+                      <span className="font-medium">Papers Atlas</span>
                     </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>

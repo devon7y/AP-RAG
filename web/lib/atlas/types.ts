@@ -86,6 +86,24 @@ export interface VoidSite {
   ghost: GhostPaper;
 }
 
+/** One disambiguated author (full name variants merged by family + initial). */
+export interface AuthorRec {
+  name: string;
+  family: string;
+  /** indices into papers.json */
+  papers: number[];
+  /** oeuvre centroid on the map, [0,1]² / [0,1]³ */
+  pos2: [number, number];
+  pos3: [number, number, number];
+}
+
+/** Per-paper APA extras, arrays parallel to papers.json order. */
+export interface PaperMeta {
+  keywords: string[][];
+  subjects: string[][];
+  affil: string[][];
+}
+
 export interface ChunkText {
   text: string;
   section: string;

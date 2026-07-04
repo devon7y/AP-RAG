@@ -10,9 +10,9 @@ const fraunces = Fraunces({
 });
 
 export const metadata: Metadata = {
-  title: "Atlas of Mind — AP-RAG",
+  title: "Papers Atlas — AP-RAG",
   description:
-    "Games and instruments for exploring the semantic space of the AP-RAG corpus — maps, ghosts, races, and séances over its real embeddings and knowledge graph.",
+    "The AP-RAG corpus as one 3D world — a landscape of papers that unfolds into the embedding galaxy, with a time machine, metadata lenses, interpolation arcs, ghost papers, radio, and games over its real embeddings and knowledge graph.",
 };
 
 export default function AtlasLayout({
@@ -32,6 +32,11 @@ export default function AtlasLayout({
 }
 
 async function AuthGate({ children }: { children: React.ReactNode }) {
+  // Local visual smoke-testing only: `ATLAS_DEV_OPEN=1 pnpm dev` skips the wall
+  // for the atlas pages (never in production builds).
+  if (process.env.NODE_ENV === "development" && process.env.ATLAS_DEV_OPEN === "1") {
+    return <>{children}</>;
+  }
   // Private deployment: same login wall as the chat UI.
   const session = await auth();
   if (!session?.user) {

@@ -1,0 +1,1 @@
+{"n": 9009, "sections": [{"name": "pos2", "dtype": "float32", "offset": 0, "count": 18018}, {"name": "pos3", "dtype": "float32", "offset": 72072, "count": 27027}, {"name": "cluster", "dtype": "int16", "offset": 180180, "count": 9009}, {"name": "paper", "dtype": "int32", "offset": 198200, "count": 9009}, {"name": "year", "dtype": "int16", "offset": 234236, "count": 9009}]}
