@@ -725,9 +725,15 @@ def _validate_endpoint_file(filepath: Path) -> str | None:
         return None
 
     # Check 2: Does the endpoint respond to health check?
+    # The job is confirmed RUNNING (check 1), so a failed health check here means a
+    # transient condition — the vLLM is still loading, mid in-job restart, or WE are
+    # the unhealthy side (observed 2026-07-03: a gracefully-shutting-down ingest's
+    # dying event loop failed all health checks and deleted the registrations of 3
+    # healthy vLLMs, deadlocking the next ingest at "waiting for valid endpoints
+    # 0/3" — vLLMs register only once at startup). Skip it this round but KEEP the
+    # file; it is deleted only when its job actually leaves squeue (check 1).
     if not _health_check(endpoint):
-        print(f"  [STALE] {endpoint} failed health check — deleting {filepath.name}", flush=True)
-        filepath.unlink(missing_ok=True)
+        print(f"  [SKIP] {endpoint} failed health check (job {job_id} still running) — keeping {filepath.name}", flush=True)
         return None
 
     return endpoint
