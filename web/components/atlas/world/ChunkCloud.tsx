@@ -48,29 +48,46 @@ export default function ChunkCloud({
   lensMask: Float32Array | null;
 }) {
   const searchHits = useWorld((s) => s.searchHits);
+  const gameChunk = useWorld((s) => s.gameChunk);
 
-  const { sprite, selAttr, dimAttr } = useMemo(() => {
-    const posG = new THREE.InstancedBufferAttribute(data.chunkGround, 3);
-    const posS = new THREE.InstancedBufferAttribute(data.chunkSpace, 3);
+  const { sprite, fxAttr } = useMemo(() => {
+    // WebGPU's DEFAULT device limit is 8 vertex buffers (three requests default
+    // limits) — pack per-instance data into 5 buffers or the pipeline never builds:
+    //   aG4  = [groundX, groundZ, size, phase]   (ground y comes from the terrain)
+    //   aS4  = [spaceX, spaceY, spaceZ, year]
+    //   colG, colS                                (region tint / stellar age)
+    //   aFx  = [sel, dim]                         (dynamic: pulses + lens mask)
+    const n = data.n;
+    const g4 = new Float32Array(n * 4);
+    const s4 = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      g4[i * 4] = data.chunkGround[i * 3];
+      g4[i * 4 + 1] = data.chunkGround[i * 3 + 2];
+      g4[i * 4 + 2] = data.chunkSize[i];
+      g4[i * 4 + 3] = data.chunkPhase[i];
+      s4[i * 4] = data.chunkSpace[i * 3];
+      s4[i * 4 + 1] = data.chunkSpace[i * 3 + 1];
+      s4[i * 4 + 2] = data.chunkSpace[i * 3 + 2];
+      s4[i * 4 + 3] = data.chunkYear[i];
+    }
+    const posG4 = new THREE.InstancedBufferAttribute(g4, 4);
+    const posS4 = new THREE.InstancedBufferAttribute(s4, 4);
     const colG = new THREE.InstancedBufferAttribute(data.chunkColorGround, 3);
     const colS = new THREE.InstancedBufferAttribute(data.chunkColorSpace, 3);
-    const sizeA = new THREE.InstancedBufferAttribute(data.chunkSize, 1);
-    const phaseA = new THREE.InstancedBufferAttribute(data.chunkPhase, 1);
-    const yearA = new THREE.InstancedBufferAttribute(data.chunkYear, 1);
-    const selAttr = new THREE.InstancedBufferAttribute(new Float32Array(data.n), 1);
-    selAttr.setUsage(THREE.DynamicDrawUsage);
-    const dimAttr = new THREE.InstancedBufferAttribute(new Float32Array(data.n), 1);
-    dimAttr.setUsage(THREE.DynamicDrawUsage);
+    const fxAttr = new THREE.InstancedBufferAttribute(new Float32Array(n * 2), 2);
+    fxAttr.setUsage(THREE.DynamicDrawUsage);
 
-    const aG = instancedBufferAttribute<"vec3">(posG, "vec3");
-    const aS = instancedBufferAttribute<"vec3">(posS, "vec3");
+    const aG4 = instancedBufferAttribute<"vec4">(posG4, "vec4");
+    const aS4 = instancedBufferAttribute<"vec4">(posS4, "vec4");
     const aColG = instancedBufferAttribute<"vec3">(colG, "vec3");
     const aColS = instancedBufferAttribute<"vec3">(colS, "vec3");
-    const aSize = instancedBufferAttribute<"float">(sizeA, "float");
-    const aPhase = instancedBufferAttribute<"float">(phaseA, "float");
-    const aYear = instancedBufferAttribute<"float">(yearA, "float");
-    const aSel = instancedBufferAttribute<"float">(selAttr, "float");
-    const aDim = instancedBufferAttribute<"float">(dimAttr, "float");
+    const aFx = instancedBufferAttribute<"vec2">(fxAttr, "vec2");
+
+    const aSize = aG4.z;
+    const aPhase = aG4.w;
+    const aYear = aS4.w;
+    const aSel = aFx.x;
+    const aDim = aFx.y;
 
     const mat = new PointsNodeMaterial();
     mat.transparent = true;
@@ -79,7 +96,10 @@ export default function ChunkCloud({
     mat.blending = THREE.AdditiveBlending;
     mat.sizeAttenuation = true;
 
-    mat.positionNode = morphPosition(aG, aS);
+    mat.positionNode = morphPosition(
+      vec3(aG4.x, 0, aG4.y),
+      vec3(aS4.x, aS4.y, aS4.z),
+    );
 
     // time lens: unborn chunks are dark; the newly-born flash white-hot
     const alive = step(aYear, uYear.add(0.5)).mul(step(uYearLo, aYear.add(0.5)));
@@ -123,24 +143,23 @@ export default function ChunkCloud({
     const sprite = new THREE.Sprite(mat as unknown as THREE.SpriteMaterial);
     sprite.count = data.n;
     sprite.frustumCulled = false;
-    return { sprite, selAttr, dimAttr };
+    return { sprite, fxAttr };
   }, [data]);
 
-  // warp-drive search hits pulse in both frames
+  // dynamic fx lanes: x = pulse (search hits + today's Semantle passage), y = lens dim
   useEffect(() => {
-    const arr = selAttr.array as Float32Array;
-    arr.fill(0);
-    if (searchHits) for (const h of searchHits) arr[h.idx] = 1;
-    selAttr.needsUpdate = true;
-  }, [searchHits, selAttr]);
+    const arr = fxAttr.array as Float32Array;
+    for (let i = 0; i < data.n; i++) arr[i * 2] = 0;
+    if (searchHits) for (const h of searchHits) arr[h.idx * 2] = 1;
+    if (gameChunk !== null) arr[gameChunk * 2] = 1;
+    fxAttr.needsUpdate = true;
+  }, [searchHits, gameChunk, fxAttr, data.n]);
 
-  // metadata lens mask (1 = dimmed)
   useEffect(() => {
-    const arr = dimAttr.array as Float32Array;
-    if (lensMask) arr.set(lensMask);
-    else arr.fill(0);
-    dimAttr.needsUpdate = true;
-  }, [lensMask, dimAttr]);
+    const arr = fxAttr.array as Float32Array;
+    for (let i = 0; i < data.n; i++) arr[i * 2 + 1] = lensMask ? lensMask[i] : 0;
+    fxAttr.needsUpdate = true;
+  }, [lensMask, fxAttr, data.n]);
 
   useEffect(() => () => sprite.material.dispose(), [sprite]);
 

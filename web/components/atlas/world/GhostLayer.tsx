@@ -3,19 +3,17 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import type { CorpusData } from "@/lib/atlas/types";
 import { glowTexture, ringTexture, sampleField, toWorldXZ, type WorldData } from "./derive";
 import { useWorld, type PlantedGhost } from "./store";
 import { HEIGHT_SCALE, uMorph } from "./uniforms";
 import { useAtlasStore } from "@/lib/atlas/store";
 
 /**
- * Dark matter: the curated void sites (violet wells) plus user-planted ghost
- * flags. A finished ghost also gets an ECHO STAR — the point where the ghost's
- * own abstract actually embeds — connected to its flag by a thin thread, a
- * live demonstration of whether the written paper really fills the gap.
- * Ground-anchored visuals fade as the world lifts into space; echo stars
- * (which exist in both frames) persist.
+ * The gap finder's markers: a violet column per user-picked spot. A finished
+ * gap paper also gets an ECHO STAR — the point where its generated abstract
+ * actually embeds — connected to the flag by a thin thread: a live check of
+ * whether the proposed paper really fills the gap. Ground-anchored visuals
+ * fade as the world lifts into space; echo stars persist in both frames.
  */
 
 export const VOID_VIOLET = "#9085e9";
@@ -27,26 +25,18 @@ export interface GhostSite {
   pos: THREE.Vector3;
 }
 
-/** World positions of the curated voids (for the picker + this layer). */
-export function useGhostSites(
-  data: WorldData,
-  corpus: CorpusData | null,
-): GhostSite[] {
+/** World positions of the planted gap markers (for the picker + this layer). */
+export function useGhostSites(data: WorldData): GhostSite[] {
   const ghosts = useWorld((s) => s.ghosts);
-  return useMemo(() => {
-    if (!corpus) return [];
-    const sites: GhostSite[] = corpus.voids.map((v, i) => {
-      const [x, z] = toWorldXZ(v.pos[0], v.pos[1]);
-      const y = sampleField(data.eras.final, v.pos[0], v.pos[1]) * HEIGHT_SCALE;
-      return { id: `void:${i}`, pos: new THREE.Vector3(x, y + 1.2, z) };
-    });
-    for (const g of ghosts) {
-      const [x, z] = toWorldXZ(g.x01, g.y01);
-      const y = sampleField(data.eras.final, g.x01, g.y01) * HEIGHT_SCALE;
-      sites.push({ id: g.id, pos: new THREE.Vector3(x, y + 1.2, z) });
-    }
-    return sites;
-  }, [data, corpus, ghosts]);
+  return useMemo(
+    () =>
+      ghosts.map((g) => {
+        const [x, z] = toWorldXZ(g.x01, g.y01);
+        const y = sampleField(data.eras.final, g.x01, g.y01) * HEIGHT_SCALE;
+        return { id: g.id, pos: new THREE.Vector3(x, y + 1.2, z) };
+      }),
+    [data, ghosts],
+  );
 }
 
 function Well({
@@ -224,11 +214,9 @@ function EchoStar({ ghost, data }: { ghost: PlantedGhost; data: WorldData }) {
 
 export default function GhostLayer({
   data,
-  corpus,
   sites,
 }: {
   data: WorldData;
-  corpus: CorpusData;
   sites: GhostSite[];
 }) {
   const ghosts = useWorld((s) => s.ghosts);
@@ -238,18 +226,6 @@ export default function GhostLayer({
 
   return (
     <group>
-      {corpus.voids.map((_, i) => {
-        const site = byId.get(`void:${i}`);
-        if (!site) return null;
-        return (
-          <Well
-            key={site.id}
-            pos={site.pos}
-            color={VOID_VIOLET}
-            selected={selectedId === site.id}
-          />
-        );
-      })}
       {ghosts.map((g) => {
         const site = byId.get(g.id);
         if (!site) return null;

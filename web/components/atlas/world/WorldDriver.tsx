@@ -12,6 +12,7 @@ import {
   uEraMix,
   uFlash,
   uHit,
+  uLensDim,
   uMorph,
   uYear,
   uYearLo,
@@ -51,6 +52,11 @@ export default function WorldDriver({ data }: { data: WorldData }) {
     }
     uYear.value += (y - uYear.value) * Math.min(1, dt * 5);
     uYearLo.value += (st.yearLo - uYearLo.value) * Math.min(1, dt * 5);
+
+    // metadata lens presence (terrain steps back while one is active)
+    const lensOn =
+      st.lens.author !== null || st.lens.journal || st.lens.keyword ? 1 : 0;
+    uLensDim.value += (lensOn - uLensDim.value) * Math.min(1, dt * 4);
 
     // era height-field bracket
     const { years, texes } = data.eras;

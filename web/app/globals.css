@@ -544,11 +544,12 @@ textarea:focus-visible {
 
 /* Panel chrome shared by every experience's HUD */
 .atlas-app .hud-panel {
-  background: color-mix(in srgb, var(--atlas-surface) 88%, transparent);
+  /* legibility from blur, not greyness — near-black glass */
+  background: color-mix(in srgb, #08080c 55%, transparent);
   border: 1px solid var(--atlas-hairline);
   border-radius: 12px;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(22px) saturate(1.15);
+  -webkit-backdrop-filter: blur(22px) saturate(1.15);
 }
 
 /* On EDR displays let key accents overshoot into HDR headroom (CSS side). */

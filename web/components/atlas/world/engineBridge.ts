@@ -1,13 +1,6 @@
 "use client";
 
 import {
-  STEPS,
-  type ArithResult,
-  type Hit,
-  type StepResult,
-  type Trace,
-} from "@/components/atlas/interpolate/engine";
-import {
   cosine,
   embed,
   fetchChunkText,
@@ -19,12 +12,63 @@ import {
 import type { AuthorRec, CorpusData } from "@/lib/atlas/types";
 
 /**
- * World-side executor for the Interpolation Engine. Same output shapes as
- * components/atlas/interpolate/engine (Trace / ArithResult, reused by
- * ArcLayer), but endpoints resolve against the APA author table
- * (authors.json), not the short display-author strings — so "@Westbury"
- * means the disambiguated author and their full oeuvre.
+ * The Interpolation Engine's executor: endpoint resolution, geodesic tracing,
+ * and embedding arithmetic. Endpoints resolve against the APA author table
+ * (authors.json), so "@Westbury" means the disambiguated author and their
+ * full oeuvre. (Self-contained — the standalone experience was retired.)
  */
+
+export const STEPS = 11;
+
+/** Slot colors: diverging cool↔warm poles + the third arithmetic term. */
+export const COOL = "#3987e5";
+export const WARM = "#e66767";
+export const THIRD = "#199e70";
+export const RESULT_HOT = "#ffe9c9";
+
+export interface Hit {
+  qid: string;
+  chunkId: string;
+  file: string;
+  score: number;
+  /** geodesic waypoint index; -1 for arithmetic results */
+  step: number;
+  /** index into corpus.atlas arrays; -1 when the chunk is not in the atlas */
+  chunkIdx: number;
+  paperIdx: number;
+}
+
+export interface StepResult {
+  t: number;
+  hits: Hit[];
+  /** similarity-weighted map centroid of this waypoint's hits, [0,1]² */
+  centroid2: [number, number];
+}
+
+export interface Trace {
+  id: number;
+  steps: StepResult[];
+  anchorA2: [number, number];
+  anchorB2: [number, number];
+  angleDeg: number;
+  aLabel: string;
+  bLabel: string;
+}
+
+export interface ArithAnchor {
+  pos2: [number, number];
+  label: string;
+  sign: "+" | "−";
+  color: string;
+}
+
+export interface ArithResult {
+  id: number;
+  hits: Hit[];
+  anchors: ArithAnchor[];
+  /** how many raw hits were hidden because they came from the input papers */
+  excluded: number;
+}
 
 export type WorldEndpoint =
   | { kind: "phrase"; text: string }

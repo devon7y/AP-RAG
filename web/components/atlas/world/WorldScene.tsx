@@ -6,7 +6,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import HDRCanvas from "@/components/atlas/HDRCanvas";
 import { loadAuthors, loadPaperMeta, WORLD_SIZE } from "@/lib/atlas/data";
-import { useAtlasStore } from "@/lib/atlas/store";
+import { useEDR } from "@/lib/atlas/edr";
 import type { AuthorRec, GhostPaper, PaperMeta } from "@/lib/atlas/types";
 import { LoadingVeil, useConstellations, useCorpus, useKnn } from "@/lib/atlas/useCorpus";
 import ArcLayer from "./ArcLayer";
@@ -88,8 +88,10 @@ function Atmosphere() {
   );
 }
 
-/** Distant 1px dust for parallax depth (deterministic mulberry scatter). */
+/** Distant dust for parallax depth (deterministic mulberry scatter) — the
+ *  background sky brightens further as the world lifts into the galaxy. */
 function DustShell() {
+  const mat = useRef<THREE.PointsMaterial>(null);
   const geom = useMemo(() => {
     let s = 42;
     const rand = () => {
@@ -98,7 +100,7 @@ function DustShell() {
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
-    const N = 1700;
+    const N = 2600;
     const pos = new Float32Array(N * 3);
     for (let i = 0; i < N; i++) {
       const u = rand() * 2 - 1;
@@ -113,14 +115,21 @@ function DustShell() {
     g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
     return g;
   }, []);
+  useFrame(() => {
+    if (mat.current) {
+      mat.current.opacity = 0.55 + 0.4 * uMorph.value;
+      mat.current.size = 1.6 + 0.7 * uMorph.value;
+    }
+  });
   return (
     <points geometry={geom} frustumCulled={false}>
       <pointsMaterial
-        color="#565e7d"
-        size={1.4}
+        ref={mat}
+        color="#7d87ad"
+        size={1.6}
         sizeAttenuation={false}
         transparent
-        opacity={0.5}
+        opacity={0.55}
         depthWrite={false}
         blending={THREE.AdditiveBlending}
       />
@@ -201,7 +210,9 @@ function useGhostPlanting(data: WorldData | null, corpusReady: boolean) {
       const id = `ghost:${Date.now()}`;
       st.addGhost({ id, x01, y01, ghost: null, neighbors, echo: null });
       st.select({ kind: "ghost", id });
-      st.setInstrument("ghosts");
+      // show the panel without re-arming planting (setInstrument would)
+      st.set("instrument", "ghosts");
+      st.set("paneOpen", true);
 
       try {
         const r = await fetch("/api/atlas/ghost", {
@@ -244,7 +255,6 @@ function World({
   const constellations = useConstellations();
   const knn = useKnn();
   const lens = useWorld((s) => s.lens);
-  const canvasMode = useAtlasStore((s) => s.canvasMode);
 
   useRover(corpus, knn);
   useGhostPlanting(data, corpus !== null);
@@ -290,20 +300,20 @@ function World({
     const gold = new Float32Array(corpus.papers.length);
     paperPass.forEach((pass, i) => {
       papers[i] = pass ? 0 : 1;
-      if (authorSet?.has(i) && pass) gold[i] = 1;
+      if (pass) gold[i] = 1; // every lens match pulses gold — the lens must READ
     });
     const chunks = new Float32Array(data.n);
     for (let i = 0; i < data.n; i++) {
       chunks[i] = paperPass[corpus.atlas.paper[i]] ? 0 : 1;
     }
-    return { chunks, papers, gold: authorSet ? gold : null };
+    return { chunks, papers, gold };
   }, [corpus, authors, paperMeta, lens, data]);
 
   const roverPosRef = useMemo<{ current: THREE.Vector3 | null }>(
     () => ({ current: null }),
     [],
   );
-  const ghostSites = useGhostSites(data, corpus);
+  const ghostSites = useGhostSites(data);
 
   if (!corpus || !constellations) return null;
 
@@ -320,7 +330,7 @@ function World({
         <ChunkCloud data={data} lensMask={masks.chunks} />
         <PaperBeacons data={data} lensMask={masks.papers} goldMask={masks.gold} />
         <SkyLayer data={data} corpus={corpus} />
-        <GhostLayer data={data} corpus={corpus} sites={ghostSites} />
+        <GhostLayer data={data} sites={ghostSites} />
         <ArcLayer data={data} />
         <RoverLayer data={data} roverPosRef={roverPosRef} />
         <TrailsLayer data={data} corpus={corpus} authors={authors} />
@@ -337,18 +347,7 @@ function World({
         >
           ← Chat
         </Link>
-        <div className="flex items-baseline gap-3">
-          <h1 className="font-display edr-glow text-2xl">Papers Atlas</h1>
-          <span className="rounded-full border border-[#3987e5] px-2 py-0.5 text-[10px] tracking-widest text-[#3987e5] uppercase">
-            {corpus.papers.length.toLocaleString()} papers ·{" "}
-            {data.n.toLocaleString()} passages
-          </span>
-          {canvasMode === "webgpu-hdr" && (
-            <span className="rounded-full border border-[#ffd27a]/60 px-2 py-0.5 text-[10px] tracking-widest text-[#ffd27a] uppercase">
-              hdr
-            </span>
-          )}
-        </div>
+        <h1 className="font-display edr-glow text-2xl">Papers Atlas</h1>
       </header>
 
       <LeftPane data={data} corpus={corpus} authors={authors} paperMeta={paperMeta} />
@@ -370,6 +369,7 @@ function World({
 }
 
 export default function WorldSceneRoot() {
+  useEDR(); // keeps body[data-edr] current for the CSS HDR accents
   const { corpus, error } = useCorpus();
   const constellations = useConstellations();
   const authors = useAuthors();

@@ -13,7 +13,7 @@ import {
   type ArithResult,
   type Hit,
   type Trace,
-} from "@/components/atlas/interpolate/engine";
+} from "./engineBridge";
 import { glowTexture, ringTexture, sampleField, toWorldXZ, type WorldData } from "./derive";
 import { useWorld } from "./store";
 import { HEIGHT_SCALE, uCalm, uMorph } from "./uniforms";

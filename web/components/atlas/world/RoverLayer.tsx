@@ -7,13 +7,13 @@ import {
   chooseNext,
   readMs,
   splitSentences,
-} from "@/components/atlas/radio/walk";
+} from "./walk";
 import {
   cancelSpeech,
   primeVoices,
   speak,
   type SpeakHandle,
-} from "@/components/atlas/radio/tts";
+} from "./tts";
 import { fetchChunkText } from "@/lib/atlas/api";
 import type { CorpusData, KnnGraph } from "@/lib/atlas/types";
 import { glowTexture, toWorldXZ, sampleField, type WorldData } from "./derive";

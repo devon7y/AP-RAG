@@ -1,15 +1,16 @@
 "use client";
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import { fetchChunkText } from "@/lib/atlas/api";
+import { generateUUID } from "@/lib/utils";
 import type {
   AuthorRec,
   Constellations,
   CorpusData,
+  GhostPaper,
   PaperMeta,
-  VoidSite,
 } from "@/lib/atlas/types";
 import { paperWorldPos } from "./PaperBeacons";
 import { entityColor, shortCite, type WorldData } from "./derive";
@@ -72,18 +73,32 @@ export default function InspectorPanel({
   constellations: Constellations;
 }) {
   const selection = useWorld((s) => s.selection);
+  const hasBack = useWorld((s) => s.selectionStack.length > 0);
   if (!selection) return null;
 
   return (
     <aside className="hud-panel hud-scroll absolute top-20 right-4 bottom-24 z-40 w-[330px] max-w-[85vw] overflow-y-auto p-4">
-      <button
-        type="button"
-        className="absolute top-2.5 right-3 text-ink-3 hover:text-ink"
-        onClick={() => useWorld.getState().select(null)}
-        aria-label="Close"
-      >
-        ✕
-      </button>
+      <div className="absolute top-2.5 right-3 flex items-center gap-2">
+        {hasBack && (
+          <button
+            type="button"
+            className="text-ink-3 transition-colors hover:text-ink"
+            onClick={() => useWorld.getState().back()}
+            aria-label="Back"
+            title="Back"
+          >
+            ←
+          </button>
+        )}
+        <button
+          type="button"
+          className="text-ink-3 transition-colors hover:text-ink"
+          onClick={() => useWorld.getState().select(null)}
+          aria-label="Close"
+        >
+          ✕
+        </button>
+      </div>
       {selection.kind === "paper" && (
         <PaperCard
           data={data}
@@ -102,9 +117,7 @@ export default function InspectorPanel({
       {selection.kind === "author" && (
         <AuthorCard corpus={corpus} authors={authors} idx={selection.idx} />
       )}
-      {selection.kind === "ghost" && (
-        <GhostCard corpus={corpus} id={selection.id} />
-      )}
+      {selection.kind === "ghost" && <GhostCard id={selection.id} />}
     </aside>
   );
 }
@@ -167,22 +180,11 @@ function PaperCard({
           fly
         </Action>
         <Action onClick={() => sendEndpoint("A", { kind: "paper", paperIdx: idx })}>
-          → A
+          bridge from
         </Action>
         <Action onClick={() => sendEndpoint("B", { kind: "paper", paperIdx: idx })} accent="#e66767">
-          → B
+          bridge to
         </Action>
-        {paperAuthors[0] && (
-          <Action
-            accent="#ffd27a"
-            onClick={() => {
-              st.setLens({ author: paperAuthors[0].i });
-              st.setInstrument("lenses");
-            }}
-          >
-            author trail
-          </Action>
-        )}
         {p.doi && (
           <a
             href={`https://doi.org/${p.doi}`}
@@ -336,13 +338,13 @@ function EntityCard({
           fly
         </Action>
         <Action onClick={() => sendEndpoint("A", { kind: "phrase", text: e.id })}>
-          → A
+          bridge from
         </Action>
         <Action
           accent="#e66767"
           onClick={() => sendEndpoint("B", { kind: "phrase", text: e.id })}
         >
-          → B
+          bridge to
         </Action>
       </div>
       {edges.length > 0 && (
@@ -386,6 +388,7 @@ function AuthorCard({
 }) {
   const a = authors[idx];
   const st = useWorld.getState();
+  const router = useRouter();
   const papers = useMemo(
     () =>
       [...a.papers].sort(
@@ -397,6 +400,16 @@ function AuthorCard({
     .map((i) => corpus.papers[i].year)
     .filter((y) => y > 0);
 
+  // the chat's author persona is keyed by the papers.json first-author string —
+  // use the exact string of a paper this author led, else fall back to family
+  const chatAuthor = useMemo(() => {
+    for (const p of a.papers) {
+      const s = corpus.papers[p].authors;
+      if (s && s.split(/[,;&]/)[0]?.trim().startsWith(a.family)) return s;
+    }
+    return a.family;
+  }, [a, corpus]);
+
   return (
     <div className="space-y-3">
       <p className="text-[10px] tracking-[0.3em] text-[#ffd27a] uppercase">author</p>
@@ -404,32 +417,27 @@ function AuthorCard({
       <p className="text-[11px] text-ink-3">
         {a.papers.length} paper{a.papers.length === 1 ? "" : "s"} in the corpus
         {years.length > 1 ? ` · ${Math.min(...years)}–${Math.max(...years)}` : ""}
+        {" · "}their gold trail runs through the papers below — click a dot to
+        open one
       </p>
       <div className="flex flex-wrap gap-1.5 border-t hairline pt-3">
         <Action
-          accent="#ffd27a"
-          onClick={() => {
-            st.setLens({ author: idx });
-            st.setInstrument("lenses");
-          }}
+          accent="#008300"
+          onClick={() =>
+            router.push(`/chat/${generateUUID()}?author=${encodeURIComponent(chatAuthor)}`)
+          }
         >
-          light the trail
+          talk to author
         </Action>
         <Action onClick={() => sendEndpoint("A", { kind: "authorRec", rec: a })}>
-          → A
+          bridge from
         </Action>
         <Action
           accent="#e66767"
           onClick={() => sendEndpoint("B", { kind: "authorRec", rec: a })}
         >
-          → B
+          bridge to
         </Action>
-        <Link
-          href="/atlas/seance"
-          className="rounded-full border border-[#008300]/60 px-2.5 py-1 text-[10px] tracking-widest text-[#008300] uppercase"
-        >
-          séance
-        </Link>
       </div>
       <div>
         <p className="text-[11px] text-ink-2">Papers, in order</p>
@@ -457,34 +465,26 @@ function AuthorCard({
 
 /* ---------------- ghost ---------------- */
 
-function GhostCard({ corpus, id }: { corpus: CorpusData; id: string }) {
+function GhostCard({ id }: { id: string }) {
   const ghosts = useWorld((s) => s.ghosts);
   const removeGhost = useWorld((s) => s.removeGhost);
 
-  let ghost: VoidSite["ghost"] | null = null;
+  let ghost: GhostPaper | null = null;
   let neighbors: string[] = [];
   let planted = false;
   let busy = false;
   let error: string | undefined;
   let echoScore: number | null = null;
 
-  if (id.startsWith("void:")) {
-    const v = corpus.voids[Number(id.slice(5))];
-    if (v) {
-      ghost = v.ghost;
-      neighbors = v.neighbors;
-    }
-  } else {
-    const g = ghosts.find((x) => x.id === id);
-    if (g) {
-      planted = true;
-      ghost = g.ghost;
-      neighbors = g.neighbors;
-      busy = !g.ghost && !g.error;
-      error = g.error;
-      if (g.echo?.length) {
-        echoScore = g.echo.reduce((s, h) => s + h.score, 0) / g.echo.length;
-      }
+  const g = ghosts.find((x) => x.id === id);
+  if (g) {
+    planted = true;
+    ghost = g.ghost;
+    neighbors = g.neighbors;
+    busy = !g.ghost && !g.error;
+    error = g.error;
+    if (g.echo?.length) {
+      echoScore = g.echo.reduce((s, h) => s + h.score, 0) / g.echo.length;
     }
   }
 
@@ -494,11 +494,11 @@ function GhostCard({ corpus, id }: { corpus: CorpusData; id: string }) {
         className="text-[10px] tracking-[0.3em] uppercase"
         style={{ color: VOID_VIOLET }}
       >
-        ghost · hallucinated from an empty region
+        research gap · AI-proposed paper
       </p>
       {busy && (
         <p className="pulse-soft font-display text-lg text-ink-2">
-          writing the paper that isn't there…
+          drafting a proposal for this gap…
         </p>
       )}
       {error && <p className="text-[11px] text-[#fab219]">{error}</p>}
@@ -513,18 +513,22 @@ function GhostCard({ corpus, id }: { corpus: CorpusData; id: string }) {
             {ghost.methods}
           </p>
           <p className="text-[11px] leading-relaxed text-ink-2">{ghost.abstract}</p>
-          {echoScore !== null && (
-            <p className="rounded-md border hairline p-2 text-[10px] leading-relaxed text-ink-3">
-              Its echo star marks where this abstract actually embeds — mean
-              similarity {echoScore.toFixed(2)} to the nearest real passages. The
-              closer the star to the flag, the truer the gap.
-            </p>
-          )}
+          <p className="rounded-md border hairline p-2 text-[10px] leading-relaxed text-ink-3">
+            Generated, not real — a brainstorming aid for what's missing here.
+            {echoScore !== null && (
+              <>
+                {" "}
+                The bright marker shows where this abstract actually embeds
+                (mean similarity {echoScore.toFixed(2)} to the nearest real
+                passages) — the closer it sits to your spot, the truer the gap.
+              </>
+            )}
+          </p>
         </>
       )}
       {neighbors.length > 0 && (
         <div>
-          <p className="text-[11px] text-ink-2">Between these real papers</p>
+          <p className="text-[11px] text-ink-2">The surrounding literature</p>
           <ul className="mt-1 space-y-1">
             {neighbors.slice(0, 6).map((n) => (
               <li key={n} className="line-clamp-1 text-[11px] text-ink-3">
@@ -543,7 +547,7 @@ function GhostCard({ corpus, id }: { corpus: CorpusData; id: string }) {
             useWorld.getState().select(null);
           }}
         >
-          release this ghost
+          remove
         </button>
       )}
     </div>

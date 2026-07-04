@@ -12,6 +12,7 @@ import {
   groundUV,
   HEIGHT_SCALE,
   uCalm,
+  uLensDim,
   uMorph,
 } from "./uniforms";
 
@@ -55,7 +56,9 @@ export default function Terrain({ data }: { data: WorldData }) {
     );
     const coastGlow = vec3(0.3, 0.55, 1.0).mul(coast).mul(0.2).mul(uCalm);
 
-    material.colorNode = base.add(contour).add(coastGlow);
+    // while a metadata lens is active, the terrain steps back so matches read
+    const lensFade = uLensDim.mul(0.66).oneMinus();
+    material.colorNode = base.add(contour).add(coastGlow).mul(lensFade);
     material.opacityNode = smoothstep(0.008, 0.05, h01)
       .mul(uMorph.oneMinus())
       .mul(0.97);

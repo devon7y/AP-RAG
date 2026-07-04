@@ -72,33 +72,39 @@ export default function PaperBeacons({
   /** papers pulsing gold (author lens / game reveal) */
   goldMask: Float32Array | null;
 }) {
-  const { sprite, dimAttr, selAttr } = useMemo(() => {
-    const posG = new THREE.InstancedBufferAttribute(data.paperGround, 3);
-    // ground buffer carries y=0; beacons hover on the terrain via morphPosition
-    const posS = new THREE.InstancedBufferAttribute(data.paperSpace, 3);
+  const { sprite, fxAttr } = useMemo(() => {
+    // ≤8 vertex buffers (WebGPU default limit): pack instance data into 5
+    //   aG4 = [groundX, groundZ, size, year] · aS4 = [space xyz, unused]
+    //   colG, colS · aFx = [gold, dim] (dynamic)
+    const n = data.nPapers;
+    const g4 = new Float32Array(n * 4);
+    const s4 = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      g4[i * 4] = data.paperGround[i * 3];
+      g4[i * 4 + 1] = data.paperGround[i * 3 + 2];
+      g4[i * 4 + 2] = data.paperSize[i];
+      g4[i * 4 + 3] = data.paperYear[i];
+      s4[i * 4] = data.paperSpace[i * 3];
+      s4[i * 4 + 1] = data.paperSpace[i * 3 + 1];
+      s4[i * 4 + 2] = data.paperSpace[i * 3 + 2];
+    }
+    const posG4 = new THREE.InstancedBufferAttribute(g4, 4);
+    const posS4 = new THREE.InstancedBufferAttribute(s4, 4);
     const colG = new THREE.InstancedBufferAttribute(data.paperColorGround, 3);
     const colS = new THREE.InstancedBufferAttribute(data.paperColorSpace, 3);
-    const sizeA = new THREE.InstancedBufferAttribute(data.paperSize, 1);
-    const yearA = new THREE.InstancedBufferAttribute(data.paperYear, 1);
-    const selAttr = new THREE.InstancedBufferAttribute(
-      new Float32Array(data.nPapers),
-      1,
-    );
-    selAttr.setUsage(THREE.DynamicDrawUsage);
-    const dimAttr = new THREE.InstancedBufferAttribute(
-      new Float32Array(data.nPapers),
-      1,
-    );
-    dimAttr.setUsage(THREE.DynamicDrawUsage);
+    const fxAttr = new THREE.InstancedBufferAttribute(new Float32Array(n * 2), 2);
+    fxAttr.setUsage(THREE.DynamicDrawUsage);
 
-    const aG = instancedBufferAttribute<"vec3">(posG, "vec3");
-    const aS = instancedBufferAttribute<"vec3">(posS, "vec3");
+    const aG4 = instancedBufferAttribute<"vec4">(posG4, "vec4");
+    const aS4 = instancedBufferAttribute<"vec4">(posS4, "vec4");
     const aColG = instancedBufferAttribute<"vec3">(colG, "vec3");
     const aColS = instancedBufferAttribute<"vec3">(colS, "vec3");
-    const aSize = instancedBufferAttribute<"float">(sizeA, "float");
-    const aYear = instancedBufferAttribute<"float">(yearA, "float");
-    const aSel = instancedBufferAttribute<"float">(selAttr, "float");
-    const aDim = instancedBufferAttribute<"float">(dimAttr, "float");
+    const aFx = instancedBufferAttribute<"vec2">(fxAttr, "vec2");
+
+    const aSize = aG4.z;
+    const aYear = aG4.w;
+    const aSel = aFx.x;
+    const aDim = aFx.y;
 
     const mat = new PointsNodeMaterial();
     mat.transparent = true;
@@ -107,7 +113,11 @@ export default function PaperBeacons({
     mat.blending = THREE.AdditiveBlending;
     mat.sizeAttenuation = true;
 
-    mat.positionNode = morphPosition(aG, aS, 1.35);
+    mat.positionNode = morphPosition(
+      vec3(aG4.x, 0, aG4.y),
+      vec3(aS4.x, aS4.y, aS4.z),
+      1.35,
+    );
 
     const alive = step(aYear, uYear.add(0.5)).mul(step(uYearLo, aYear.add(0.5)));
     const recency = clamp(uYear.add(0.5).sub(aYear).div(2.2), 0, 1)
@@ -140,22 +150,17 @@ export default function PaperBeacons({
     const sprite = new THREE.Sprite(mat as unknown as THREE.SpriteMaterial);
     sprite.count = data.nPapers;
     sprite.frustumCulled = false;
-    return { sprite, dimAttr, selAttr };
+    return { sprite, fxAttr };
   }, [data]);
 
   useEffect(() => {
-    const arr = dimAttr.array as Float32Array;
-    if (lensMask) arr.set(lensMask);
-    else arr.fill(0);
-    dimAttr.needsUpdate = true;
-  }, [lensMask, dimAttr]);
-
-  useEffect(() => {
-    const arr = selAttr.array as Float32Array;
-    if (goldMask) arr.set(goldMask);
-    else arr.fill(0);
-    selAttr.needsUpdate = true;
-  }, [goldMask, selAttr]);
+    const arr = fxAttr.array as Float32Array;
+    for (let i = 0; i < data.nPapers; i++) {
+      arr[i * 2] = goldMask ? goldMask[i] : 0;
+      arr[i * 2 + 1] = lensMask ? lensMask[i] : 0;
+    }
+    fxAttr.needsUpdate = true;
+  }, [lensMask, goldMask, fxAttr, data.nPapers]);
 
   useEffect(() => () => sprite.material.dispose(), [sprite]);
 

@@ -1,12 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useMemo, useState } from "react";
 import {
+  CircleDashed,
   Clock,
   Compass,
-  FlaskConical,
-  Ghost,
   PanelLeftClose,
   PanelLeftOpen,
   Radio,
@@ -16,8 +14,8 @@ import {
 } from "lucide-react";
 import { qsearch } from "@/lib/atlas/api";
 import type { AuthorRec, CorpusData, PaperMeta } from "@/lib/atlas/types";
-import { buildStation } from "@/components/atlas/radio/walk";
-import { primeVoices } from "@/components/atlas/radio/tts";
+import { buildStation } from "./walk";
+import { primeVoices } from "./tts";
 import { sampleField, toWorldXZ, type WorldData } from "./derive";
 import GamePanel from "./GamePanel";
 import InterpolatePanel from "./InterpolatePanel";
@@ -36,9 +34,9 @@ const INSTRUMENTS: { key: Instrument; icon: React.ReactNode; label: string }[] =
   { key: "time", icon: <Clock className="size-4" />, label: "Time machine" },
   { key: "lenses", icon: <SlidersHorizontal className="size-4" />, label: "Lenses" },
   { key: "interpolate", icon: <Spline className="size-4" />, label: "Interpolate" },
-  { key: "ghosts", icon: <Ghost className="size-4" />, label: "Ghost papers" },
+  { key: "ghosts", icon: <CircleDashed className="size-4" />, label: "Research gaps" },
   { key: "radio", icon: <Radio className="size-4" />, label: "Radio" },
-  { key: "game", icon: <Trophy className="size-4" />, label: "Daily author" },
+  { key: "game", icon: <Trophy className="size-4" />, label: "Semantle" },
 ];
 
 export default function LeftPane({
@@ -79,13 +77,6 @@ export default function LeftPane({
           </button>
         ))}
         <div className="mx-1 my-1 border-t hairline" />
-        <Link
-          href="/atlas/experiments"
-          title="More experiments"
-          className="rounded-md p-2 text-ink-3 transition-colors hover:bg-white/5 hover:text-ink-2"
-        >
-          <FlaskConical className="size-4" />
-        </Link>
         <button
           type="button"
           title={paneOpen ? "Collapse" : "Expand"}
@@ -110,9 +101,9 @@ export default function LeftPane({
           {instrument === "interpolate" && (
             <InterpolatePanel data={data} corpus={corpus} authors={authors} />
           )}
-          {instrument === "ghosts" && <GhostsPanel data={data} corpus={corpus} />}
+          {instrument === "ghosts" && <GhostsPanel data={data} />}
           {instrument === "radio" && <RadioPanel data={data} corpus={corpus} />}
-          {instrument === "game" && <GamePanel authors={authors} />}
+          {instrument === "game" && <GamePanel data={data} authors={authors} />}
         </section>
       )}
     </div>
@@ -348,15 +339,45 @@ function LensesPanel({
 
   const active = lens.author !== null || lens.journal || lens.keyword;
 
+  const matchCount = useMemo(() => {
+    const { author, journal, keyword } = lens;
+    if (author === null && !journal && !keyword) return null;
+    const authorSet = author !== null ? new Set(authors[author]?.papers ?? []) : null;
+    const j = journal?.toLowerCase() ?? null;
+    const k = keyword?.toLowerCase() ?? null;
+    let n = 0;
+    corpus.papers.forEach((p, i) => {
+      if (authorSet && !authorSet.has(i)) return;
+      if (j && !p.journal.toLowerCase().includes(j)) return;
+      if (k) {
+        const hay = [
+          p.title,
+          p.abstract,
+          ...(paperMeta?.keywords[i] ?? []),
+          ...(paperMeta?.subjects[i] ?? []),
+        ]
+          .join(" | ")
+          .toLowerCase();
+        if (!hay.includes(k)) return;
+      }
+      n++;
+    });
+    return n;
+  }, [lens, corpus, authors, paperMeta]);
+
   return (
     <div className="space-y-4">
       <div>
         <H>Lenses</H>
         <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-          Filter the world by its APA metadata — everything outside the lens
-          dims. An author lens also draws their career trail, gold, in
-          publication order.
+          Filter the world by its metadata — matching papers pulse gold, the
+          rest of the world steps back. Lenses clear when you leave this menu.
         </p>
+        {matchCount !== null && (
+          <p className="mt-2 rounded-md border border-[#ffd27a]/40 px-2 py-1 text-[11px] text-[#ffd27a]">
+            {matchCount} paper{matchCount === 1 ? "" : "s"} in the lens
+          </p>
+        )}
       </div>
 
       <div>
@@ -453,7 +474,7 @@ function LensesPanel({
 
 /* ---------------- ghosts ---------------- */
 
-function GhostsPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) {
+function GhostsPanel({ data }: { data: WorldData }) {
   const planting = useWorld((s) => s.planting);
   const ghosts = useWorld((s) => s.ghosts);
   const set = useWorld((s) => s.set);
@@ -471,13 +492,14 @@ function GhostsPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) 
   return (
     <div className="space-y-4">
       <div>
-        <H>Ghost papers</H>
+        <H>Research gaps</H>
         <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-          The violet wells are empty pockets of the embedding space — research
-          that doesn't exist. Each holds a hallucinated paper written from the
-          gap between its neighbors. Plant a flag anywhere to summon a new one;
-          its <span className="text-[#e8e2ff]">echo star</span> shows where the
-          written ghost actually embeds.
+          A brainstorming tool for what's missing from the literature.{" "}
+          <span className="text-ink-2">Click any spot on the map</span> —
+          especially the dark, empty regions between fields — and the AI drafts
+          the paper that would live there: a concrete proposal built from the
+          surrounding work. A bright marker then shows where that proposal
+          actually embeds, so you can judge how real the gap is.
         </p>
       </div>
 
@@ -490,33 +512,12 @@ function GhostsPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) 
             : "border-[#9085e9]/60 text-[#9085e9]"
         }`}
       >
-        {planting ? "click the map… (esc to cancel)" : "🕯 plant a flag"}
+        {planting ? "now click a spot on the map (esc to cancel)" : "pick a spot"}
       </button>
-
-      <div>
-        <p className="text-[11px] text-ink-2">Charted voids</p>
-        <ul className="mt-1 space-y-0.5">
-          {corpus.voids.map((v, i) => (
-            <li key={v.ghost.title}>
-              <button
-                type="button"
-                className="w-full rounded px-2 py-1 text-left text-xs text-ink-2 hover:bg-white/5 hover:text-ink"
-                onClick={() => {
-                  select({ kind: "ghost", id: `void:${i}` });
-                  flyTo(v.pos[0], v.pos[1]);
-                }}
-              >
-                <span style={{ color: VOID_VIOLET }}>◆</span>{" "}
-                <span className="line-clamp-1 inline">{v.ghost.title}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      </div>
 
       {ghosts.length > 0 && (
         <div>
-          <p className="text-[11px] text-ink-2">Your graveyard</p>
+          <p className="text-[11px] text-ink-2">Proposed papers</p>
           <ul className="mt-1 space-y-0.5">
             {ghosts.map((g) => (
               <li key={g.id} className="flex items-center gap-1">
@@ -532,7 +533,7 @@ function GhostsPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) 
                     {g.ghost ? "◆" : "◇"}
                   </span>{" "}
                   <span className="line-clamp-1 inline">
-                    {g.ghost?.title ?? (g.error ? "the séance failed" : "writing…")}
+                    {g.ghost?.title ?? (g.error ? "generation failed" : "drafting…")}
                   </span>
                 </button>
                 <button

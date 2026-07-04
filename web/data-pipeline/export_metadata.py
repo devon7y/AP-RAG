@@ -83,8 +83,6 @@ for p in papers:
     subjects.append(clean_str_list(rec.get("subjects"), 6))
     affils.append(clean_str_list(rec.get("affiliations"), 4))
 
-jdump(PUB / "papermeta.json", {"keywords": keywords, "subjects": subjects, "affil": affils})
-
 # ── author table ─────────────────────────────────────────────────────────────
 def author_key(family: str, given: str) -> str:
     fam = re.sub(r"[^a-z]", "", family.lower())
@@ -110,13 +108,14 @@ for p_idx, p in enumerate(papers):
             slot["papers"].append(p_idx)
 
 authors = []
-for slot in by_key.values():
+for k, slot in by_key.items():
     idxs = sorted(slot["papers"])
     c2 = np.mean([papers[i]["centroid"] for i in idxs], axis=0)
     c3 = np.mean([papers[i]["centroid3"] for i in idxs], axis=0)
     name = f"{slot['given']} {slot['family']}".strip() or slot["family"]
     authors.append(
         {
+            "key": k,
             "name": name,
             "family": slot["family"],
             "papers": idxs,
@@ -125,8 +124,30 @@ for slot in by_key.values():
         }
     )
 authors.sort(key=lambda a: (-len(a["papers"]), a["family"].lower()))
+key_to_idx = {a["key"]: ai for ai, a in enumerate(authors)}
+for a in authors:
+    del a["key"]
 jdump(PUB / "authors.json", authors)
 print(f"{len(authors)} authors, {sum(1 for a in authors if len(a['papers']) >= MIN_PAPERS_ELIGIBLE)} with >= {MIN_PAPERS_ELIGIBLE} papers")
+
+# ── first author per paper (index into authors.json; -1 unknown) ─────────────
+first_idx: list[int] = []
+for p in papers:
+    rec = manifest.get(p["file"], {})
+    fi = -1
+    for au in parse_list(rec.get("authors")):
+        if isinstance(au, dict) and (au.get("family") or "").strip():
+            fi = key_to_idx.get(
+                author_key(str(au.get("family")), str(au.get("given") or "")), -1
+            )
+            break
+    first_idx.append(fi)
+print(f"first authors resolved: {sum(1 for i in first_idx if i >= 0)}/{len(papers)}")
+
+jdump(
+    PUB / "papermeta.json",
+    {"keywords": keywords, "subjects": subjects, "affil": affils, "first": first_idx},
+)
 
 # ── oeuvre centroids + eligible x all cosine matrix (daily game) ─────────────
 paper_chunks: dict[int, list[int]] = defaultdict(list)

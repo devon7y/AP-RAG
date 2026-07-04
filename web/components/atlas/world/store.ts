@@ -1,8 +1,8 @@
 "use client";
 
 import { create } from "zustand";
-import type { ArithResult, Trace } from "@/components/atlas/interpolate/engine";
-import type { Station } from "@/components/atlas/radio/radioStore";
+import type { ArithResult, Trace } from "./engineBridge";
+import type { Station } from "./walk";
 import type { GhostPaper } from "@/lib/atlas/types";
 
 /**
@@ -73,6 +73,8 @@ interface WorldState {
   instrument: Instrument;
   paneOpen: boolean;
   selection: Selection;
+  /** where you came from — powers the inspector's back button */
+  selectionStack: Selection[];
   hovered: Selection;
 
   // time machine
@@ -114,13 +116,16 @@ interface WorldState {
   radioFollow: boolean;
   radioSentence: string | null;
 
-  // daily author game
+  // semantle (daily passage → first author)
   gamePings: GamePing[];
+  /** today's passage chunk idx — pulses on the map */
+  gameChunk: number | null;
 
   set: <K extends keyof WorldState>(k: K, v: WorldState[K]) => void;
   setView: (v: WorldView) => void;
   setInstrument: (i: Instrument) => void;
   select: (s: Selection) => void;
+  back: () => void;
   hover: (s: Selection) => void;
   setSearch: (query: string, hits: SearchHit[] | null) => void;
   requestWarp: (
@@ -142,6 +147,7 @@ export const useWorld = create<WorldState>((set) => ({
   instrument: "navigate",
   paneOpen: true,
   selection: null,
+  selectionStack: [],
   hovered: null,
 
   year: 3000,
@@ -179,11 +185,41 @@ export const useWorld = create<WorldState>((set) => ({
   radioSentence: null,
 
   gamePings: [],
+  gameChunk: null,
 
   set: (k, v) => set({ [k]: v } as Partial<WorldState>),
   setView: (v) => set({ view: v }),
-  setInstrument: (i) => set({ instrument: i, paneOpen: true }),
-  select: (s) => set({ selection: s }),
+  setInstrument: (i) =>
+    set((s) => ({
+      instrument: i,
+      paneOpen: true,
+      // lenses are scoped to their menu; the gap tool arms map-planting on entry
+      lens: s.instrument === "lenses" && i !== "lenses" ? NO_LENS : s.lens,
+      planting: i === "ghosts",
+    })),
+  select: (s) =>
+    set((st) => {
+      const same =
+        s !== null &&
+        st.selection !== null &&
+        st.selection.kind === s.kind &&
+        (st.selection as { idx?: number }).idx === (s as { idx?: number }).idx &&
+        (st.selection as { id?: string }).id === (s as { id?: string }).id;
+      if (same) return {};
+      const stack =
+        st.selection !== null && s !== null
+          ? [...st.selectionStack, st.selection].slice(-24)
+          : s === null
+            ? []
+            : st.selectionStack;
+      return { selection: s, selectionStack: stack };
+    }),
+  back: () =>
+    set((st) => {
+      const stack = [...st.selectionStack];
+      const prev = stack.pop() ?? null;
+      return { selection: prev, selectionStack: stack };
+    }),
   hover: (s) => set({ hovered: s }),
   setSearch: (query, hits) => set({ searchQuery: query, searchHits: hits }),
   requestWarp: (center, standoff, duration = 2.0) =>

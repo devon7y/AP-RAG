@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { STEPS } from "@/components/atlas/interpolate/engine";
+import { STEPS } from "./engineBridge";
 import type { AuthorRec, CorpusData } from "@/lib/atlas/types";
 import { shortCite, type WorldData } from "./derive";
 import {
@@ -35,12 +35,15 @@ const SLOT_COLORS: Record<Slot, string> = {
 
 function SlotInput({
   slot,
+  label,
   state,
   onSet,
   authors,
   corpus,
 }: {
   slot: Slot;
+  /** concrete role shown to the user ("From", "Subtract", …) */
+  label: string;
   state: SlotState | null;
   onSet: (s: SlotState | null) => void;
   authors: AuthorRec[];
@@ -65,8 +68,7 @@ function SlotInput({
   return (
     <div>
       <p className="text-[11px]" style={{ color: SLOT_COLORS[slot] }}>
-        {slot} {slot === "B" && "· −"}
-        {slot !== "B" && slot !== "A" && "· +"}
+        {label}
       </p>
       {state ? (
         <div
@@ -153,6 +155,8 @@ export default function InterpolatePanel({
         const a = await solveArithmeticWorld(slotA.ep, slotB.ep, slotC.ep, corpus, setBusy);
         set("trace", null);
         set("arith", a);
+        const top = a.hits[0];
+        if (top && top.chunkIdx >= 0) select({ kind: "chunk", idx: top.chunkIdx });
       }
     } catch (err) {
       setError(String(err instanceof Error ? err.message : err));
@@ -182,6 +186,14 @@ export default function InterpolatePanel({
   const activeStep = trace ? Math.round(traceT * (STEPS - 1)) : 0;
   const stepHits = trace?.steps[activeStep]?.hits ?? [];
 
+  // the inspector follows the slider: always show the passage living at the
+  // current waypoint, no clicking required
+  const topHitChunk = stepHits[0]?.chunkIdx ?? -1;
+  useEffect(() => {
+    if (!trace || topHitChunk < 0) return;
+    select({ kind: "chunk", idx: topHitChunk });
+  }, [trace, topHitChunk, select]);
+
   return (
     <div className="space-y-4">
       <div>
@@ -198,21 +210,42 @@ export default function InterpolatePanel({
                 mode === m ? "bg-white/10 text-ink" : "text-ink-3 hover:text-ink-2"
               }`}
             >
-              {m === "geodesic" ? "A → B" : "A − B + C"}
+              {m === "geodesic" ? "bridge two ideas" : "idea math"}
             </button>
           ))}
         </div>
         <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
           {mode === "geodesic"
-            ? "Slide between two ideas — every waypoint retrieves the real passages that live at that point on the arc."
-            : "Embedding arithmetic: what lives at A minus B plus C? Input papers are excluded from the answer."}
+            ? "Pick two ideas and slide between them — each point on the bridge retrieves the real passages that live there."
+            : "Start with one idea, subtract a second, add a third — see which real papers live at the result. The inputs themselves are excluded."}
         </p>
       </div>
 
-      <SlotInput slot="A" state={slotA} onSet={setSlotA} authors={authors} corpus={corpus} />
-      <SlotInput slot="B" state={slotB} onSet={setSlotB} authors={authors} corpus={corpus} />
+      <SlotInput
+        slot="A"
+        label={mode === "geodesic" ? "From" : "Start with"}
+        state={slotA}
+        onSet={setSlotA}
+        authors={authors}
+        corpus={corpus}
+      />
+      <SlotInput
+        slot="B"
+        label={mode === "geodesic" ? "To" : "Subtract"}
+        state={slotB}
+        onSet={setSlotB}
+        authors={authors}
+        corpus={corpus}
+      />
       {mode === "arithmetic" && (
-        <SlotInput slot="C" state={slotC} onSet={setSlotC} authors={authors} corpus={corpus} />
+        <SlotInput
+          slot="C"
+          label="Add"
+          state={slotC}
+          onSet={setSlotC}
+          authors={authors}
+          corpus={corpus}
+        />
       )}
 
       <button
@@ -221,7 +254,7 @@ export default function InterpolatePanel({
         onClick={run}
         className="w-full rounded-md border border-[#3987e5]/60 px-3 py-2 text-[11px] tracking-widest text-[#3987e5] uppercase disabled:opacity-30"
       >
-        {busy ?? (mode === "geodesic" ? "trace the arc" : "solve")}
+        {busy ?? (mode === "geodesic" ? "build the bridge" : "solve")}
       </button>
       {error && <p className="text-[11px] text-[#fab219]">{error}</p>}
 

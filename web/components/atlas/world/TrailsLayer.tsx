@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
+import { Html } from "@react-three/drei";
 import * as THREE from "three";
 import { LineBasicNodeMaterial } from "three/webgpu";
 import { attribute, mix, positionLocal, vec3 } from "three/tsl";
-import { tempRGB } from "@/components/atlas/semantle/game";
+import { tempRGB } from "./temperature";
 import type { AuthorRec, CorpusData } from "@/lib/atlas/types";
 import { glowTexture, type WorldData } from "./derive";
 import { paperWorldPos } from "./PaperBeacons";
@@ -16,13 +17,51 @@ import { useAtlasStore } from "@/lib/atlas/store";
 
 /**
  * Metadata made visible:
- *  - AuthorTrail — the active author lens draws a gold, year-ordered comet
- *    line through their papers: a career's semantic drift across the field.
- *  - GamePings — daily author-game guesses flare at the guessed oeuvre's
- *    location, colored by temperature.
+ *  - AuthorTrail — whenever an author is selected or lensed, a gold,
+ *    year-ordered comet line runs through their papers (a career's semantic
+ *    drift), with a clickable waypoint dot per paper.
+ *  - GamePings — Semantle guesses flare at the guessed oeuvre's location,
+ *    colored by temperature.
  */
 
 const TRAIL_GOLD = "#ffd27a";
+
+/** Clickable waypoint dot on the trail — native title tooltip, morph-aware. */
+function Waypoint({
+  paperIdx,
+  g,
+  s,
+  title,
+  year,
+}: {
+  paperIdx: number;
+  g: THREE.Vector3;
+  s: THREE.Vector3;
+  title: string;
+  year: number;
+}) {
+  const group = useRef<THREE.Group>(null);
+  useFrame(() => {
+    group.current?.position.copy(g).lerp(s, uMorph.value);
+  });
+  return (
+    <group ref={group}>
+      <Html center zIndexRange={[24, 0]} style={{ pointerEvents: "none" }}>
+        <button
+          type="button"
+          title={`${year || "n.d."} — ${title}`}
+          onClick={() => useWorld.getState().select({ kind: "paper", idx: paperIdx })}
+          className="pointer-events-auto block h-3 w-3 cursor-pointer rounded-full border transition-transform hover:scale-150"
+          style={{
+            borderColor: TRAIL_GOLD,
+            background: "rgba(255,210,122,0.35)",
+            boxShadow: "0 0 8px rgba(255,210,122,0.8)",
+          }}
+        />
+      </Html>
+    </group>
+  );
+}
 
 function AuthorTrail({
   data,
@@ -65,7 +104,12 @@ function AuthorTrail({
       const w = 0.35 + 0.65 * t; // brightens toward the present
       col.set([c.r * w, c.g * w, c.b * w], i * 3);
     }
-    return { gCurve, sCurve, pos, spc, col };
+    const waypoints = papers.map((p, i) => ({
+      paperIdx: p,
+      g: gPts[i],
+      s: sPts[i],
+    }));
+    return { gCurve, sCurve, pos, spc, col, waypoints };
   }, [data, corpus, author]);
 
   const { line, geo, mat, comet } = useMemo(() => {
@@ -123,6 +167,16 @@ function AuthorTrail({
     <group>
       <primitive object={line} />
       <primitive object={comet} />
+      {built.waypoints.map((w) => (
+        <Waypoint
+          key={w.paperIdx}
+          paperIdx={w.paperIdx}
+          g={w.g}
+          s={w.s}
+          title={corpus.papers[w.paperIdx].title}
+          year={corpus.papers[w.paperIdx].year}
+        />
+      ))}
     </group>
   );
 }
@@ -202,7 +256,11 @@ export default function TrailsLayer({
   authors: AuthorRec[];
 }) {
   const lensAuthor = useWorld((s) => s.lens.author);
-  const author = lensAuthor !== null ? authors[lensAuthor] : null;
+  const selection = useWorld((s) => s.selection);
+  // the trail rides both the lens AND a plain author selection
+  const authorIdx =
+    lensAuthor ?? (selection?.kind === "author" ? selection.idx : null);
+  const author = authorIdx !== null ? authors[authorIdx] : null;
   return (
     <group>
       {author && <AuthorTrail data={data} corpus={corpus} author={author} />}

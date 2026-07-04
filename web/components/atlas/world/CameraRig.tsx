@@ -128,6 +128,7 @@ export default function CameraRig({
       minDistance={3}
       maxDistance={300}
       screenSpacePanning
+      zoomToCursor
     />
   );
 }

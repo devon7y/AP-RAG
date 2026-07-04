@@ -102,6 +102,8 @@ export interface PaperMeta {
   keywords: string[][];
   subjects: string[][];
   affil: string[][];
+  /** first author per paper — index into authors.json, -1 unknown */
+  first: number[];
 }
 
 export interface ChunkText {

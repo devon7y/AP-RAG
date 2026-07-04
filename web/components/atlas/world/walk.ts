@@ -1,14 +1,25 @@
 "use client";
 
-import { neighborsOf } from "@/lib/data";
-import type { QSearchHit } from "@/lib/api";
-import type { AtlasData, KnnGraph } from "@/lib/types";
-import type { Station } from "./radioStore";
+import type { QSearchHit } from "@/lib/atlas/api";
+import { neighborsOf } from "@/lib/atlas/data";
+import type { AtlasData, KnnGraph } from "@/lib/atlas/types";
 
 /**
- * Pure walk logic for Radio Westbury: a slow, temperature-sampled random walk
+ * Pure walk logic for the radio rover: a slow, temperature-sampled random walk
  * over the chunk kNN graph, optionally biased toward/away from a tuned station.
+ * (Moved from the retired standalone radio experience.)
  */
+
+/** A tuned topic the drift can lean toward. */
+export interface Station {
+  query: string;
+  /** score-weighted centroid of the topic's top hits, map coords [0,1]² */
+  centroid: [number, number];
+  /** atlas index → normalized hit score (0.3..1) for the topic's top chunks */
+  hits: Map<number, number>;
+  /** strongest matching atlas index (walk start when tuned before power-on) */
+  topIdx: number | null;
+}
 
 /** Gaussian falloff radius (map units) for station signal strength. */
 const SIGNAL_SIGMA = 0.16;
@@ -95,8 +106,8 @@ export function buildStation(
   }
   if (matched.length < 3) return null;
 
-  let min = Infinity;
-  let max = -Infinity;
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
   for (const m of matched) {
     min = Math.min(min, m.score);
     max = Math.max(max, m.score);
@@ -108,7 +119,7 @@ export function buildStation(
   let wy = 0;
   let wsum = 0;
   let topIdx: number | null = null;
-  let topScore = -Infinity;
+  let topScore = Number.NEGATIVE_INFINITY;
   for (const m of matched) {
     const norm = 0.3 + 0.7 * ((m.score - min) / span);
     hitMap.set(m.idx, Math.max(hitMap.get(m.idx) ?? 0, norm));
@@ -130,7 +141,11 @@ export function buildStation(
 }
 
 /** Station affinity at a chunk: spatial falloff to the centroid + direct hit score. */
-export function computeSignal(atlas: AtlasData, idx: number, station: Station | null): number {
+export function computeSignal(
+  atlas: AtlasData,
+  idx: number,
+  station: Station | null,
+): number {
   if (!station) return 0;
   const d = dist2d(atlas, idx, station.centroid[0], station.centroid[1]);
   const g = Math.exp(-((d / SIGNAL_SIGMA) ** 2));
@@ -160,7 +175,10 @@ export function splitSentences(raw: string): string[] {
     const t = p.trim();
     if (!t) continue;
     const last = merged[merged.length - 1];
-    if (last !== undefined && (ABBREV.test(last) || t.length < 35 || /^[a-z0-9)]/.test(t))) {
+    if (
+      last !== undefined &&
+      (ABBREV.test(last) || t.length < 35 || /^[a-z0-9)]/.test(t))
+    ) {
       merged[merged.length - 1] = `${last} ${t}`;
     } else {
       merged.push(t);
@@ -186,22 +204,4 @@ export function splitSentences(raw: string): string[] {
 export function readMs(sentence: string): number {
   const words = sentence.split(/\s+/).length;
   return Math.min(15000, Math.max(2400, 950 + words * 345));
-}
-
-/** Clean a cluster's top terms into a short region label (drops numeric junk). */
-export function cleanTerms(terms: string[], max = 3): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const t of terms) {
-    const s = t.trim();
-    if (s.length < 3) continue;
-    if (/^[\d\s.,%()\-–—:]+$/.test(s)) continue;
-    if (/^\d/.test(s)) continue;
-    const key = s.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(key);
-    if (out.length >= max) break;
-  }
-  return out;
 }

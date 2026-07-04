@@ -30,6 +30,8 @@ export const uCalm = uniform(1);
 export const uHit = uniform(1);
 /** blend between era height fields A→B */
 export const uEraMix = uniform(0);
+/** 1 while a metadata lens is active — the terrain steps back so matches read */
+export const uLensDim = uniform(0);
 
 function blankTex(): THREE.DataTexture {
   const t = new THREE.DataTexture(

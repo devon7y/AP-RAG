@@ -1,10 +1,6 @@
 "use client";
 
 import * as THREE from "three";
-import {
-  ageColor,
-  isGenericEntityName,
-} from "@/components/atlas/observatory/derive";
 import { WORLD_SIZE } from "@/lib/atlas/data";
 import { CATEGORICAL, clusterColor, INK } from "@/lib/atlas/palette";
 import type {
@@ -94,6 +90,32 @@ export interface WorldData {
 
 const AMBIENT_FIGURES = 24;
 const WEB_EDGES = 150;
+
+/* ---------------- age ramp + name filters (from the retired observatory) --- */
+
+/** Age ramp poles (diverging warm↔cool through a warm white, like star temperature). */
+export const AGE_OLD = "#e66767";
+export const AGE_MID = "#f2e5cf";
+export const AGE_NEW = "#9ec5f4";
+
+const OLD_C = new THREE.Color(AGE_OLD);
+const MID_C = new THREE.Color(AGE_MID);
+const NEW_C = new THREE.Color(AGE_NEW);
+
+/** t=0 oldest → t=1 newest. */
+export function ageColor(t: number, out = new THREE.Color()): THREE.Color {
+  const x = Math.min(1, Math.max(0, t));
+  if (x < 0.5) return out.copy(OLD_C).lerp(MID_C, x * 2);
+  return out.copy(MID_C).lerp(NEW_C, (x - 0.5) * 2);
+}
+
+/** Paper-furniture entity names (Table 3, Study 1…) — noise as sky labels. */
+const GENERIC_ID =
+  /^(table|figure|fig|study|experiment|exp|appendix|equation|section|chapter|participants?|stimuli|procedure|methods?|results?|discussion|introduction|abstract|model|step|phase|task|item|block)\.?\s*\d*[a-z]?$/i;
+
+export function isGenericEntityName(id: string): boolean {
+  return GENERIC_ID.test(id.trim());
+}
 
 /* ---------------- small math helpers ---------------- */
 
