@@ -2,40 +2,25 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Search as SearchIcon } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
-import { qsearch } from "@/lib/atlas/api";
-import { SEQ_BLUE } from "@/lib/atlas/palette";
 import type { AuthorRec, CorpusData } from "@/lib/atlas/types";
-import { shortCite, type WorldData } from "./derive";
 import { solveArithmeticWorld, traceGeodesicWorld } from "./engineBridge";
 import { findAuthor, parseCommand, slotToEndpoint } from "./parse";
-import { useWorld, type SearchHit } from "./store";
+import { useWorld } from "./store";
 import { uMorph } from "./uniforms";
 
 /**
- * The command line of the world (press "/"). A bare phrase warps you there;
- * "a -> b" runs the interpolation engine; "a - b + c" runs embedding
+ * The command line of the world (press "/"). Plain words work exactly like
+ * the keyword lens — matching papers light up gold and everything else steps
+ * back. "a -> b" runs the interpolation engine; "a - b + c" runs embedding
  * arithmetic; "@author" lights their career trail; "year:", "journal:",
  * "kw:" set lenses; "ghost", "radio", "clear" drive instruments.
+ * Escape always clears lenses, search, and selection.
  */
 
-function chunkWorldPos(data: WorldData, i: number, m: number): [number, number, number] {
-  const gx = data.chunkGround[i * 3];
-  const gy = data.chunkGroundY[i];
-  const gz = data.chunkGround[i * 3 + 2];
-  return [
-    gx + (data.chunkSpace[i * 3] - gx) * m,
-    gy + (data.chunkSpace[i * 3 + 1] - gy) * m,
-    gz + (data.chunkSpace[i * 3 + 2] - gz) * m,
-  ];
-}
-
 export default function CommandBar({
-  data,
   corpus,
   authors,
 }: {
-  data: WorldData;
   corpus: CorpusData;
   authors: AuthorRec[];
 }) {
@@ -43,9 +28,6 @@ export default function CommandBar({
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  const searchHits = useWorld((s) => s.searchHits);
-  const searchQuery = useWorld((s) => s.searchQuery);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -55,44 +37,22 @@ export default function CommandBar({
         e.preventDefault();
         inputRef.current?.focus();
       } else if (e.key === "Escape") {
+        if (typing) {
+          (e.target as HTMLElement).blur();
+          return;
+        }
+        // escape clears the world state: planting, lenses, search, selection
         const st = useWorld.getState();
-        if (typing) (e.target as HTMLElement).blur();
-        else if (st.planting) st.set("planting", false);
-        else if (st.searchHits) {
-          st.setSearch("", null);
-          setValue(""); // cancelling a search also empties the bar
-        } else if (st.selection) st.select(null);
+        st.set("planting", false);
+        st.setSearch("", null);
+        st.clearLens(); // also closes an open author card
+        st.select(null);
+        setValue("");
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-
-  const warpToHits = (hits: SearchHit[]) => {
-    const st = useWorld.getState();
-    const m = uMorph.value;
-    let cx = 0;
-    let cy = 0;
-    let cz = 0;
-    let wsum = 0;
-    for (const h of hits) {
-      const w = Math.max(0.01, h.score);
-      const [x, y, z] = chunkWorldPos(data, h.idx, m);
-      cx += x * w;
-      cy += y * w;
-      cz += z * w;
-      wsum += w;
-    }
-    cx /= wsum;
-    cy /= wsum;
-    cz /= wsum;
-    let radius = 0;
-    for (const h of hits) {
-      const [x, y, z] = chunkWorldPos(data, h.idx, m);
-      radius = Math.max(radius, Math.hypot(x - cx, y - cy, z - cz));
-    }
-    st.requestWarp([cx, cy, cz], Math.min(120, Math.max(16, radius * 2.2)), 2.3);
-  };
 
   const run = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -104,23 +64,8 @@ export default function CommandBar({
     try {
       switch (cmd.kind) {
         case "warp": {
-          setBusy("searching");
-          const raw = await qsearch({ text: cmd.query, limit: 12 });
-          const seen = new Set<number>();
-          const hits: SearchHit[] = [];
-          for (const h of raw) {
-            const idx = data.chunkIdToIdx.get(h.chunkId);
-            if (idx === undefined || seen.has(idx)) continue;
-            seen.add(idx);
-            hits.push({ idx, chunkId: h.chunkId, score: h.score });
-          }
-          if (!hits.length) {
-            setNotice("nothing matched — try different words");
-            break;
-          }
-          st.setSearch(cmd.query, hits);
-          warpToHits(hits);
-          inputRef.current?.blur();
+          // plain words = the keyword lens: matching papers light up
+          st.setLens({ keyword: cmd.query });
           break;
         }
         case "interpolate": {
@@ -160,13 +105,10 @@ export default function CommandBar({
             break;
           }
           st.setLens({ author: idx });
-          st.setInstrument("lenses");
           st.select({ kind: "author", idx });
           const a = authors[idx];
           const m = uMorph.value;
-          const px = a.pos2[0];
-          const py = a.pos2[1];
-          const [gx, gz] = [(px - 0.5) * 100, (py - 0.5) * 100];
+          const [gx, gz] = [(a.pos2[0] - 0.5) * 100, (a.pos2[1] - 0.5) * 100];
           const sx = (a.pos3[0] - 0.5) * 100;
           const sy = (a.pos3[1] - 0.5) * 100;
           const sz = (a.pos3[2] - 0.5) * 100;
@@ -187,13 +129,9 @@ export default function CommandBar({
         }
         case "journal":
           st.setLens({ journal: cmd.value });
-          st.setInstrument("lenses");
-          setValue("");
           break;
         case "keyword":
           st.setLens({ keyword: cmd.value });
-          st.setInstrument("lenses");
-          setValue("");
           break;
         case "ghost":
           st.set("planting", true);
@@ -232,82 +170,8 @@ export default function CommandBar({
     return ep;
   };
 
-  const maxScore = searchHits?.length ? Math.max(...searchHits.map((h) => h.score)) : 1;
-
   return (
     <div className="absolute bottom-5 left-1/2 z-40 w-[560px] max-w-[92vw] -translate-x-1/2">
-      <AnimatePresence>
-        {searchHits && (
-          <motion.div
-            initial={{ opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 14 }}
-            transition={{ duration: 0.25 }}
-            className="hud-panel hud-scroll mb-2 max-h-[32vh] overflow-y-auto p-3"
-          >
-            <div className="flex items-center justify-between px-1">
-              <p className="text-[10px] tracking-[0.3em] text-ink-3 uppercase">
-                “{searchQuery}” · {searchHits.length} passages
-              </p>
-              <button
-                type="button"
-                onClick={() => {
-                  useWorld.getState().setSearch("", null);
-                  setValue("");
-                }}
-                className="text-ink-3 transition-colors hover:text-ink"
-                aria-label="Clear search"
-              >
-                ✕
-              </button>
-            </div>
-            <ul className="mt-2 space-y-1">
-              {searchHits.slice(0, 8).map((h, rank) => {
-                const paper = corpus.papers[corpus.atlas.paper[h.idx]];
-                return (
-                  <li key={h.chunkId}>
-                    <button
-                      type="button"
-                      className="group w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/5"
-                      onClick={() => {
-                        const st = useWorld.getState();
-                        st.select({ kind: "chunk", idx: h.idx });
-                        const [x, y, z] = chunkWorldPos(data, h.idx, uMorph.value);
-                        st.requestWarp([x, y, z], 7, 1.6);
-                      }}
-                    >
-                      <div className="flex items-baseline justify-between gap-3">
-                        <p className="line-clamp-1 text-xs text-ink">
-                          <span className="text-ink-3">{rank + 1}.</span>{" "}
-                          {paper?.title ?? "Unknown paper"}
-                        </p>
-                        <span className="shrink-0 text-[10px] tabular-nums text-ink-3">
-                          {h.score.toFixed(3)}
-                        </span>
-                      </div>
-                      <div className="mt-1 flex items-center gap-2">
-                        <div className="h-[3px] flex-1 overflow-hidden rounded-full bg-white/5">
-                          <div
-                            className="h-full rounded-full"
-                            style={{
-                              width: `${Math.round((h.score / maxScore) * 100)}%`,
-                              background: SEQ_BLUE[6],
-                            }}
-                          />
-                        </div>
-                        <span className="line-clamp-1 max-w-[45%] shrink-0 text-[10px] text-ink-3">
-                          {shortCite(paper)}
-                        </span>
-                      </div>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {notice && <p className="mb-2 text-center text-[11px] text-[#fab219]">{notice}</p>}
 
       <form onSubmit={run} className="hud-panel flex items-center gap-3 px-4 py-2.5">

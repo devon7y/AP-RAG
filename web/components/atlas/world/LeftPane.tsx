@@ -275,7 +275,6 @@ function NavigatePanel({ data, corpus }: { data: WorldData; corpus: CorpusData }
       <p className="border-t hairline pt-3 text-[11px] leading-relaxed text-ink-3">
         {corpus.papers.length.toLocaleString()} papers ·{" "}
         {data.n.toLocaleString()} passages · {data.entities.length} constellations
-        · built from the real Qwen3 embeddings + LightRAG knowledge graph.
       </p>
     </div>
   );

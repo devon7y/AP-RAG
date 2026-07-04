@@ -351,7 +351,7 @@ function World({
       </header>
 
       <LeftPane data={data} corpus={corpus} authors={authors} paperMeta={paperMeta} />
-      <CommandBar data={data} corpus={corpus} authors={authors} />
+      <CommandBar corpus={corpus} authors={authors} />
       <InspectorPanel
         data={data}
         corpus={corpus}
