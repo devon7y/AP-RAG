@@ -40,8 +40,22 @@ export function useRover(corpus: CorpusData | null, knn: KnnGraph | null) {
   useEffect(() => {
     if (!radioOn || !corpus || !knn) return;
     let cancelled = false;
+    let skip = false; // skip the rest of the current passage
+    let jumpTo: number | null = null; // teleport to a random chunk
     const st = () => useWorld.getState();
     primeVoices();
+
+    const onSkip = () => {
+      skip = true;
+      handle.current?.cancel();
+    };
+    const onRandom = () => {
+      jumpTo = Math.floor(Math.random() * corpus.atlas.n);
+      skip = true;
+      handle.current?.cancel();
+    };
+    window.addEventListener("world:radio-skip", onSkip);
+    window.addEventListener("world:radio-random", onRandom);
 
     const run = async () => {
       let prev: number | null = null;
@@ -63,17 +77,24 @@ export function useRover(corpus: CorpusData | null, knn: KnnGraph | null) {
         if (cancelled || !st().radioOn) break;
 
         for (const sentence of splitSentences(text).slice(0, 7)) {
-          if (cancelled || !st().radioOn) break;
+          if (cancelled || skip || !st().radioOn) break;
           st().set("radioSentence", sentence);
           if (st().radioMuted) {
             await new Promise((r) => setTimeout(r, readMs(sentence) * 0.7));
           } else {
-            handle.current = speak(sentence, 1);
+            handle.current = speak(sentence, 1, st().radioRate);
             await handle.current.done;
           }
         }
+        skip = false;
         if (cancelled || !st().radioOn) break;
 
+        if (jumpTo !== null) {
+          prev = current;
+          current = jumpTo;
+          jumpTo = null;
+          continue;
+        }
         const next = chooseNext(
           knn,
           corpus.atlas,
@@ -92,6 +113,8 @@ export function useRover(corpus: CorpusData | null, knn: KnnGraph | null) {
 
     return () => {
       cancelled = true;
+      window.removeEventListener("world:radio-skip", onSkip);
+      window.removeEventListener("world:radio-random", onRandom);
       handle.current?.cancel();
       cancelSpeech();
     };

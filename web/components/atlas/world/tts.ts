@@ -64,9 +64,9 @@ export interface SpeakHandle {
 
 /**
  * Speak one sentence. Resolves on end, error, cancel, or watchdog timeout —
- * never rejects, never hangs.
+ * never rejects, never hangs. `rate` 1 = normal pace.
  */
-export function speak(text: string, volume = 1): SpeakHandle {
+export function speak(text: string, volume = 1, rate = 1): SpeakHandle {
   if (!ttsAvailable()) {
     return { done: Promise.resolve(), cancel: () => {} };
   }
@@ -89,7 +89,7 @@ export function speak(text: string, volume = 1): SpeakHandle {
   const u = new SpeechSynthesisUtterance(text);
   if (!cachedVoice) cachedVoice = pickVoice();
   if (cachedVoice) u.voice = cachedVoice;
-  u.rate = 0.97;
+  u.rate = Math.min(2, Math.max(0.5, 0.97 * rate));
   u.pitch = 1.0;
   u.volume = Math.min(1, Math.max(0, volume));
   u.onend = () => settle();

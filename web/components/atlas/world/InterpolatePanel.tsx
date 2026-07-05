@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { STEPS } from "./engineBridge";
 import type { AuthorRec, CorpusData } from "@/lib/atlas/types";
 import { shortCite, type WorldData } from "./derive";
+import { fitArith, fitTrace } from "./fit";
 import {
   endpointLabel,
   solveArithmeticWorld,
@@ -38,6 +39,7 @@ function SlotInput({
   label,
   state,
   onSet,
+  onEnter,
   authors,
   corpus,
 }: {
@@ -46,6 +48,8 @@ function SlotInput({
   label: string;
   state: SlotState | null;
   onSet: (s: SlotState | null) => void;
+  /** called after an Enter commit — the panel runs if all slots are filled */
+  onEnter?: () => void;
   authors: AuthorRec[];
   corpus: CorpusData;
 }) {
@@ -92,6 +96,7 @@ function SlotInput({
             if (e.key === "Enter") {
               e.preventDefault();
               commit();
+              onEnter?.();
             }
           }}
           onBlur={commit}
@@ -139,6 +144,17 @@ export default function InterpolatePanel({
     return () => window.removeEventListener("world:set-endpoint", onSet);
   }, [corpus]);
 
+  // Esc clears the endpoint inputs along with everything else
+  useEffect(() => {
+    const clear = () => {
+      setSlotA(null);
+      setSlotB(null);
+      setSlotC(null);
+    };
+    window.addEventListener("world:esc", clear);
+    return () => window.removeEventListener("world:esc", clear);
+  }, []);
+
   const run = async () => {
     if (!slotA || !slotB || busy) return;
     setError(null);
@@ -149,12 +165,14 @@ export default function InterpolatePanel({
         set("arith", null);
         set("trace", t);
         set("traceT", 0);
+        fitTrace(data, t); // frame the whole bridge
       } else {
         if (!slotC) return;
         setBusy("resolving…");
         const a = await solveArithmeticWorld(slotA.ep, slotB.ep, slotC.ep, corpus, setBusy);
         set("trace", null);
         set("arith", a);
+        fitArith(data, a);
         const top = a.hits[0];
         if (top && top.chunkIdx >= 0) select({ kind: "chunk", idx: top.chunkIdx });
       }
@@ -163,6 +181,20 @@ export default function InterpolatePanel({
     } finally {
       setBusy(null);
     }
+  };
+
+  // Enter in a slot input starts the engine once every field is filled
+  const stateRef = useRef({ slotA, slotB, slotC, mode });
+  stateRef.current = { slotA, slotB, slotC, mode };
+  const runRef = useRef(run);
+  runRef.current = run;
+  const runOnEnter = () => {
+    setTimeout(() => {
+      const s = stateRef.current;
+      if (s.slotA && s.slotB && (s.mode === "geodesic" || s.slotC)) {
+        runRef.current();
+      }
+    }, 0);
   };
 
   const flyToChunk = (idx: number) => {
@@ -226,6 +258,7 @@ export default function InterpolatePanel({
         label={mode === "geodesic" ? "From" : "Start with"}
         state={slotA}
         onSet={setSlotA}
+        onEnter={runOnEnter}
         authors={authors}
         corpus={corpus}
       />
@@ -234,6 +267,7 @@ export default function InterpolatePanel({
         label={mode === "geodesic" ? "To" : "Subtract"}
         state={slotB}
         onSet={setSlotB}
+        onEnter={runOnEnter}
         authors={authors}
         corpus={corpus}
       />
@@ -243,10 +277,19 @@ export default function InterpolatePanel({
           label="Add"
           state={slotC}
           onSet={setSlotC}
+          onEnter={runOnEnter}
           authors={authors}
           corpus={corpus}
         />
       )}
+
+      <p className="text-[10px] leading-relaxed text-ink-3">
+        Shortcut: type{" "}
+        <code className="text-ink-2">humor -&gt; memory</code> or{" "}
+        <code className="text-ink-2">humor - comedy + recall</code> straight
+        into the search bar. <code className="text-ink-2">@name</code> works as
+        an endpoint here too.
+      </p>
 
       <button
         type="button"

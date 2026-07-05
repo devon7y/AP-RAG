@@ -9,6 +9,8 @@ import {
   PanelLeftOpen,
   Radio,
   RotateCcw,
+  Shuffle,
+  SkipForward,
   SlidersHorizontal,
   Spline,
   Trophy,
@@ -25,6 +27,7 @@ import {
   toWorldXZ,
   type WorldData,
 } from "./derive";
+import { fitAuthorTrail } from "./fit";
 import GamePanel from "./GamePanel";
 import InterpolatePanel from "./InterpolatePanel";
 import { useWorld, warpHome, type Instrument } from "./store";
@@ -115,7 +118,12 @@ export default function LeftPane({
           {instrument === "navigate" && <NavigatePanel data={data} corpus={corpus} />}
           {instrument === "time" && <TimePanel />}
           {instrument === "lenses" && (
-            <LensesPanel corpus={corpus} authors={authors} paperMeta={paperMeta} />
+            <LensesPanel
+              data={data}
+              corpus={corpus}
+              authors={authors}
+              paperMeta={paperMeta}
+            />
           )}
           {instrument === "interpolate" && (
             <InterpolatePanel data={data} corpus={corpus} authors={authors} />
@@ -250,11 +258,13 @@ function NavigatePanel({ data, corpus }: { data: WorldData; corpus: CorpusData }
         <H>Layers</H>
         <div className="mt-2 space-y-1.5 text-xs text-ink-2">
           {(
-            [
-              ["constellations", "showSky", showSky],
-              ["concept web", "showWeb", showWeb],
-              ["labels", "showLabels", showLabels],
-            ] as const
+            view === "space"
+              ? ([
+                  ["constellations", "showSky", showSky],
+                  ["concept web", "showWeb", showWeb],
+                  ["labels", "showLabels", showLabels],
+                ] as const)
+              : ([["labels", "showLabels", showLabels]] as const)
           ).map(([label, key, on]) => (
             <label key={key} className="flex cursor-pointer items-center gap-2">
               <input
@@ -371,10 +381,12 @@ function TimePanel() {
 /* ---------------- lenses ---------------- */
 
 function LensesPanel({
+  data,
   corpus,
   authors,
   paperMeta,
 }: {
+  data: WorldData;
   corpus: CorpusData;
   authors: AuthorRec[];
   paperMeta: PaperMeta | null;
@@ -481,6 +493,7 @@ function LensesPanel({
                         setLens({ author: i });
                         setAuthorQuery("");
                         select({ kind: "author", idx: i });
+                        fitAuthorTrail(data, a); // frame the whole trail
                       }}
                     >
                       {a.name}{" "}
@@ -531,6 +544,15 @@ function LensesPanel({
           clear lenses
         </button>
       )}
+
+      <p className="border-t hairline pt-3 text-[10px] leading-relaxed text-ink-3">
+        Shortcuts in the search bar:{" "}
+        <code className="text-ink-2">@name</code> for an author,{" "}
+        <code className="text-ink-2">journal:cognition</code>,{" "}
+        <code className="text-ink-2">kw:entropy</code>,{" "}
+        <code className="text-ink-2">year:1990..2005</code> — plain words
+        keyword-filter live as you type. Esc clears everything.
+      </p>
     </div>
   );
 }
@@ -578,6 +600,11 @@ function GhostsPanel({ data }: { data: WorldData }) {
         {planting ? "now click a spot on the map (esc to cancel)" : "pick a spot"}
       </button>
 
+      <p className="text-[10px] leading-relaxed text-ink-3">
+        Shortcut: type <code className="text-ink-2">ghost</code> in the search
+        bar to arm the picker from anywhere.
+      </p>
+
       {ghosts.length > 0 && (
         <div>
           <p className="text-xs text-ink-2">Proposed papers</p>
@@ -621,6 +648,7 @@ function GhostsPanel({ data }: { data: WorldData }) {
 function RadioPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) {
   const radioOn = useWorld((s) => s.radioOn);
   const radioMuted = useWorld((s) => s.radioMuted);
+  const radioRate = useWorld((s) => s.radioRate);
   const radioFollow = useWorld((s) => s.radioFollow);
   const radioBias = useWorld((s) => s.radioBias);
   const radioStation = useWorld((s) => s.radioStation);
@@ -728,6 +756,43 @@ function RadioPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) {
         />
       </div>
 
+      <div className="flex gap-2">
+        <button
+          type="button"
+          disabled={!radioOn}
+          onClick={() => window.dispatchEvent(new Event("world:radio-skip"))}
+          className="flex-1 rounded-md border hairline px-2 py-1.5 text-[11px] tracking-widest text-ink-2 uppercase disabled:opacity-30"
+        >
+          <SkipForward className="mr-1 inline size-3" />
+          skip
+        </button>
+        <button
+          type="button"
+          disabled={!radioOn}
+          onClick={() => window.dispatchEvent(new Event("world:radio-random"))}
+          className="flex-1 rounded-md border hairline px-2 py-1.5 text-[11px] tracking-widest text-ink-2 uppercase disabled:opacity-30"
+        >
+          <Shuffle className="mr-1 inline size-3" />
+          random
+        </button>
+      </div>
+
+      <div>
+        <div className="flex justify-between text-[10px] text-ink-3">
+          <span>voice speed</span>
+          <span>{radioRate.toFixed(1)}×</span>
+        </div>
+        <input
+          type="range"
+          min={0.6}
+          max={1.8}
+          step={0.1}
+          value={radioRate}
+          onChange={(e) => set("radioRate", Number(e.target.value))}
+          className="w-full accent-[#d55181]"
+        />
+      </div>
+
       <div className="flex gap-4 text-xs text-ink-2">
         <label className="flex cursor-pointer items-center gap-2">
           <input
@@ -748,6 +813,11 @@ function RadioPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) {
           mute
         </label>
       </div>
+
+      <p className="text-[10px] leading-relaxed text-ink-3">
+        Shortcut: type <code className="text-ink-2">radio</code> in the search
+        bar to toggle the power from anywhere.
+      </p>
 
       {radioOn && nowPaper && (
         <div className="rounded-md border hairline p-2.5">

@@ -8,6 +8,7 @@ import { SEQ_BLUE } from "@/lib/atlas/palette";
 import type { AuthorRec, CorpusData } from "@/lib/atlas/types";
 import { shortCite, type WorldData } from "./derive";
 import { solveArithmeticWorld, traceGeodesicWorld } from "./engineBridge";
+import { fitAuthorTrail, fitTrace } from "./fit";
 import { findAuthor, parseCommand, slotToEndpoint } from "./parse";
 import { useWorld, warpHome, type SearchHit } from "./store";
 import { uMorph } from "./uniforms";
@@ -62,6 +63,8 @@ export default function CommandBar({
           st.planting ||
           st.searchHits !== null ||
           st.selection !== null ||
+          st.trace !== null ||
+          st.arith !== null ||
           st.lens.author !== null ||
           st.lens.journal !== null ||
           st.lens.keyword !== null ||
@@ -70,6 +73,9 @@ export default function CommandBar({
         st.setSearch("", null);
         st.clearLens(); // also closes an open author card
         st.select(null);
+        st.set("trace", null);
+        st.set("arith", null);
+        window.dispatchEvent(new Event("world:esc")); // panels clear local inputs
         setValue("");
         // nothing left to clear (or the camera is still idling) → fly home
         if (!hadSomething || st.autoRotate) {
@@ -160,6 +166,7 @@ export default function CommandBar({
           st.set("arith", null);
           st.set("trace", trace);
           st.set("traceT", 0);
+          fitTrace(data, trace); // frame the whole bridge
           setValue("");
           break;
         }
@@ -187,19 +194,7 @@ export default function CommandBar({
           st.setLens({ author: idx });
           st.setInstrument("lenses");
           st.select({ kind: "author", idx });
-          const a = authors[idx];
-          const m = uMorph.value;
-          const px = a.pos2[0];
-          const py = a.pos2[1];
-          const [gx, gz] = [(px - 0.5) * 100, (py - 0.5) * 100];
-          const sx = (a.pos3[0] - 0.5) * 100;
-          const sy = (a.pos3[1] - 0.5) * 100;
-          const sz = (a.pos3[2] - 0.5) * 100;
-          st.requestWarp(
-            [gx + (sx - gx) * m, 8 + (sy - 8) * m, gz + (sz - gz) * m],
-            40,
-            2.2,
-          );
+          fitAuthorTrail(data, authors[idx]); // frame the whole trail
           setValue("");
           break;
         }

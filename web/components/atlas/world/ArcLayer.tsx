@@ -30,7 +30,7 @@ import { useAtlasStore } from "@/lib/atlas/store";
 
 const ARC_SAMPLES = 140;
 
-interface FramePoint {
+export interface FramePoint {
   g: THREE.Vector3;
   s: THREE.Vector3;
 }
@@ -78,7 +78,7 @@ function groundAt(data: WorldData, x01: number, y01: number, lift = 0): THREE.Ve
 }
 
 /** Waypoints in both frames; missing space centroids are interpolated. */
-function traceWaypoints(data: WorldData, trace: Trace): FramePoint[] {
+export function traceWaypoints(data: WorldData, trace: Trace): FramePoint[] {
   const pts: (FramePoint | null)[] = trace.steps.map((st) => {
     const c = hitsFrameCentroid(data, st.hits);
     if (c) {

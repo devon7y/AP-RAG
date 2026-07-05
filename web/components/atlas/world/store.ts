@@ -136,6 +136,8 @@ interface WorldState {
   // radio rover
   radioOn: boolean;
   radioMuted: boolean;
+  /** TTS speaking rate (1 = normal) */
+  radioRate: number;
   radioIdx: number | null;
   radioTrail: number[];
   radioStation: Station | null;
@@ -208,6 +210,7 @@ export const useWorld = create<WorldState>((set) => ({
 
   radioOn: false,
   radioMuted: false,
+  radioRate: 1,
   radioIdx: null,
   radioTrail: [],
   radioStation: null,
@@ -299,5 +302,12 @@ export const useWorld = create<WorldState>((set) => ({
     set((s) => ({
       ghosts: s.ghosts.map((g) => (g.id === id ? { ...g, ...patch } : g)),
     })),
-  removeGhost: (id) => set((s) => ({ ghosts: s.ghosts.filter((g) => g.id !== id) })),
+  removeGhost: (id) =>
+    set((s) => ({
+      ghosts: s.ghosts.filter((g) => g.id !== id),
+      // deleting the gap also closes its open card
+      ...(s.selection?.kind === "ghost" && s.selection.id === id
+        ? { selection: null, selectionStack: [] }
+        : {}),
+    })),
 }));
