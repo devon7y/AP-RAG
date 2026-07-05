@@ -26,6 +26,12 @@ export type Command =
   | { kind: "year"; from: number | null; to: number }
   | { kind: "journal"; value: string }
   | { kind: "keyword"; value: string }
+  | { kind: "view"; view: "atlas" | "space" }
+  | { kind: "reset" }
+  | { kind: "timeplay" }
+  | { kind: "timenow" }
+  | { kind: "game" }
+  | { kind: "help" }
   | { kind: "ghost" }
   | { kind: "radio" }
   | { kind: "clear" };
@@ -80,9 +86,36 @@ export function parseCommand(raw: string): Command | null {
     return inner ? { kind: "warp", query: inner } : null;
   }
 
-  if (lower === "ghost" || lower === "plant") return { kind: "ghost" };
-  if (lower === "radio") return { kind: "radio" };
-  if (lower === "clear" || lower === "reset") return { kind: "clear" };
+  // slash commands
+  if (input.startsWith("/")) {
+    switch (lower.slice(1).trim()) {
+      case "landscape":
+      case "land":
+        return { kind: "view", view: "atlas" };
+      case "galaxy":
+      case "space":
+        return { kind: "view", view: "space" };
+      case "radio":
+        return { kind: "radio" };
+      case "gap":
+      case "gaps":
+        return { kind: "ghost" };
+      case "reset":
+      case "home":
+        return { kind: "reset" };
+      case "play":
+        return { kind: "timeplay" };
+      case "now":
+        return { kind: "timenow" };
+      case "semantle":
+      case "game":
+        return { kind: "game" };
+      case "clear":
+        return { kind: "clear" };
+      default:
+        return { kind: "help" }; // unknown slash → show the command list
+    }
+  }
 
   const yearM = lower.match(/^year:\s*(\d{4})(?:\s*(?:\.\.|-|–)\s*(\d{4}))?$/);
   if (yearM) {

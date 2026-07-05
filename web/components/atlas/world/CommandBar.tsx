@@ -55,6 +55,8 @@ export default function CommandBar({
       if (e.key === "/" && !typing) {
         e.preventDefault();
         inputRef.current?.focus();
+        // seed the slash so slash-commands type naturally after the shortcut
+        if (!inputRef.current?.value) setValue("/");
       } else if (e.key === "Escape") {
         // one press clears everything, even while a text field is focused
         if (typing) (e.target as HTMLElement).blur();
@@ -287,6 +289,37 @@ export default function CommandBar({
           st.setInstrument("lenses");
           setValue("");
           break;
+        case "view":
+          st.setView(cmd.view);
+          setValue("");
+          break;
+        case "reset":
+          st.set("autoRotate", true);
+          warpHome(1.3);
+          setValue("");
+          break;
+        case "timeplay":
+          st.set("year", st.yearMin);
+          st.set("timePlaying", true);
+          st.setInstrument("time");
+          setValue("");
+          break;
+        case "timenow":
+          st.set("timePlaying", false);
+          st.set("year", st.yearMax + 1);
+          st.set("yearLo", 0);
+          setValue("");
+          break;
+        case "game":
+          st.setInstrument("game");
+          setValue("");
+          break;
+        case "help":
+          setNotice(
+            "/landscape · /galaxy · /radio · /gap · /reset · /play · /now · /semantle · /clear — plus @author, a -> b, a - b + c, journal:, kw:, year:1990..2005, \"quoted phrase\"",
+          );
+          setValue("");
+          break;
         case "ghost":
           st.set("planting", true);
           st.setInstrument("ghosts");
@@ -436,7 +469,7 @@ export default function CommandBar({
           onChange={(e) => onType(e.target.value)}
           onKeyDown={onHistoryKey}
           disabled={busy !== null}
-          placeholder="search the papers for anything…"
+          placeholder="search the papers — / for commands…"
           className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-3"
         />
         <button

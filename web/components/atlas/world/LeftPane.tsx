@@ -606,8 +606,8 @@ function GhostsPanel({ data }: { data: WorldData }) {
       </button>
 
       <p className="text-[10px] leading-relaxed text-ink-3">
-        Shortcut: type <code className="text-ink-2">ghost</code> in the search
-        bar to arm the picker from anywhere.
+        Shortcut: type <code className="text-ink-2">/gap</code> in the search bar
+        to arm the picker from anywhere.
       </p>
 
       {ghosts.length > 0 && (
@@ -820,7 +820,7 @@ function RadioPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) {
       </div>
 
       <p className="text-[10px] leading-relaxed text-ink-3">
-        Shortcut: type <code className="text-ink-2">radio</code> in the search
+        Shortcut: type <code className="text-ink-2">/radio</code> in the search
         bar to toggle the power from anywhere.
       </p>
 
