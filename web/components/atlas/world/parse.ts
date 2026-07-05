@@ -13,10 +13,15 @@ import type { AuthorRec } from "@/lib/atlas/types";
  *   ghost | radio | clear            → instruments
  */
 
+export interface SignedTerm {
+  sign: "+" | "−";
+  text: string;
+}
+
 export type Command =
   | { kind: "warp"; query: string }
   | { kind: "interpolate"; a: string; b: string }
-  | { kind: "arithmetic"; a: string; b: string; c: string }
+  | { kind: "arithmetic"; terms: SignedTerm[] }
   | { kind: "author"; name: string }
   | { kind: "year"; from: number | null; to: number }
   | { kind: "journal"; value: string }
@@ -33,11 +38,6 @@ export function parseCommand(raw: string): Command | null {
   if (lower === "ghost" || lower === "plant") return { kind: "ghost" };
   if (lower === "radio") return { kind: "radio" };
   if (lower === "clear" || lower === "reset") return { kind: "clear" };
-
-  if (input.startsWith("@")) {
-    const name = input.slice(1).trim();
-    if (name) return { kind: "author", name };
-  }
 
   const yearM = lower.match(/^year:\s*(\d{4})(?:\s*(?:\.\.|-|–)\s*(\d{4}))?$/);
   if (yearM) {
@@ -58,14 +58,26 @@ export function parseCommand(raw: string): Command | null {
     return { kind: "interpolate", a: interpM[0].trim(), b: interpM[1].trim() };
   }
 
-  const arithM = input.match(/^(.+?)\s+[-−]\s+(.+?)\s+\+\s+(.+)$/);
-  if (arithM) {
-    return {
-      kind: "arithmetic",
-      a: arithM[1].trim(),
-      b: arithM[2].trim(),
-      c: arithM[3].trim(),
-    };
+  // general embedding algebra: any mix of "a + b - c …" (spaces around ops).
+  // checked BEFORE @author so "@westbury + @caplan - EEG" parses as math.
+  const parts = input.split(/\s+([+\-−])\s+/);
+  if (parts.length >= 3 && parts.length % 2 === 1) {
+    const terms: SignedTerm[] = [{ sign: "+", text: parts[0].trim() }];
+    let ok = parts[0].trim().length > 0;
+    for (let i = 1; i < parts.length; i += 2) {
+      const text = (parts[i + 1] ?? "").trim();
+      if (!text) {
+        ok = false;
+        break;
+      }
+      terms.push({ sign: parts[i] === "+" ? "+" : "−", text });
+    }
+    if (ok) return { kind: "arithmetic", terms };
+  }
+
+  if (input.startsWith("@")) {
+    const name = input.slice(1).trim();
+    if (name) return { kind: "author", name };
   }
 
   return { kind: "warp", query: input };

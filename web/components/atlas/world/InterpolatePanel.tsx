@@ -169,7 +169,15 @@ export default function InterpolatePanel({
       } else {
         if (!slotC) return;
         setBusy("resolving…");
-        const a = await solveArithmeticWorld(slotA.ep, slotB.ep, slotC.ep, corpus, setBusy);
+        const a = await solveArithmeticWorld(
+          [
+            { ep: slotA.ep, sign: "+" },
+            { ep: slotB.ep, sign: "−" },
+            { ep: slotC.ep, sign: "+" },
+          ],
+          corpus,
+          setBusy,
+        );
         set("trace", null);
         set("arith", a);
         fitArith(data, a);

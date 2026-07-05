@@ -8,7 +8,7 @@ import { SEQ_BLUE } from "@/lib/atlas/palette";
 import type { AuthorRec, CorpusData } from "@/lib/atlas/types";
 import { shortCite, type WorldData } from "./derive";
 import { solveArithmeticWorld, traceGeodesicWorld } from "./engineBridge";
-import { fitAuthorTrail, fitTrace } from "./fit";
+import { fitArith, fitAuthorTrail, fitTrace } from "./fit";
 import { findAuthor, parseCommand, slotToEndpoint } from "./parse";
 import { useWorld, warpHome, type SearchHit } from "./store";
 import { uMorph } from "./uniforms";
@@ -107,7 +107,12 @@ export default function CommandBar({
       // both endpoints glow while composing "a -> b"
       st.setLens({ keyword: `${cmd.a}|${cmd.b}`.replaceAll("@", "") });
     else if (cmd?.kind === "arithmetic")
-      st.setLens({ keyword: `${cmd.a}|${cmd.b}|${cmd.c}`.replaceAll("@", "") });
+      st.setLens({
+        keyword: cmd.terms
+          .map((t) => t.text)
+          .join("|")
+          .replaceAll("@", ""),
+      });
     else if (st.lens.keyword !== null) st.setLens({ keyword: null });
   };
 
@@ -228,15 +233,24 @@ export default function CommandBar({
           break;
         }
         case "arithmetic": {
-          setBusy("solving A − B + C…");
+          setBusy("solving the idea math…");
           st.setInstrument("interpolate");
-          const epA = resolveSlot(cmd.a);
-          const epB = resolveSlot(cmd.b);
-          const epC = resolveSlot(cmd.c);
-          fillPanelSlots({ A: epA, B: epB, C: epC });
-          const arith = await solveArithmeticWorld(epA, epB, epC, corpus, setBusy);
+          const signed = cmd.terms.map((t) => ({
+            ep: resolveSlot(t.text),
+            sign: t.sign,
+          }));
+          // mirror what fits into the panel's three slots (best effort)
+          const plus = signed.filter((t) => t.sign === "+");
+          const minus = signed.filter((t) => t.sign === "−");
+          fillPanelSlots({
+            ...(plus[0] ? { A: plus[0].ep } : {}),
+            ...(minus[0] ? { B: minus[0].ep } : {}),
+            ...(plus[1] ? { C: plus[1].ep } : {}),
+          });
+          const arith = await solveArithmeticWorld(signed, corpus, setBusy);
           st.set("trace", null);
           st.set("arith", arith);
+          fitArith(data, arith);
           setValue("");
           break;
         }

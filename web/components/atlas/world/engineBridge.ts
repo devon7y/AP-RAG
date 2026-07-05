@@ -297,25 +297,34 @@ function filesOfEndpoint(ep: WorldEndpoint, corpus: CorpusData): string[] {
   return set ? [...set].map((i) => corpus.papers[i].file) : [];
 }
 
+export interface SignedEndpoint {
+  ep: WorldEndpoint;
+  sign: "+" | "−";
+}
+
+const PLUS_COLORS = [COOL, THIRD, "#9085e9", "#c98500"];
+
 export async function solveArithmeticWorld(
-  a: WorldEndpoint,
-  b: WorldEndpoint,
-  c: WorldEndpoint,
+  signedTerms: SignedEndpoint[],
   corpus: CorpusData,
   onPhase?: (msg: string) => void,
 ): Promise<ArithResult> {
-  onPhase?.("locating the three ideas…");
-  const inputs = [
-    { ep: a, sign: "+" as const, color: "#3987e5" },
-    { ep: b, sign: "−" as const, color: "#e66767" },
-    { ep: c, sign: "+" as const, color: "#199e70" },
-  ];
+  onPhase?.(`locating ${signedTerms.length} ideas…`);
+  let plusCount = 0;
+  const inputs = signedTerms.map((t) => ({
+    ep: t.ep,
+    sign: t.sign,
+    color: t.sign === "−" ? WARM : PLUS_COLORS[plusCount++ % PLUS_COLORS.length],
+  }));
   const resolved = await Promise.all(inputs.map((i) => resolveEndpoint(i.ep, corpus)));
-  const v = normalize(
-    resolved[0].vec.map((x, i) => x - resolved[1].vec[i] + resolved[2].vec[i]),
-  );
+  const sum = new Array<number>(resolved[0].vec.length).fill(0);
+  resolved.forEach((r, i) => {
+    const s = inputs[i].sign === "−" ? -1 : 1;
+    for (let d = 0; d < sum.length; d++) sum[d] += s * r.vec[d];
+  });
+  const v = normalize(sum);
 
-  onPhase?.("searching near A − B + C…");
+  onPhase?.("searching near the result…");
   const excludeFiles = new Set(inputs.flatMap((i) => filesOfEndpoint(i.ep, corpus)));
   const [raw, ...anchorRaw] = await Promise.all([
     qsearch({ vector: v, limit: ARITH_LIMIT }),
