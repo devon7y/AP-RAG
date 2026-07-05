@@ -97,9 +97,9 @@ function PeakLabels({ data }: { data: WorldData }) {
           const t = THREE.MathUtils.clamp((far - dist) / (far - 14), 0, 1);
           o = Math.min(1, t * 1.6) * base;
           if (o > 0.05) {
-            // approximate the label rect (9px display font, 250px wrap)
-            const w = Math.min(250, peak.label.length * 5.6) + 10;
-            const lines = Math.ceil((peak.label.length * 5.6) / 250);
+            // approximate the label rect (9px display font, 230px wrap lane)
+            const w = Math.min(230, peak.label.length * 5.6) + 10;
+            const lines = Math.ceil((peak.label.length * 5.6) / 230);
             const h = lines * 12 + 6;
             const clash = accepted.some(
               (r) =>
@@ -124,11 +124,18 @@ function PeakLabels({ data }: { data: WorldData }) {
               ref={(el) => {
                 divs.current[i] = el;
               }}
-              style={{ opacity: 0, transition: "opacity 0.15s linear" }}
+              style={{
+                opacity: 0,
+                transition: "opacity 0.15s linear",
+                // fixed lane so text wraps naturally onto multiple lines
+                // instead of being clipped or squeezed into a vertical stack
+                width: 230,
+                textAlign: "center",
+              }}
             >
               <button
                 type="button"
-                className="w-max max-w-[250px] cursor-pointer text-center select-none"
+                className="pointer-events-auto inline-block max-w-full cursor-pointer text-center select-none"
                 onClick={() => {
                   if (peak.kind === "paper")
                     select({ kind: "paper", idx: peak.paperIdx });
