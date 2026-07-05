@@ -343,12 +343,16 @@ function World({
 
     const authorSet = author !== null ? new Set(authors[author]?.papers ?? []) : null;
     const j = journal?.toLowerCase() ?? null;
-    const k = keyword?.toLowerCase() ?? null;
+    // "|" separates alternatives (used by the live "a -> b" expression glow)
+    const terms = (keyword?.toLowerCase() ?? "")
+      .split("|")
+      .map((t) => t.trim())
+      .filter(Boolean);
 
     const paperPass = corpus.papers.map((p, i) => {
       if (authorSet && !authorSet.has(i)) return false;
       if (j && !p.journal.toLowerCase().includes(j)) return false;
-      if (k) {
+      if (terms.length) {
         const hay = [
           p.title,
           p.abstract,
@@ -357,7 +361,7 @@ function World({
         ]
           .join(" | ")
           .toLowerCase();
-        if (!hay.includes(k)) return false;
+        if (!terms.some((t) => hay.includes(t))) return false;
       }
       return true;
     });

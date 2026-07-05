@@ -61,6 +61,7 @@ export default function CommandBar({
         const st = useWorld.getState();
         const hadSomething =
           st.planting ||
+          st.radioOn ||
           st.searchHits !== null ||
           st.selection !== null ||
           st.trace !== null ||
@@ -69,6 +70,11 @@ export default function CommandBar({
           st.lens.journal !== null ||
           st.lens.keyword !== null ||
           inputRef.current?.value !== "";
+        // radio: Esc powers it off and closes its panel
+        if (st.radioOn || st.instrument === "radio") {
+          st.set("radioOn", false);
+          st.set("paneOpen", false);
+        }
         st.set("planting", false);
         st.setSearch("", null);
         st.clearLens(); // also closes an open author card
@@ -97,6 +103,11 @@ export default function CommandBar({
     const st = useWorld.getState();
     const cmd = parseCommand(text);
     if (cmd?.kind === "warp") st.setLens({ keyword: cmd.query });
+    else if (cmd?.kind === "interpolate")
+      // both endpoints glow while composing "a -> b"
+      st.setLens({ keyword: `${cmd.a}|${cmd.b}`.replaceAll("@", "") });
+    else if (cmd?.kind === "arithmetic")
+      st.setLens({ keyword: `${cmd.a}|${cmd.b}|${cmd.c}`.replaceAll("@", "") });
     else if (st.lens.keyword !== null) st.setLens({ keyword: null });
   };
 

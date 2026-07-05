@@ -419,12 +419,15 @@ function LensesPanel({
     if (author === null && !journal && !keyword) return null;
     const authorSet = author !== null ? new Set(authors[author]?.papers ?? []) : null;
     const j = journal?.toLowerCase() ?? null;
-    const k = keyword?.toLowerCase() ?? null;
+    const terms = (keyword?.toLowerCase() ?? "")
+      .split("|")
+      .map((t) => t.trim())
+      .filter(Boolean);
     let n = 0;
     corpus.papers.forEach((p, i) => {
       if (authorSet && !authorSet.has(i)) return;
       if (j && !p.journal.toLowerCase().includes(j)) return;
-      if (k) {
+      if (terms.length) {
         const hay = [
           p.title,
           p.abstract,
@@ -433,7 +436,7 @@ function LensesPanel({
         ]
           .join(" | ")
           .toLowerCase();
-        if (!hay.includes(k)) return;
+        if (!terms.some((t) => hay.includes(t))) return;
       }
       n++;
     });
@@ -715,7 +718,7 @@ function RadioPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) {
             value={stationQuery}
             onChange={(e) => setStationQuery(e.target.value)}
             placeholder={radioStation ? `tuned: ${radioStation.query}` : "a topic…"}
-            className="min-w-0 flex-1 rounded-md border hairline bg-transparent px-2 py-1.5 text-xs text-ink outline-none placeholder:text-ink-3"
+            className="min-w-0 flex-1 rounded-md border border-ink-3/70 bg-transparent px-2 py-1.5 text-xs text-ink outline-none placeholder:text-ink-3"
           />
           <button
             type="submit"
@@ -761,7 +764,7 @@ function RadioPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) {
           type="button"
           disabled={!radioOn}
           onClick={() => window.dispatchEvent(new Event("world:radio-skip"))}
-          className="flex-1 rounded-md border hairline px-2 py-1.5 text-[11px] tracking-widest text-ink-2 uppercase disabled:opacity-30"
+          className="flex-1 rounded-md border border-current px-2 py-1.5 text-[11px] tracking-widest text-ink-2 uppercase disabled:opacity-30"
         >
           <SkipForward className="mr-1 inline size-3" />
           skip
@@ -770,7 +773,7 @@ function RadioPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) {
           type="button"
           disabled={!radioOn}
           onClick={() => window.dispatchEvent(new Event("world:radio-random"))}
-          className="flex-1 rounded-md border hairline px-2 py-1.5 text-[11px] tracking-widest text-ink-2 uppercase disabled:opacity-30"
+          className="flex-1 rounded-md border border-current px-2 py-1.5 text-[11px] tracking-widest text-ink-2 uppercase disabled:opacity-30"
         >
           <Shuffle className="mr-1 inline size-3" />
           random
