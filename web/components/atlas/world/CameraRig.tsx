@@ -21,6 +21,8 @@ import { uMorph } from "./uniforms";
 const easeInOutCubic = (t: number) =>
   t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 
+const UP = new THREE.Vector3(0, 1, 0);
+
 interface Tween {
   t0: number | null;
   dur: number;
@@ -121,8 +123,15 @@ export default function CameraRig({
       }
     }
 
-    // gentle idle orbit (never during a warp tween)
-    ctl.autoRotate = st.autoRotate && !tween.current;
+    // gentle idle orbit, rotated manually with real dt — OrbitControls'
+    // built-in autoRotate advances per update() call, which drifts and
+    // pulses with frame timing (drei also calls update() internally)
+    if (st.autoRotate && !tween.current) {
+      const ang = 0.045 * dt;
+      const off = camera.position.clone().sub(ctl.target);
+      off.applyAxisAngle(UP, ang);
+      camera.position.copy(ctl.target).add(off);
+    }
 
     // pan speed compensates for zoomToCursor collapsing the orbit radius —
     // without this, panning grinds to a halt when zoomed way in
@@ -152,7 +161,6 @@ export default function CameraRig({
       maxDistance={300}
       screenSpacePanning
       zoomToCursor
-      autoRotateSpeed={-0.35}
     />
   );
 }

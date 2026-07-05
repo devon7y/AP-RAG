@@ -67,6 +67,12 @@ function HoverTooltip({ corpus }: { corpus: CorpusData }) {
   useEffect(() => {
     if (ref.current) ref.current.style.left = "-9999px";
     const onMove = (e: PointerEvent) => {
+      // over DOM UI (panels, bars, cards) the scene hover is stale — clear it
+      if (!(e.target instanceof HTMLCanvasElement)) {
+        const st = useWorld.getState();
+        if (st.hovered !== null) st.hover(null);
+        return;
+      }
       const el = ref.current;
       if (!el) return;
       el.style.left = `${e.clientX}px`;
