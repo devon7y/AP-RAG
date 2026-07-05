@@ -22,7 +22,7 @@ import { clusterColor } from "@/lib/atlas/palette";
 import type { CorpusData } from "@/lib/atlas/types";
 import { glowTexture, ringTexture, type WorldData } from "./derive";
 import { useWorld } from "./store";
-import { uCalm, uFlash, uHit, uMorph, uYear } from "./uniforms";
+import { uBirthWin, uCalm, uFlash, uHit, uMorph, uYear } from "./uniforms";
 
 /**
  * The sky: LightRAG's knowledge graph floating above the literature.
@@ -137,10 +137,10 @@ function EntityStars({ data }: { data: WorldData }) {
 
     mat.positionNode = mix(aG, aS, uMorph);
 
-    const alive = step(aYear, uYear.add(0.5));
+    const alive = step(aYear, uYear.add(0.01));
     // the graph belongs to the galaxy — it materializes as the world lifts off
     const reveal = smoothstep(0.12, 0.55, uMorph);
-    const ignite = clamp(uYear.add(0.5).sub(aYear).div(2.4), 0, 1)
+    const ignite = clamp(uYear.add(0.01).sub(aYear).div(uBirthWin), 0, 1)
       .oneMinus()
       .mul(step(0.5, aYear));
     const twinkle = sin(time.mul(0.9).add(aPhase)).mul(0.5).add(0.5).mul(0.35).add(0.65);

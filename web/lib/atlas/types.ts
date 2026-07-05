@@ -106,6 +106,11 @@ export interface PaperMeta {
   first: number[];
   /** Google Drive webViewLink per paper ("" when unmapped) */
   drive: string[];
+  /** publication date as a fractional year (mid-month/mid-year conventions;
+   *  0 = unknown) — the time machine's fine-grained clock */
+  frac: number[];
+  /** human display date ("Mar 14, 2025" / "Mar 2025" / "2025" / "") */
+  dateStr: string[];
 }
 
 export interface ChunkText {

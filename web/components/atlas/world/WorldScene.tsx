@@ -53,7 +53,19 @@ function useAuthors(): AuthorRec[] | null {
 function usePaperMeta(): PaperMeta | null {
   const [m, setM] = useState<PaperMeta | null>(null);
   useEffect(() => {
-    loadPaperMeta().then(setM, () => setM(null));
+    loadPaperMeta().then(setM, () =>
+      // never block the world on a failed metadata fetch — derive falls back
+      // to the atlas's integer years and hides the metadata affordances
+      setM({
+        keywords: [],
+        subjects: [],
+        affil: [],
+        first: [],
+        drive: [],
+        frac: [],
+        dateStr: [],
+      }),
+    );
   }, []);
   return m;
 }
@@ -460,9 +472,14 @@ export default function WorldSceneRoot() {
   }, [canvasMode]);
 
 
+  // paperMeta carries the fractional publication dates the time machine runs
+  // on, so the world derivation waits for it (it's a tiny file)
   const data = useMemo(
-    () => (corpus && constellations ? deriveWorld(corpus, constellations) : null),
-    [corpus, constellations],
+    () =>
+      corpus && constellations && paperMeta
+        ? deriveWorld(corpus, constellations, paperMeta)
+        : null,
+    [corpus, constellations, paperMeta],
   );
 
   return (

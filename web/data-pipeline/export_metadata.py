@@ -79,14 +79,47 @@ vecs = vecs / (np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-9)
 file_to_idx = {p["file"]: i for i, p in enumerate(papers)}
 
 # ── per-paper APA extras (parallel to papers.json order) ─────────────────────
+MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+          "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+DAYS_IN = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
+
+def parse_date(rec: dict, fallback_year: int) -> tuple[float, str]:
+    """Manifest `date` (YYYY[-MM[-DD]]) → (fractional year, display string).
+    Conventions: day-precision = exact; month-only = mid-month; year-only =
+    mid-year. Unknown → (0, "")."""
+    m = re.fullmatch(r"(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?", str(rec.get("date") or ""))
+    if m:
+        y = int(m.group(1))
+        mo = int(m.group(2)) if m.group(2) else None
+        dy = int(m.group(3)) if m.group(3) else None
+        if mo and 1 <= mo <= 12:
+            if dy and 1 <= dy <= 31:
+                frac = y + ((mo - 1) + (dy - 0.5) / DAYS_IN[mo - 1]) / 12
+                return round(frac, 4), f"{MONTHS[mo - 1]} {dy}, {y}"
+            return round(y + (mo - 0.5) / 12, 4), f"{MONTHS[mo - 1]} {y}"
+        return y + 0.5, str(y)
+    if fallback_year > 0:
+        return fallback_year + 0.5, str(fallback_year)
+    return 0.0, ""
+
+
 keywords: list[list[str]] = []
 subjects: list[list[str]] = []
 affils: list[list[str]] = []
+fracs: list[float] = []
+date_strs: list[str] = []
 for p in papers:
     rec = manifest.get(p["file"], {})
     keywords.append(clean_str_list(rec.get("keywords"), 8))
     subjects.append(clean_str_list(rec.get("subjects"), 6))
     affils.append(clean_str_list(rec.get("affiliations"), 4))
+    frac, dstr = parse_date(rec, int(p.get("year") or 0))
+    fracs.append(frac)
+    date_strs.append(dstr)
+
+n_month = sum(1 for f in fracs if f and abs((f % 1) - 0.5) > 1e-6)
+print(f"dates: {sum(1 for f in fracs if f)}/{len(papers)} known, {n_month} finer than a year")
 
 # ── author table ─────────────────────────────────────────────────────────────
 def author_key(family: str, given: str) -> str:
@@ -160,6 +193,8 @@ jdump(
         "affil": affils,
         "first": first_idx,
         "drive": drive,
+        "frac": fracs,
+        "dateStr": date_strs,
     },
 )
 

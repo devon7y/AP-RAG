@@ -19,6 +19,7 @@ import type { WorldData } from "./derive";
 import { useWorld } from "./store";
 import {
   morphPosition,
+  uBirthWin,
   uCalm,
   uFlash,
   uHit,
@@ -101,9 +102,10 @@ export default function ChunkCloud({
       vec3(aS4.x, aS4.y, aS4.z),
     );
 
-    // time lens: unborn chunks are dark; the newly-born flash white-hot
-    const alive = step(aYear, uYear.add(0.5)).mul(step(uYearLo, aYear.add(0.5)));
-    const recency = clamp(uYear.add(0.5).sub(aYear).div(2.6), 0, 1)
+    // time lens: unborn chunks are dark; the newly-born flash white-hot.
+    // dates are fractional years now, so the epsilon is days, not half-years
+    const alive = step(aYear, uYear.add(0.01)).mul(step(uYearLo, aYear.add(0.01)));
+    const recency = clamp(uYear.add(0.01).sub(aYear).div(uBirthWin), 0, 1)
       .oneMinus()
       .mul(step(0.5, aYear));
 

@@ -20,6 +20,7 @@ import { ringTexture, type WorldData } from "./derive";
 import { useWorld } from "./store";
 import {
   morphPosition,
+  uBirthWin,
   uCalm,
   uFlash,
   uHit,
@@ -118,8 +119,8 @@ export default function PaperBeacons({
       1.35,
     );
 
-    const alive = step(aYear, uYear.add(0.5)).mul(step(uYearLo, aYear.add(0.5)));
-    const recency = clamp(uYear.add(0.5).sub(aYear).div(2.2), 0, 1)
+    const alive = step(aYear, uYear.add(0.01)).mul(step(uYearLo, aYear.add(0.01)));
+    const recency = clamp(uYear.add(0.01).sub(aYear).div(uBirthWin), 0, 1)
       .oneMinus()
       .mul(step(0.5, aYear));
     const dim = float(1).sub(aDim.mul(0.9));

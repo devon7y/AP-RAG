@@ -8,6 +8,7 @@ import { useWorld } from "./store";
 import {
   heightTexA,
   heightTexB,
+  uBirthWin,
   uCalm,
   uEraMix,
   uFlash,
@@ -44,10 +45,12 @@ export default function WorldDriver({ data }: { data: WorldData }) {
       uMorph.value = Math.max(0, uMorph.value - dt * 2.55);
     }
 
-    // time machine playback
+    // time machine playback — the whole span plays in ~12s regardless of
+    // whether the corpus covers 70 years or 18 months
+    const span = Math.max(0.5, st.yearMax + 1 - st.yearMin);
     let y = st.year;
     if (st.timePlaying) {
-      y = Math.min(st.yearMax + 1, y + dt * 3.0);
+      y = Math.min(st.yearMax + 1, y + dt * (span / 12));
       st.set("year", y);
       if (y >= st.yearMax + 1) st.set("timePlaying", false);
       uFlash.value = Math.min(1, uFlash.value + dt * 3);
@@ -56,6 +59,8 @@ export default function WorldDriver({ data }: { data: WorldData }) {
     }
     uYear.value += (y - uYear.value) * Math.min(1, dt * 5);
     uYearLo.value += (st.yearLo - uYearLo.value) * Math.min(1, dt * 5);
+    // newborn flash window scales with the span (month-fine for tight corpora)
+    uBirthWin.value = Math.min(2.5, Math.max(0.08, span * 0.05));
 
     // metadata lens presence (terrain steps back while one is active)
     const lensOn =

@@ -289,6 +289,19 @@ function NavigatePanel({ data, corpus }: { data: WorldData; corpus: CorpusData }
 
 /* ---------------- time machine ---------------- */
 
+const MONTH_NAMES = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/** Fractional year → display. Tight corpora get month-level readouts. */
+function formatFracYear(frac: number, span: number): string {
+  const y = Math.floor(frac);
+  if (span > 25) return String(y);
+  const m = Math.min(11, Math.max(0, Math.floor((frac - y) * 12)));
+  return `${MONTH_NAMES[m]} ${y}`;
+}
+
 function TimePanel() {
   const year = useWorld((s) => s.year);
   const yearLo = useWorld((s) => s.yearLo);
@@ -297,6 +310,7 @@ function TimePanel() {
   const timePlaying = useWorld((s) => s.timePlaying);
   const set = useWorld((s) => s.set);
   const now = year > yearMax;
+  const span = yearMax + 1 - yearMin;
 
   return (
     <div className="space-y-4">
@@ -304,15 +318,16 @@ function TimePanel() {
         <H>Time machine</H>
         <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
           Scrub the field's history: the terrain regrows as literatures
-          accumulate, newborn papers flash white-hot, constellations ignite the
-          year their concept first appears.
+          accumulate, newborn papers flash white-hot, constellations ignite
+          when their concept first appears. Publication dates are month-exact
+          where the metadata knows them.
         </p>
       </div>
 
       <div>
         <div className="flex items-baseline justify-between">
           <span className="font-display text-3xl text-ink">
-            {now ? "present" : Math.floor(year)}
+            {now ? "present" : formatFracYear(year, span)}
           </span>
           {yearLo > 0 && (
             <button
@@ -328,7 +343,7 @@ function TimePanel() {
           type="range"
           min={yearMin}
           max={yearMax + 1}
-          step={0.25}
+          step={span > 25 ? 0.25 : 1 / 24}
           value={year}
           onChange={(e) => {
             set("timePlaying", false);

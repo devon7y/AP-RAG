@@ -32,6 +32,9 @@ export const uHit = uniform(1);
 export const uEraMix = uniform(0);
 /** 1 while a metadata lens is active — the terrain steps back so matches read */
 export const uLensDim = uniform(0);
+/** how long (in years) a newborn point stays flash-hot during playback —
+ *  scaled to the corpus's date span, so month-level corpora flash briefly */
+export const uBirthWin = uniform(2.5);
 
 function blankTex(): THREE.DataTexture {
   const t = new THREE.DataTexture(

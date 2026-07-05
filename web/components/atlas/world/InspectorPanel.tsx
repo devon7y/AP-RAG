@@ -155,7 +155,8 @@ function PaperCard({
   return (
     <div className="space-y-3">
       <p className="text-[10px] tracking-[0.3em] text-ink-3 uppercase">
-        paper {p.year ? `· ${p.year}` : ""} {p.journal ? `· ${p.journal}` : ""}
+        paper {paperMeta?.dateStr[idx] || (p.year ? String(p.year) : "") ? `· ${paperMeta?.dateStr[idx] || p.year}` : ""}{" "}
+        {p.journal ? `· ${p.journal}` : ""}
       </p>
       <h2 className="font-display text-lg leading-snug text-ink">{p.title}</h2>
       <p className="text-xs text-ink-2">{p.authors}</p>

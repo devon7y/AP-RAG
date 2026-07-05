@@ -8,6 +8,7 @@ import type {
   Cluster,
   Constellations,
   CorpusData,
+  PaperMeta,
 } from "@/lib/atlas/types";
 import { CHUNK_LIFT, GRID, HEIGHT_SCALE } from "./uniforms";
 
@@ -231,24 +232,30 @@ function fieldTexture(data: Float32Array): THREE.DataTexture {
 
 /* ---------------- era fields (the time machine's terrain) ---------------- */
 
-function buildEraFields(corpus: CorpusData, yearMin: number, yearMax: number): EraFields {
+function buildEraFields(
+  corpus: CorpusData,
+  chunkDate: Float32Array,
+  yearMin: number,
+  yearMax: number,
+): EraFields {
   const { atlas } = corpus;
-  const K = 12;
-  // knot years at chunk-count quantiles → even *growth* per step, not even years
+  const K = 14;
+  // knot dates at chunk-count quantiles → even *growth* per step, not even
+  // years (fractional dates give month-level knots where the corpus is dense)
   const born: number[] = [];
-  for (let i = 0; i < atlas.n; i++) if (atlas.year[i] > 0) born.push(atlas.year[i]);
+  for (let i = 0; i < atlas.n; i++) if (chunkDate[i] > 0) born.push(chunkDate[i]);
   born.sort((a, b) => a - b);
   const knots: number[] = [];
   for (let q = 0; q < K; q++) {
     const y = born[Math.min(born.length - 1, Math.floor((q / (K - 1)) * (born.length - 1)))];
-    if (!knots.length || y > knots[knots.length - 1]) knots.push(y);
+    if (!knots.length || y > knots[knots.length - 1] + 1e-4) knots.push(y);
   }
   if (knots[0] > yearMin) knots.unshift(yearMin);
-  if (knots[knots.length - 1] < yearMax) knots.push(yearMax);
+  if (knots[knots.length - 1] < yearMax + 1) knots.push(yearMax + 1);
 
   const raws = knots.map(() => new Float32Array(GRID * GRID));
   for (let i = 0; i < atlas.n; i++) {
-    const y = atlas.year[i];
+    const y = chunkDate[i];
     const x01 = atlas.pos2[i * 2];
     const y01 = atlas.pos2[i * 2 + 1];
     for (let kI = 0; kI < knots.length; kI++) {
@@ -528,27 +535,38 @@ const TYPE_ALT: Record<string, number> = {
 export function deriveWorld(
   corpus: CorpusData,
   constellations: Constellations,
+  paperMeta: PaperMeta | null,
 ): WorldData {
   const { atlas, papers, clusters } = corpus;
   const n = atlas.n;
 
-  // --- year range (0 = unknown) ---
-  let yearMin = Number.POSITIVE_INFINITY;
-  let yearMax = Number.NEGATIVE_INFINITY;
+  // --- per-chunk fractional publication dates (mid-month/mid-year), falling
+  // back to the atlas's integer years when the manifest has nothing finer ---
+  const chunkDate = new Float32Array(n);
   for (let i = 0; i < n; i++) {
-    const y = atlas.year[i];
-    if (y > 0) {
-      if (y < yearMin) yearMin = y;
-      if (y > yearMax) yearMax = y;
+    const frac = paperMeta?.frac[atlas.paper[i]] ?? 0;
+    chunkDate[i] = frac > 0 ? frac : atlas.year[i] > 0 ? atlas.year[i] + 0.5 : 0;
+  }
+
+  // --- date range (0 = unknown); UI bounds snap to whole years ---
+  let dMin = Number.POSITIVE_INFINITY;
+  let dMax = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < n; i++) {
+    const d = chunkDate[i];
+    if (d > 0) {
+      if (d < dMin) dMin = d;
+      if (d > dMax) dMax = d;
     }
   }
-  if (!Number.isFinite(yearMin)) {
-    yearMin = 1950;
-    yearMax = 2026;
+  if (!Number.isFinite(dMin)) {
+    dMin = 1950;
+    dMax = 2026;
   }
-  const span = Math.max(1, yearMax - yearMin);
+  const yearMin = Math.floor(dMin);
+  const yearMax = Math.ceil(dMax) - (Number.isInteger(dMax) ? 0 : 1);
+  const span = Math.max(0.5, dMax - dMin);
 
-  const eras = buildEraFields(corpus, yearMin, yearMax);
+  const eras = buildEraFields(corpus, chunkDate, yearMin, yearMax);
   const colorTex = buildColorTexture(corpus);
 
   // --- KG centrality per chunk (drives brightness in both frames) ---
@@ -599,8 +617,8 @@ export function deriveWorld(
     chunkColorGround[i * 3] = c.r * lum;
     chunkColorGround[i * 3 + 1] = c.g * lum;
     chunkColorGround[i * 3 + 2] = c.b * lum;
-    const y = atlas.year[i];
-    if (y > 0) ageColor((y - yearMin) / span, cAge);
+    const d = chunkDate[i];
+    if (d > 0) ageColor((d - dMin) / span, cAge);
     else cAge.set(INK.muted);
     chunkColorSpace[i * 3] = cAge.r * lum;
     chunkColorSpace[i * 3 + 1] = cAge.g * lum;
@@ -608,7 +626,7 @@ export function deriveWorld(
 
     chunkSize[i] = 0.5 + 2.0 * Math.pow(centrality[i], 0.75);
     chunkPhase[i] = ((i * 0.6180339887) % 1) * Math.PI * 2;
-    chunkYear[i] = y;
+    chunkYear[i] = d;
   }
 
   // --- paper buffers ---
@@ -661,13 +679,14 @@ export function deriveWorld(
     paperColorGround[i * 3] = c.r * lum;
     paperColorGround[i * 3 + 1] = c.g * lum;
     paperColorGround[i * 3 + 2] = c.b * lum;
-    if (p.year > 0) ageColor((p.year - yearMin) / span, cAge);
+    const pd = paperMeta?.frac[i] || (p.year > 0 ? p.year + 0.5 : 0);
+    if (pd > 0) ageColor((pd - dMin) / span, cAge);
     else cAge.set(INK.muted);
     paperColorSpace[i * 3] = cAge.r * lum;
     paperColorSpace[i * 3 + 1] = cAge.g * lum;
     paperColorSpace[i * 3 + 2] = cAge.b * lum;
     paperSize[i] = 1.15 + 1.35 * (Math.log1p(p.nChunks) / Math.log1p(maxChunks));
-    paperYear[i] = p.year;
+    paperYear[i] = pd;
   });
 
   // --- entities (the sky) ---
@@ -693,7 +712,7 @@ export function deriveWorld(
 
     let minYear = 0;
     for (const m of members) {
-      const y = atlas.year[m];
+      const y = chunkDate[m];
       if (y > 0 && (minYear === 0 || y < minYear)) minYear = y;
     }
     let radius = 0;
