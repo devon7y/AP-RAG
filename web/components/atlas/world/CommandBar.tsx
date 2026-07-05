@@ -93,10 +93,57 @@ export default function CommandBar({
    *  input (@author, a -> b, year:, …) leaves the lens alone. */
   const onType = (text: string) => {
     setValue(text);
+    histIdx.current = -1; // typing exits history browsing
     const st = useWorld.getState();
     const cmd = parseCommand(text);
     if (cmd?.kind === "warp") st.setLens({ keyword: cmd.query });
     else if (st.lens.keyword !== null) st.setLens({ keyword: null });
+  };
+
+  // terminal-style history: ↑/↓ cycle previous submissions
+  const history = useRef<string[]>(
+    (() => {
+      try {
+        return JSON.parse(
+          window.localStorage.getItem("atlas-world:search-history") ?? "[]",
+        ) as string[];
+      } catch {
+        return [];
+      }
+    })(),
+  );
+  const histIdx = useRef(-1); // -1 = live input
+  const draft = useRef("");
+
+  const pushHistory = (entry: string) => {
+    const h = history.current;
+    if (h[0] !== entry) h.unshift(entry);
+    if (h.length > 50) h.length = 50;
+    histIdx.current = -1;
+    try {
+      window.localStorage.setItem(
+        "atlas-world:search-history",
+        JSON.stringify(h),
+      );
+    } catch {
+      /* fine unsaved */
+    }
+  };
+
+  const onHistoryKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const h = history.current;
+    if (e.key === "ArrowUp") {
+      if (!h.length || histIdx.current >= h.length - 1) return;
+      e.preventDefault();
+      if (histIdx.current === -1) draft.current = value;
+      histIdx.current += 1;
+      setValue(h[histIdx.current]);
+    } else if (e.key === "ArrowDown") {
+      if (histIdx.current === -1) return;
+      e.preventDefault();
+      histIdx.current -= 1;
+      setValue(histIdx.current === -1 ? draft.current : h[histIdx.current]);
+    }
   };
 
   const warpToHits = (hits: SearchHit[]) => {
@@ -130,6 +177,7 @@ export default function CommandBar({
     const cmd = parseCommand(value);
     if (!cmd || busy) return;
     setNotice(null);
+    pushHistory(value.trim());
     const st = useWorld.getState();
 
     try {
@@ -157,12 +205,10 @@ export default function CommandBar({
         case "interpolate": {
           setBusy("tracing the geodesic…");
           st.setInstrument("interpolate");
-          const trace = await traceGeodesicWorld(
-            resolveSlot(cmd.a),
-            resolveSlot(cmd.b),
-            corpus,
-            setBusy,
-          );
+          const epA = resolveSlot(cmd.a);
+          const epB = resolveSlot(cmd.b);
+          fillPanelSlots({ A: epA, B: epB });
+          const trace = await traceGeodesicWorld(epA, epB, corpus, setBusy);
           st.set("arith", null);
           st.set("trace", trace);
           st.set("traceT", 0);
@@ -173,13 +219,11 @@ export default function CommandBar({
         case "arithmetic": {
           setBusy("solving A − B + C…");
           st.setInstrument("interpolate");
-          const arith = await solveArithmeticWorld(
-            resolveSlot(cmd.a),
-            resolveSlot(cmd.b),
-            resolveSlot(cmd.c),
-            corpus,
-            setBusy,
-          );
+          const epA = resolveSlot(cmd.a);
+          const epB = resolveSlot(cmd.b);
+          const epC = resolveSlot(cmd.c);
+          fillPanelSlots({ A: epA, B: epB, C: epC });
+          const arith = await solveArithmeticWorld(epA, epB, epC, corpus, setBusy);
           st.set("trace", null);
           st.set("arith", arith);
           setValue("");
@@ -250,6 +294,18 @@ export default function CommandBar({
       return { kind: "authorRec" as const, rec: authors[idx] };
     }
     return ep;
+  };
+
+  /** Mirror search-bar endpoints into the interpolation panel's inputs.
+   *  Delayed a tick so the panel has mounted after setInstrument. */
+  const fillPanelSlots = (slots: Record<string, unknown>) => {
+    setTimeout(() => {
+      for (const [slot, ep] of Object.entries(slots)) {
+        window.dispatchEvent(
+          new CustomEvent("world:set-endpoint", { detail: { slot, ep } }),
+        );
+      }
+    }, 60);
   };
 
   const maxScore = searchHits?.length ? Math.max(...searchHits.map((h) => h.score)) : 1;
@@ -334,7 +390,7 @@ export default function CommandBar({
 
       <form onSubmit={run} className="hud-panel flex items-center gap-3 px-4 py-2.5">
         {busy ? (
-          <span className="pulse-soft shrink-0 text-[10px] font-medium tracking-[0.3em] text-[#3987e5] uppercase">
+          <span className="pulse-soft max-w-[45%] shrink-0 truncate text-[10px] font-medium tracking-[0.3em] text-[#3987e5] uppercase">
             {busy}
           </span>
         ) : (
@@ -344,9 +400,10 @@ export default function CommandBar({
           ref={inputRef}
           value={value}
           onChange={(e) => onType(e.target.value)}
+          onKeyDown={onHistoryKey}
           disabled={busy !== null}
           placeholder="search the papers for anything…"
-          className="flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-3"
+          className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-3"
         />
         <button
           type="submit"
