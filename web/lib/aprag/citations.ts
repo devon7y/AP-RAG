@@ -45,9 +45,15 @@ export function normalizeMath(text: string): string {
   if (!text) {
     return text;
   }
+  // KaTeX treats "%" as a line comment, so a bare "%" inside math (e.g. $71.3%$) swallows
+  // the rest of the expression. Escape it to "\%" — but only WITHIN math spans, never in
+  // prose (where "\%" would render literally).
+  const escPct = (s: string) => s.replace(/(?<!\\)%/g, "\\%");
   return text
     .replace(/\\\[([\s\S]*?)\\\]/g, (_m, body) => `\n$$${body}$$\n`)
-    .replace(/\\\(([\s\S]*?)\\\)/g, (_m, body) => `$${body}$`);
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_m, body) => `$${body}$`)
+    .replace(/\$\$([\s\S]*?)\$\$/g, (_m, body) => `$$${escPct(body)}$$`)
+    .replace(/(?<!\$)\$(?!\$)([^\n$]+?)\$(?!\$)/g, (_m, body) => `$${escPct(body)}$`);
 }
 
 // The [n]-tagged context handed to the synthesis model. Each eligible chunk is numbered
