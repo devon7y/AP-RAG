@@ -37,7 +37,6 @@ import { useAtlasStore } from "@/lib/atlas/store";
  * time lens like everything else.
  */
 
-const GOLD = new THREE.Color("#ffd27a");
 
 /** Beacons ride a little higher than chunk points (lift 1.35 vs 0.55). */
 const BEACON_EXTRA_LIFT = 0.8;
@@ -143,7 +142,9 @@ export default function PaperBeacons({
       .mul(uCalm)
       .mul(dim)
       .mul(alive)
-      .add(vec3(GOLD.r, GOLD.g, GOLD.b).mul(goldPulse).mul(uHit).mul(profile).mul(alive))
+      // lens matches pulse brighter in their OWN color — white is reserved
+      // for the cursor's hover/selection glow
+      .add(baseCol.mul(goldPulse).mul(uHit).mul(profile).mul(alive))
       .add(vec3(1.2, 1.2, 1.25).mul(whiteGlow).mul(uHit).mul(profile))
       .add(vec3(1, 1, 1).mul(recency).mul(uFlash).mul(uHit).mul(profile).mul(alive));
     mat.opacityNode = smoothstep(0.95, 0.55, d)
