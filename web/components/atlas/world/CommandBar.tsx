@@ -9,7 +9,7 @@ import type { AuthorRec, CorpusData } from "@/lib/atlas/types";
 import { shortCite, type WorldData } from "./derive";
 import { solveArithmeticWorld, traceGeodesicWorld } from "./engineBridge";
 import { findAuthor, parseCommand, slotToEndpoint } from "./parse";
-import { useWorld, type SearchHit } from "./store";
+import { useWorld, warpHome, type SearchHit } from "./store";
 import { uMorph } from "./uniforms";
 
 /**
@@ -58,18 +58,23 @@ export default function CommandBar({
         // one press clears everything, even while a text field is focused
         if (typing) (e.target as HTMLElement).blur();
         const st = useWorld.getState();
+        const hadSomething =
+          st.planting ||
+          st.searchHits !== null ||
+          st.selection !== null ||
+          st.lens.author !== null ||
+          st.lens.journal !== null ||
+          st.lens.keyword !== null ||
+          inputRef.current?.value !== "";
         st.set("planting", false);
         st.setSearch("", null);
         st.clearLens(); // also closes an open author card
         st.select(null);
         setValue("");
-        // if the camera was still idling (never grabbed), take it home too
-        if (st.autoRotate) {
-          st.requestWarp(
-            st.view === "space" ? [0, 0, 0] : [0, 4, 0],
-            st.view === "space" ? 130 : 105,
-            1.3,
-          );
+        // nothing left to clear (or the camera is still idling) → fly home
+        if (!hadSomething || st.autoRotate) {
+          if (!hadSomething) st.set("autoRotate", true);
+          warpHome(1.3);
         }
       }
     };

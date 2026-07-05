@@ -41,6 +41,27 @@ export interface WarpRequest {
   center: [number, number, number];
   standoff: number;
   duration: number;
+  /** explicit end camera position — overrides the standoff/direction rule */
+  pose?: [number, number, number];
+}
+
+/** The canonical resting shots — fixed height and downward angle. */
+export const HOME = {
+  atlas: {
+    center: [0, 4, 0] as [number, number, number],
+    pose: [0, 62, 92] as [number, number, number],
+  },
+  space: {
+    center: [0, 0, 0] as [number, number, number],
+    pose: [0, 55, 118] as [number, number, number],
+  },
+};
+
+/** Fly to the canonical resting shot for the current view. */
+export function warpHome(duration = 1.3): void {
+  const st = useWorld.getState();
+  const h = st.view === "space" ? HOME.space : HOME.atlas;
+  st.requestWarp(h.center, 0, duration, h.pose);
 }
 
 export interface Lens {
@@ -135,6 +156,7 @@ interface WorldState {
     center: [number, number, number],
     standoff: number,
     duration?: number,
+    pose?: [number, number, number],
   ) => void;
   setLens: (patch: Partial<Lens>) => void;
   clearLens: () => void;
@@ -246,8 +268,8 @@ export const useWorld = create<WorldState>((set) => ({
     }),
   hover: (s) => set({ hovered: s }),
   setSearch: (query, hits) => set({ searchQuery: query, searchHits: hits }),
-  requestWarp: (center, standoff, duration = 2.0) =>
-    set({ warp: { seq: ++warpSeq, center, standoff, duration } }),
+  requestWarp: (center, standoff, duration = 2.0, pose) =>
+    set({ warp: { seq: ++warpSeq, center, standoff, duration, pose } }),
   setLens: (patch) =>
     set((s) => {
       // clearing the author lens closes the author card it opened

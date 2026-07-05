@@ -27,7 +27,7 @@ import {
 } from "./derive";
 import GamePanel from "./GamePanel";
 import InterpolatePanel from "./InterpolatePanel";
-import { useWorld, type Instrument } from "./store";
+import { useWorld, warpHome, type Instrument } from "./store";
 import { HEIGHT_SCALE, uMorph } from "./uniforms";
 import { VOID_VIOLET } from "./GhostLayer";
 
@@ -89,13 +89,8 @@ export default function LeftPane({
           type="button"
           title="Reset camera"
           onClick={() => {
-            const st = useWorld.getState();
-            st.set("autoRotate", true);
-            st.requestWarp(
-              st.view === "space" ? [0, 0, 0] : [0, 4, 0],
-              st.view === "space" ? 130 : 105,
-              1.3,
-            );
+            useWorld.getState().set("autoRotate", true);
+            warpHome(1.3);
           }}
           className="rounded-md p-2 text-ink-3 transition-colors hover:bg-white/5 hover:text-ink-2"
         >

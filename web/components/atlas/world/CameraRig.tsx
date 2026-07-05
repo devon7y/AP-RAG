@@ -6,7 +6,7 @@ import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import type { WorldData } from "./derive";
-import { useWorld } from "./store";
+import { useWorld, warpHome } from "./store";
 import { uMorph } from "./uniforms";
 
 /**
@@ -57,10 +57,16 @@ export default function CameraRig({
     if (!warp || !controls.current) return;
     baseFov.current ??= camera.fov;
     const toTgt = new THREE.Vector3(...warp.center);
-    const dir = camera.position.clone().sub(toTgt);
-    if (dir.lengthSq() < 1e-6) dir.set(0, 0.35, 1);
-    const toPos = toTgt.clone().add(dir.normalize().multiplyScalar(warp.standoff));
-    if (uMorph.value < 0.5) toPos.y = Math.max(toPos.y, 3.5);
+    let toPos: THREE.Vector3;
+    if (warp.pose) {
+      // fixed framing (home shots): same height and angle every time
+      toPos = new THREE.Vector3(...warp.pose);
+    } else {
+      const dir = camera.position.clone().sub(toTgt);
+      if (dir.lengthSq() < 1e-6) dir.set(0, 0.35, 1);
+      toPos = toTgt.clone().add(dir.normalize().multiplyScalar(warp.standoff));
+      if (uMorph.value < 0.5) toPos.y = Math.max(toPos.y, 3.5);
+    }
     const fromPos = camera.position.clone();
     tween.current = {
       t0: null,
@@ -121,7 +127,7 @@ export default function CameraRig({
     // pan speed compensates for zoomToCursor collapsing the orbit radius —
     // without this, panning grinds to a halt when zoomed way in
     const radius = camera.position.distanceTo(ctl.target);
-    ctl.panSpeed = 0.6 * THREE.MathUtils.clamp(40 / Math.max(radius, 1), 1, 14);
+    ctl.panSpeed = 0.3 * THREE.MathUtils.clamp(40 / Math.max(radius, 1), 1, 14);
 
     // horizon discipline in atlas view
     const groundness = 1 - uMorph.value;
@@ -151,14 +157,13 @@ export default function CameraRig({
   );
 }
 
-/** One-time cinematic entry: fall from deep space onto the landmass. */
+/** One-time cinematic entry: fall from deep space onto the resting shot. */
 export function useIntroWarp(ready: boolean) {
-  const requestWarp = useWorld((s) => s.requestWarp);
   const fired = useRef(false);
   useEffect(() => {
     if (!ready || fired.current) return;
     fired.current = true;
-    const t = setTimeout(() => requestWarp([0, 4, 0], 105, 3.4), 250);
+    const t = setTimeout(() => warpHome(3.4), 250);
     return () => clearTimeout(t);
-  }, [ready, requestWarp]);
+  }, [ready]);
 }

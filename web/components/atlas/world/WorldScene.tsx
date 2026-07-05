@@ -7,13 +7,18 @@ import * as THREE from "three";
 import HDRCanvas from "@/components/atlas/HDRCanvas";
 import { loadAuthors, loadPaperMeta, WORLD_SIZE } from "@/lib/atlas/data";
 import { useAtlasStore } from "@/lib/atlas/store";
-import type { AuthorRec, GhostPaper, PaperMeta } from "@/lib/atlas/types";
+import type {
+  AuthorRec,
+  CorpusData,
+  GhostPaper,
+  PaperMeta,
+} from "@/lib/atlas/types";
 import { LoadingVeil, useConstellations, useCorpus, useKnn } from "@/lib/atlas/useCorpus";
 import ArcLayer from "./ArcLayer";
 import CameraRig, { useIntroWarp } from "./CameraRig";
 import ChunkCloud from "./ChunkCloud";
 import CommandBar from "./CommandBar";
-import { deriveWorld, type WorldData } from "./derive";
+import { deriveWorld, shortCite, type WorldData } from "./derive";
 import GhostLayer, { useGhostSites } from "./GhostLayer";
 import InspectorPanel from "./InspectorPanel";
 import Labels from "./Labels";
@@ -51,6 +56,60 @@ function usePaperMeta(): PaperMeta | null {
     loadPaperMeta().then(setM, () => setM(null));
   }, []);
   return m;
+}
+
+/* ---------------- mouse-following hover tooltip ---------------- */
+
+function HoverTooltip({ corpus }: { corpus: CorpusData }) {
+  const hovered = useWorld((s) => s.hovered);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (ref.current) ref.current.style.left = "-9999px";
+    const onMove = (e: PointerEvent) => {
+      const el = ref.current;
+      if (!el) return;
+      el.style.left = `${e.clientX}px`;
+      el.style.top = `${e.clientY - 14}px`;
+    };
+    window.addEventListener("pointermove", onMove);
+    return () => window.removeEventListener("pointermove", onMove);
+  }, []);
+
+  const show = hovered?.kind === "paper" || hovered?.kind === "chunk";
+  let head = "";
+  let body = "";
+  let foot = "";
+  if (hovered?.kind === "paper") {
+    const p = corpus.papers[hovered.idx];
+    head = "paper";
+    body = p.title;
+    foot = `${shortCite(p)} · ${p.nChunks} passages · click to inspect`;
+  } else if (hovered?.kind === "chunk") {
+    const p = corpus.papers[corpus.atlas.paper[hovered.idx]];
+    head = "passage";
+    body = p?.title ?? "Unknown paper";
+    foot = `${shortCite(p)} · click to read`;
+  }
+
+  return (
+    <div
+      ref={ref}
+      className={`pointer-events-none fixed z-40 -translate-x-1/2 -translate-y-full ${
+        show ? "visible" : "invisible"
+      }`}
+    >
+      {show && (
+        <div className="hud-panel w-64 px-3 py-2">
+          <p className="line-clamp-1 text-[10px] tracking-[0.25em] text-ink-3 uppercase">
+            {head}
+          </p>
+          <p className="mt-1 line-clamp-2 text-xs leading-snug text-ink">{body}</p>
+          <p className="mt-1 text-[11px] text-ink-3">{foot}</p>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ---------------- atmosphere ---------------- */
@@ -255,6 +314,7 @@ function World({
   const constellations = useConstellations();
   const knn = useKnn();
   const lens = useWorld((s) => s.lens);
+  const instrument = useWorld((s) => s.instrument);
 
   useRover(corpus, knn);
   useGhostPlanting(data, corpus !== null);
@@ -330,12 +390,15 @@ function World({
         <ChunkCloud data={data} lensMask={masks.chunks} />
         <PaperBeacons data={data} lensMask={masks.papers} goldMask={masks.gold} />
         <SkyLayer data={data} corpus={corpus} />
-        <GhostLayer data={data} sites={ghostSites} />
+        {instrument === "ghosts" && <GhostLayer data={data} sites={ghostSites} />}
         <ArcLayer data={data} />
         <RoverLayer data={data} roverPosRef={roverPosRef} />
         <TrailsLayer data={data} corpus={corpus} authors={authors} />
-        <Labels data={data} corpus={corpus} />
-        <WorldPicker data={data} ghostSites={ghostSites} />
+        <Labels data={data} />
+        <WorldPicker
+          data={data}
+          ghostSites={instrument === "ghosts" ? ghostSites : []}
+        />
         <CameraRig getRoverPos={() => roverPosRef.current} />
       </HDRCanvas>
 
@@ -352,6 +415,7 @@ function World({
 
       <LeftPane data={data} corpus={corpus} authors={authors} paperMeta={paperMeta} />
       <CommandBar data={data} corpus={corpus} authors={authors} />
+      <HoverTooltip corpus={corpus} />
       <InspectorPanel
         data={data}
         corpus={corpus}

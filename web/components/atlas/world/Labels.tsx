@@ -4,10 +4,8 @@ import { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { Html } from "@react-three/drei";
 import * as THREE from "three";
-import type { CorpusData } from "@/lib/atlas/types";
-import { paperWorldPos } from "./PaperBeacons";
 import { entityWorldPos } from "./SkyLayer";
-import { shortCite, type WorldData } from "./derive";
+import type { WorldData } from "./derive";
 import { useWorld } from "./store";
 import { uMorph } from "./uniforms";
 
@@ -64,16 +62,100 @@ function FadingLabel({
   );
 }
 
-export default function Labels({
-  data,
-  corpus,
-}: {
-  data: WorldData;
-  corpus: CorpusData;
-}) {
+/**
+ * Named summits, coordinated as one set: every frame the peaks are projected
+ * to screen space in prominence order, and any label whose rectangle would
+ * overlap an already-placed (more prominent) one is hidden — big peaks win.
+ * Landscape-only; they step back while the time machine is scrubbed.
+ */
+function PeakLabels({ data }: { data: WorldData }) {
+  const select = useWorld((s) => s.select);
+  const requestWarp = useWorld((s) => s.requestWarp);
+  const divs = useRef<(HTMLDivElement | null)[]>([]);
+  const proj = useMemo(() => new THREE.Vector3(), []);
+
+  useFrame(({ camera, size }) => {
+    const st = useWorld.getState();
+    const timeFade = st.year > st.yearMax ? 1 : 0.15;
+    const base = (1 - uMorph.value) * timeFade;
+    const globallyHidden = base <= 0.02 || st.warping || !st.showLabels;
+    const accepted: { x: number; y: number; w: number; h: number }[] = [];
+
+    for (let i = 0; i < data.peaks.length; i++) {
+      const peak = data.peaks[i]; // already rank-ordered, 0 = most prominent
+      const el = divs.current[i];
+      if (!el) continue;
+
+      let o = 0;
+      if (!globallyHidden) {
+        proj.copy(peak.pos).project(camera);
+        if (proj.z < 1) {
+          const x = ((proj.x + 1) / 2) * size.width;
+          const y = ((1 - proj.y) / 2) * size.height;
+          const dist = camera.position.distanceTo(peak.pos);
+          const far = peak.rank < 10 ? 300 : 150;
+          const t = THREE.MathUtils.clamp((far - dist) / (far - 14), 0, 1);
+          o = Math.min(1, t * 1.6) * base;
+          if (o > 0.05) {
+            // approximate the label rect (9px display font, 250px wrap)
+            const w = Math.min(250, peak.label.length * 5.6) + 10;
+            const lines = Math.ceil((peak.label.length * 5.6) / 250);
+            const h = lines * 12 + 6;
+            const clash = accepted.some(
+              (r) =>
+                Math.abs(r.x - x) * 2 < r.w + w && Math.abs(r.y - y) * 2 < r.h + h,
+            );
+            if (clash) o = 0;
+            else accepted.push({ x, y, w, h });
+          }
+        }
+      }
+      el.style.opacity = o.toFixed(3);
+      el.style.pointerEvents = o > 0.25 ? "auto" : "none";
+    }
+  });
+
+  return (
+    <>
+      {data.peaks.map((peak, i) => (
+        <group key={`pk-${peak.rank}`} position={peak.pos}>
+          <Html center zIndexRange={[20, 0]} style={{ pointerEvents: "none" }}>
+            <div
+              ref={(el) => {
+                divs.current[i] = el;
+              }}
+              style={{ opacity: 0, transition: "opacity 0.15s linear" }}
+            >
+              <button
+                type="button"
+                className="w-max max-w-[250px] cursor-pointer text-center select-none"
+                onClick={() => {
+                  if (peak.kind === "paper")
+                    select({ kind: "paper", idx: peak.paperIdx });
+                  else if (peak.kind === "entity")
+                    select({ kind: "entity", idx: peak.entityIdx });
+                  else requestWarp([peak.pos.x, peak.pos.y, peak.pos.z], 26, 1.8);
+                }}
+              >
+                <span
+                  className={`font-display block text-[9px] tracking-[0.12em] text-white/75 [text-shadow:0_0_12px_rgba(0,0,0,0.95)] ${
+                    peak.kind === "paper" ? "italic" : ""
+                  }`}
+                >
+                  {peak.label}
+                </span>
+              </button>
+            </div>
+          </Html>
+        </group>
+      ))}
+    </>
+  );
+}
+
+export default function Labels({ data }: { data: WorldData }) {
   const requestWarp = useWorld((s) => s.requestWarp);
   const select = useWorld((s) => s.select);
-  const tmp = useMemo(() => new THREE.Vector3(), []);
 
   return (
     <group>
@@ -103,39 +185,7 @@ export default function Labels({
         </FadingLabel>
       ))}
 
-      {data.peaks.map((peak) => (
-        <FadingLabel
-          key={`pk-${peak.rank}`}
-          near={14}
-          far={peak.rank < 10 ? 300 : 150}
-          getPos={(out) => out.copy(peak.pos)}
-          alpha={() => {
-            const st = useWorld.getState();
-            // landscape-only, and step back while the time machine is scrubbed
-            const timeFade = st.year > st.yearMax ? 1 : 0.15;
-            return (1 - uMorph.value) * timeFade;
-          }}
-        >
-          <button
-            type="button"
-            className="cursor-pointer text-center select-none"
-            onClick={() => {
-              if (peak.kind === "paper") select({ kind: "paper", idx: peak.paperIdx });
-              else if (peak.kind === "entity")
-                select({ kind: "entity", idx: peak.entityIdx });
-              else requestWarp([peak.pos.x, peak.pos.y, peak.pos.z], 26, 1.8);
-            }}
-          >
-            <span
-              className={`font-display block text-[13px] tracking-[0.12em] text-white/75 [text-shadow:0_0_12px_rgba(0,0,0,0.95)] ${
-                peak.kind === "paper" ? "italic" : ""
-              }`}
-            >
-              {peak.label}
-            </span>
-          </button>
-        </FadingLabel>
-      ))}
+      <PeakLabels data={data} />
 
       {data.labelEntities.map((idx) => {
         const e = data.entities[idx];
@@ -164,63 +214,6 @@ export default function Labels({
         );
       })}
 
-      <HoverTooltip data={data} corpus={corpus} tmp={tmp} />
     </group>
-  );
-}
-
-/** Finder readout for the hovered paper / chunk (entities have chips). */
-function HoverTooltip({
-  data,
-  corpus,
-  tmp,
-}: {
-  data: WorldData;
-  corpus: CorpusData;
-  tmp: THREE.Vector3;
-}) {
-  const hovered = useWorld((s) => s.hovered);
-  if (!hovered || (hovered.kind !== "paper" && hovered.kind !== "chunk")) return null;
-
-  let pos: THREE.Vector3;
-  let head: string;
-  let body: string;
-  let foot: string;
-  if (hovered.kind === "paper") {
-    const p = corpus.papers[hovered.idx];
-    pos = paperWorldPos(data, hovered.idx, uMorph.value, tmp);
-    head = "paper";
-    body = p.title;
-    foot = `${shortCite(p)} · ${p.nChunks} passages · click to inspect`;
-  } else {
-    const i = hovered.idx;
-    const p = corpus.papers[corpus.atlas.paper[i]];
-    const gx = data.chunkGround[i * 3];
-    const gy = data.chunkGroundY[i];
-    const gz = data.chunkGround[i * 3 + 2];
-    pos = tmp.set(
-      gx + (data.chunkSpace[i * 3] - gx) * uMorph.value,
-      gy + (data.chunkSpace[i * 3 + 1] - gy) * uMorph.value,
-      gz + (data.chunkSpace[i * 3 + 2] - gz) * uMorph.value,
-    );
-    head = "passage";
-    body = p?.title ?? "Unknown paper";
-    foot = `${shortCite(p)} · click to read`;
-  }
-
-  return (
-    <Html
-      position={pos}
-      zIndexRange={[30, 0]}
-      style={{ pointerEvents: "none", transform: "translate(14px, -50%)" }}
-    >
-      <div className="hud-panel w-64 px-3 py-2">
-        <p className="line-clamp-1 text-[10px] tracking-[0.25em] text-ink-3 uppercase">
-          {head}
-        </p>
-        <p className="mt-1 line-clamp-2 text-xs leading-snug text-ink">{body}</p>
-        <p className="mt-1 text-[11px] text-ink-3">{foot}</p>
-      </div>
-    </Html>
   );
 }
