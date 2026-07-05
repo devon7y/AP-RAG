@@ -81,6 +81,13 @@ export default function CameraRig({
       if (uMorph.value < 0.5) toPos.y = Math.max(toPos.y, 3.5);
     }
     const fromPos = camera.position.clone();
+    // already there (e.g. Esc while resting on the home orbit) → no-op
+    if (
+      fromPos.distanceTo(toPos) < 2.5 &&
+      controls.current.target.distanceTo(toTgt) < 2.5
+    ) {
+      return;
+    }
     tween.current = {
       t0: null,
       dur: warp.duration,
