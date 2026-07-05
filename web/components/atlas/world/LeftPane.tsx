@@ -554,7 +554,9 @@ function LensesPanel({
         <code className="text-ink-2">journal:cognition</code>,{" "}
         <code className="text-ink-2">kw:entropy</code>,{" "}
         <code className="text-ink-2">year:1990..2005</code> — plain words
-        keyword-filter live as you type. Esc clears everything.
+        keyword-filter live as you type. Quote a phrase (
+        <code className="text-ink-2">"self - attention"</code>) to search text
+        that contains + or −. Esc clears everything.
       </p>
     </div>
   );

@@ -155,6 +155,16 @@ export default function InterpolatePanel({
     return () => window.removeEventListener("world:esc", clear);
   }, []);
 
+  // the search bar tells us which mode its expression was
+  useEffect(() => {
+    const onMode = (e: Event) => {
+      const m = (e as CustomEvent<"geodesic" | "arithmetic">).detail;
+      if (m === "geodesic" || m === "arithmetic") setMode(m);
+    };
+    window.addEventListener("world:set-interp-mode", onMode);
+    return () => window.removeEventListener("world:set-interp-mode", onMode);
+  }, []);
+
   const run = async () => {
     if (!slotA || !slotB || busy) return;
     setError(null);

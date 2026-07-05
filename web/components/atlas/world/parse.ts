@@ -30,10 +30,55 @@ export type Command =
   | { kind: "radio" }
   | { kind: "clear" };
 
+/** Strip one pair of surrounding quotes (straight or smart). */
+export function stripQuotes(s: string): string {
+  const m = s.trim().match(/^["“'](.*)["”']$/s);
+  return m ? m[1].trim() : s.trim();
+}
+
+/** Split "a + b - c" into signed terms, ignoring operators inside quotes. */
+function splitSigned(input: string): SignedTerm[] | null {
+  const terms: SignedTerm[] = [];
+  let cur = "";
+  let sign: "+" | "−" = "+";
+  let inQ = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (ch === '"' || ch === "“" || ch === "”") {
+      inQ = !inQ;
+      cur += ch;
+      continue;
+    }
+    if (
+      !inQ &&
+      (ch === "+" || ch === "-" || ch === "−") &&
+      input[i - 1] === " " &&
+      input[i + 1] === " "
+    ) {
+      terms.push({ sign, text: cur.trim() });
+      sign = ch === "+" ? "+" : "−";
+      cur = "";
+      i++; // skip the following space
+      continue;
+    }
+    cur += ch;
+  }
+  terms.push({ sign, text: cur.trim() });
+  if (terms.length < 2 || terms.some((t) => !t.text)) return null;
+  return terms.map((t) => ({ ...t, text: stripQuotes(t.text) }));
+}
+
 export function parseCommand(raw: string): Command | null {
   const input = raw.trim();
   if (!input) return null;
   const lower = input.toLowerCase();
+
+  // a fully-quoted input is always a plain search — never math or a command
+  const quoted = input.match(/^["“](.*)["”]$/s);
+  if (quoted) {
+    const inner = quoted[1].trim();
+    return inner ? { kind: "warp", query: inner } : null;
+  }
 
   if (lower === "ghost" || lower === "plant") return { kind: "ghost" };
   if (lower === "radio") return { kind: "radio" };
@@ -55,25 +100,18 @@ export function parseCommand(raw: string): Command | null {
 
   const interpM = input.split(/\s*(?:->|→|=>)\s*/);
   if (interpM.length === 2 && interpM[0].trim() && interpM[1].trim()) {
-    return { kind: "interpolate", a: interpM[0].trim(), b: interpM[1].trim() };
+    return {
+      kind: "interpolate",
+      a: stripQuotes(interpM[0]),
+      b: stripQuotes(interpM[1]),
+    };
   }
 
-  // general embedding algebra: any mix of "a + b - c …" (spaces around ops).
-  // checked BEFORE @author so "@westbury + @caplan - EEG" parses as math.
-  const parts = input.split(/\s+([+\-−])\s+/);
-  if (parts.length >= 3 && parts.length % 2 === 1) {
-    const terms: SignedTerm[] = [{ sign: "+", text: parts[0].trim() }];
-    let ok = parts[0].trim().length > 0;
-    for (let i = 1; i < parts.length; i += 2) {
-      const text = (parts[i + 1] ?? "").trim();
-      if (!text) {
-        ok = false;
-        break;
-      }
-      terms.push({ sign: parts[i] === "+" ? "+" : "−", text });
-    }
-    if (ok) return { kind: "arithmetic", terms };
-  }
+  // general embedding algebra: any mix of "a + b - c …" (spaces around ops,
+  // quoted spans protected). Checked BEFORE @author so "@westbury + @caplan
+  // - EEG" parses as math.
+  const terms = splitSigned(input);
+  if (terms) return { kind: "arithmetic", terms };
 
   if (input.startsWith("@")) {
     const name = input.slice(1).trim();
@@ -111,9 +149,10 @@ export function findAuthor(authors: AuthorRec[], q: string): number | null {
 export function slotToEndpoint(
   slot: string,
 ): { kind: "phrase"; text: string } | { kind: "author"; name: string } {
-  if (slot.startsWith("@")) {
-    const name = slot.slice(1).trim();
+  const s = stripQuotes(slot);
+  if (s.startsWith("@")) {
+    const name = s.slice(1).trim();
     if (name) return { kind: "author", name };
   }
-  return { kind: "phrase", text: slot };
+  return { kind: "phrase", text: s };
 }

@@ -223,7 +223,7 @@ export default function CommandBar({
           st.setInstrument("interpolate");
           const epA = resolveSlot(cmd.a);
           const epB = resolveSlot(cmd.b);
-          fillPanelSlots({ A: epA, B: epB });
+          fillPanelSlots({ A: epA, B: epB }, "geodesic");
           const trace = await traceGeodesicWorld(epA, epB, corpus, setBusy);
           st.set("arith", null);
           st.set("trace", trace);
@@ -242,11 +242,14 @@ export default function CommandBar({
           // mirror what fits into the panel's three slots (best effort)
           const plus = signed.filter((t) => t.sign === "+");
           const minus = signed.filter((t) => t.sign === "−");
-          fillPanelSlots({
-            ...(plus[0] ? { A: plus[0].ep } : {}),
-            ...(minus[0] ? { B: minus[0].ep } : {}),
-            ...(plus[1] ? { C: plus[1].ep } : {}),
-          });
+          fillPanelSlots(
+            {
+              ...(plus[0] ? { A: plus[0].ep } : {}),
+              ...(minus[0] ? { B: minus[0].ep } : {}),
+              ...(plus[1] ? { C: plus[1].ep } : {}),
+            },
+            "arithmetic",
+          );
           const arith = await solveArithmeticWorld(signed, corpus, setBusy);
           st.set("trace", null);
           st.set("arith", arith);
@@ -321,10 +324,16 @@ export default function CommandBar({
     return ep;
   };
 
-  /** Mirror search-bar endpoints into the interpolation panel's inputs.
-   *  Delayed a tick so the panel has mounted after setInstrument. */
-  const fillPanelSlots = (slots: Record<string, unknown>) => {
+  /** Mirror search-bar endpoints (and the mode) into the interpolation
+   *  panel's inputs. Delayed a tick so the panel has mounted. */
+  const fillPanelSlots = (
+    slots: Record<string, unknown>,
+    mode: "geodesic" | "arithmetic",
+  ) => {
     setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent("world:set-interp-mode", { detail: mode }),
+      );
       for (const [slot, ep] of Object.entries(slots)) {
         window.dispatchEvent(
           new CustomEvent("world:set-endpoint", { detail: { slot, ep } }),
