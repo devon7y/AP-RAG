@@ -138,6 +138,8 @@ function EntityStars({ data }: { data: WorldData }) {
     mat.positionNode = mix(aG, aS, uMorph);
 
     const alive = step(aYear, uYear.add(0.5));
+    // the graph belongs to the galaxy — it materializes as the world lifts off
+    const reveal = smoothstep(0.12, 0.55, uMorph);
     const ignite = clamp(uYear.add(0.5).sub(aYear).div(2.4), 0, 1)
       .oneMinus()
       .mul(step(0.5, aYear));
@@ -158,8 +160,9 @@ function EntityStars({ data }: { data: WorldData }) {
       .mul(core)
       .mul(uCalm)
       .mul(alive)
-      .add(vec3(1, 1, 1).mul(ignite).mul(uFlash).mul(uHit).mul(core).mul(alive));
-    mat.opacityNode = d.oneMinus().pow(2.0).add(spike).clamp(0, 1).mul(alive);
+      .add(vec3(1, 1, 1).mul(ignite).mul(uFlash).mul(uHit).mul(core).mul(alive))
+      .mul(reveal);
+    mat.opacityNode = d.oneMinus().pow(2.0).add(spike).clamp(0, 1).mul(alive).mul(reveal);
     mat.sizeNode = aSize.mul(ignite.mul(uFlash).mul(0.8).add(1.0));
 
     const sprite = new THREE.Sprite(mat as unknown as THREE.SpriteMaterial);
@@ -229,8 +232,15 @@ function FocusEntity({ data }: { data: WorldData }) {
         space={shafts.entity.figureSpace}
         color={shafts.entity.color}
         opacity={0.5}
+        visibleNode="fadeInSpace"
       />
-      <MorphLines ground={shafts.g} space={shafts.s} color={shafts.entity.color} opacity={0.14} />
+      <MorphLines
+        ground={shafts.g}
+        space={shafts.s}
+        color={shafts.entity.color}
+        opacity={0.14}
+        visibleNode="fadeInSpace"
+      />
       <EntityRing data={data} idx={shafts.entity.idx} color={shafts.entity.color} />
     </group>
   );
@@ -258,6 +268,8 @@ function EntityRing({ data, idx, color }: { data: WorldData; idx: number; color:
     const t = state.clock.elapsedTime;
     sprite.scale.setScalar(3.6 * (1.1 + 0.2 * Math.sin(t * 2.4)));
     sprite.material.rotation = -t * 0.25;
+    sprite.material.opacity = uMorph.value; // graph focus lives in the galaxy
+    sprite.visible = uMorph.value > 0.05;
   });
   return <primitive object={sprite} />;
 }
@@ -336,6 +348,7 @@ export default function SkyLayer({
         space={data.ambientFiguresSpace}
         color="#8fa8cf"
         opacity={0.13}
+        visibleNode="fadeInSpace"
       />
       {showWeb && (
         <MorphLines
@@ -343,6 +356,7 @@ export default function SkyLayer({
           space={data.webSpace}
           color="#5a6a8c"
           opacity={0.07}
+          visibleNode="fadeInSpace"
         />
       )}
       <FocusEntity data={data} />

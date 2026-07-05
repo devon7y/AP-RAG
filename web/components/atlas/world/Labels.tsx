@@ -24,12 +24,15 @@ function FadingLabel({
   far,
   children,
   zRange = [20, 0],
+  alpha,
 }: {
   getPos: (out: THREE.Vector3) => void;
   near: number;
   far: number;
   children: React.ReactNode;
   zRange?: [number, number];
+  /** extra opacity multiplier evaluated per frame (morph/time gating) */
+  alpha?: () => number;
 }) {
   const group = useRef<THREE.Group>(null);
   const div = useRef<HTMLDivElement>(null);
@@ -44,7 +47,8 @@ function FadingLabel({
     const st = useWorld.getState();
     const dist = camera.position.distanceTo(tmp);
     const t = THREE.MathUtils.clamp((far - dist) / (far - near), 0, 1);
-    const o = st.warping || !st.showLabels ? 0 : Math.min(1, t * 1.6);
+    let o = st.warping || !st.showLabels ? 0 : Math.min(1, t * 1.6);
+    if (alpha) o *= alpha();
     d.style.opacity = o.toFixed(3);
     d.style.pointerEvents = o > 0.25 ? "auto" : "none";
   });
@@ -99,6 +103,40 @@ export default function Labels({
         </FadingLabel>
       ))}
 
+      {data.peaks.map((peak) => (
+        <FadingLabel
+          key={`pk-${peak.rank}`}
+          near={14}
+          far={peak.rank < 10 ? 300 : 150}
+          getPos={(out) => out.copy(peak.pos)}
+          alpha={() => {
+            const st = useWorld.getState();
+            // landscape-only, and step back while the time machine is scrubbed
+            const timeFade = st.year > st.yearMax ? 1 : 0.15;
+            return (1 - uMorph.value) * timeFade;
+          }}
+        >
+          <button
+            type="button"
+            className="cursor-pointer text-center select-none"
+            onClick={() => {
+              if (peak.kind === "paper") select({ kind: "paper", idx: peak.paperIdx });
+              else if (peak.kind === "entity")
+                select({ kind: "entity", idx: peak.entityIdx });
+              else requestWarp([peak.pos.x, peak.pos.y, peak.pos.z], 26, 1.8);
+            }}
+          >
+            <span
+              className={`font-display block text-[13px] tracking-[0.12em] text-white/75 [text-shadow:0_0_12px_rgba(0,0,0,0.95)] ${
+                peak.kind === "paper" ? "italic" : ""
+              }`}
+            >
+              {peak.label}
+            </span>
+          </button>
+        </FadingLabel>
+      ))}
+
       {data.labelEntities.map((idx) => {
         const e = data.entities[idx];
         return (
@@ -107,6 +145,7 @@ export default function Labels({
             near={18}
             far={120}
             getPos={(out) => entityWorldPos(data, idx, uMorph.value, out)}
+            alpha={() => THREE.MathUtils.clamp((uMorph.value - 0.3) / 0.4, 0, 1)}
           >
             <button
               type="button"

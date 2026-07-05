@@ -46,6 +46,18 @@ export interface EraFields {
   final: Float32Array;
 }
 
+/** A named summit on the landscape. Names are a tiered fallback until the
+ *  LLM naming pass ships: dominant paper → best KG entity → cluster terms. */
+export interface PeakLabel {
+  pos: THREE.Vector3; // summit, ground frame
+  label: string;
+  kind: "paper" | "entity" | "terms";
+  paperIdx: number; // -1 unless kind === "paper"
+  entityIdx: number; // -1 unless kind === "entity"
+  /** prominence order, 0 = tallest — drives label LOD */
+  rank: number;
+}
+
 export interface WorldData {
   n: number;
   // chunks — attributes (per-instance)
@@ -78,6 +90,7 @@ export interface WorldData {
   // fields
   eras: EraFields;
   colorTex: THREE.DataTexture;
+  peaks: PeakLabel[];
   // meta
   yearMin: number;
   yearMax: number;
@@ -344,6 +357,158 @@ function buildFigure(
     seg.set([a.x, a.y, a.z, b.x, b.y, b.z], i * 6);
   }
   return seg;
+}
+
+/* ---------------- peak naming (fallback until the LLM naming pass) -------- */
+
+/** Local maxima of the density field, tallest-first with non-max suppression
+ *  (a cheap prominence proxy). Radius in [0,1]² map units. */
+function detectPeaks(
+  field: Float32Array,
+  minH = 0.12,
+  radius01 = 0.055,
+  cap = 40,
+): { x01: number; y01: number; h: number }[] {
+  const raw: { x01: number; y01: number; h: number }[] = [];
+  for (let y = 1; y < GRID - 1; y++) {
+    for (let x = 1; x < GRID - 1; x++) {
+      const h = field[y * GRID + x];
+      if (h < minH) continue;
+      let isMax = true;
+      for (let dy = -1; dy <= 1 && isMax; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          if (field[(y + dy) * GRID + x + dx] > h) {
+            isMax = false;
+            break;
+          }
+        }
+      }
+      if (isMax) raw.push({ x01: x / (GRID - 1), y01: y / (GRID - 1), h });
+    }
+  }
+  raw.sort((a, b) => b.h - a.h);
+  const acc: typeof raw = [];
+  for (const p of raw) {
+    if (acc.every((q) => Math.hypot(q.x01 - p.x01, q.y01 - p.y01) > radius01)) {
+      acc.push(p);
+      if (acc.length >= cap) break;
+    }
+  }
+  return acc;
+}
+
+const NUMERIC_TERM = /^[\d\s.,%()\-–—:]|^\d/;
+
+/** Tiered peak naming: dominant paper → most-concentrated KG entity →
+ *  nearest cluster's terms. Each paper/entity names at most one peak. */
+function buildPeakLabels(
+  corpus: CorpusData,
+  entities: WorldEntity[],
+  finalField: Float32Array,
+): PeakLabel[] {
+  const { atlas, papers, clusters } = corpus;
+  const sites = detectPeaks(finalField);
+  const R = 0.055;
+  const usedPapers = new Set<number>();
+  const usedEntities = new Set<number>();
+  const out: PeakLabel[] = [];
+
+  for (const site of sites) {
+    // chunks under this peak
+    const byPaper = new Map<number, number>();
+    let nUnder = 0;
+    for (let i = 0; i < atlas.n; i++) {
+      const dx = atlas.pos2[i * 2] - site.x01;
+      const dy = atlas.pos2[i * 2 + 1] - site.y01;
+      if (dx * dx + dy * dy > R * R) continue;
+      nUnder++;
+      const p = atlas.paper[i];
+      byPaper.set(p, (byPaper.get(p) ?? 0) + 1);
+    }
+    if (nUnder < 4) continue;
+
+    let label: string | null = null;
+    let kind: PeakLabel["kind"] = "terms";
+    let paperIdx = -1;
+    let entityIdx = -1;
+
+    // 1. one paper owns the summit
+    let topPaper = -1;
+    let topCount = 0;
+    for (const [p, c] of byPaper) {
+      if (c > topCount) {
+        topCount = c;
+        topPaper = p;
+      }
+    }
+    if (topPaper >= 0 && topCount / nUnder >= 0.6 && !usedPapers.has(topPaper)) {
+      const t = papers[topPaper].title;
+      label = t.length > 38 ? `${t.slice(0, 37)}…` : t;
+      kind = "paper";
+      paperIdx = topPaper;
+      usedPapers.add(topPaper);
+    }
+
+    // 2. the knowledge-graph entity most concentrated here
+    if (!label) {
+      let best = -1;
+      let bestScore = 0;
+      for (const e of entities) {
+        if (usedEntities.has(e.idx) || isGenericEntityName(e.id)) continue;
+        if (e.members.length < 3) continue;
+        let within = 0;
+        for (const m of e.members) {
+          const dx = atlas.pos2[m * 2] - site.x01;
+          const dy = atlas.pos2[m * 2 + 1] - site.y01;
+          if (dx * dx + dy * dy <= R * R) within++;
+        }
+        const conc = within / e.members.length;
+        if (within < 3 || conc < 0.34) continue;
+        const score = conc * Math.log1p(e.deg);
+        if (score > bestScore) {
+          bestScore = score;
+          best = e.idx;
+        }
+      }
+      if (best >= 0) {
+        const id = entities[best].id;
+        label = id.length > 34 ? `${id.slice(0, 33)}…` : id;
+        kind = "entity";
+        entityIdx = best;
+        usedEntities.add(best);
+      }
+    }
+
+    // 3. nearest cluster's distinctive terms
+    if (!label) {
+      let bestCl: Cluster | null = null;
+      let bestD = Number.POSITIVE_INFINITY;
+      for (const cl of clusters) {
+        const d = Math.hypot(cl.center[0] - site.x01, cl.center[1] - site.y01);
+        if (d < bestD) {
+          bestD = d;
+          bestCl = cl;
+        }
+      }
+      const terms = (bestCl?.terms ?? [])
+        .filter((t) => t.length >= 3 && !NUMERIC_TERM.test(t))
+        .slice(0, 2);
+      if (terms.length) label = terms.join(" · ");
+    }
+
+    if (!label) continue;
+    const [wx, wz] = toWorldXZ(site.x01, site.y01);
+    out.push({
+      pos: new THREE.Vector3(wx, site.h * HEIGHT_SCALE + 1.6, wz),
+      label,
+      kind,
+      paperIdx,
+      entityIdx,
+      rank: out.length,
+    });
+  }
+  return out;
 }
 
 /** Sky altitude band by entity type — abstraction floats higher. */
@@ -632,6 +797,8 @@ export function deriveWorld(
     .slice(0, 16)
     .map((e) => e.idx);
 
+  const peaks = buildPeakLabels(corpus, entities, eras.final);
+
   return {
     n,
     chunkGround,
@@ -660,6 +827,7 @@ export function deriveWorld(
     webSpace,
     eras,
     colorTex,
+    peaks,
     yearMin,
     yearMax,
     chunkIdToIdx,

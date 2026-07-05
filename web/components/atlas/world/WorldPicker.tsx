@@ -90,9 +90,12 @@ export default function WorldPicker({
           );
         }
       }
-      for (let i = 0; i < data.entities.length; i++) {
-        entityWorldPos(data, i, morph, tmp);
-        consider(tmp.x, tmp.y, tmp.z, 1.6, () => ({ kind: "entity", idx: i }), 1.35);
+      // the graph only exists in the galaxy — no entity picking on the ground
+      if (morph > 0.4) {
+        for (let i = 0; i < data.entities.length; i++) {
+          entityWorldPos(data, i, morph, tmp);
+          consider(tmp.x, tmp.y, tmp.z, 1.6, () => ({ kind: "entity", idx: i }), 1.35);
+        }
       }
       for (let i = 0; i < data.nPapers; i++) {
         paperWorldPos(data, i, morph, tmp);

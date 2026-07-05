@@ -63,6 +63,14 @@ export default function CommandBar({
         st.clearLens(); // also closes an open author card
         st.select(null);
         setValue("");
+        // if the camera was still idling (never grabbed), take it home too
+        if (st.autoRotate) {
+          st.requestWarp(
+            st.view === "space" ? [0, 0, 0] : [0, 4, 0],
+            st.view === "space" ? 130 : 105,
+            1.3,
+          );
+        }
       }
     };
     window.addEventListener("keydown", onKey);

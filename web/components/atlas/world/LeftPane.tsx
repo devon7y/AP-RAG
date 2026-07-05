@@ -186,8 +186,10 @@ function NavigatePanel({ data, corpus }: { data: WorldData; corpus: CorpusData }
             — passages in the same topic cluster share a hue. The small lights
             are individual passages (brighter = more connections in the
             knowledge graph); the haloed beacons are whole papers, placed at
-            the center of their passages; the spiked stars floating above are
-            the graph's concepts.
+            the center of their passages.{" "}
+            <span className="text-ink-2">Peak names</span> come from the corpus
+            itself — the paper or knowledge-graph concept that dominates each
+            summit.
           </p>
         ) : (
           <>
