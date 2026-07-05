@@ -60,8 +60,19 @@ export default function CameraRig({
     baseFov.current ??= camera.fov;
     const toTgt = new THREE.Vector3(...warp.center);
     let toPos: THREE.Vector3;
-    if (warp.pose) {
-      // fixed framing (home shots): same height and angle every time
+    if (warp.orbit) {
+      // land on the resting orbit at the point nearest the current camera:
+      // keep the camera's azimuth, take the orbit's radius and height
+      const dx = camera.position.x - toTgt.x;
+      const dz = camera.position.z - toTgt.z;
+      const len = Math.hypot(dx, dz) || 1;
+      toPos = new THREE.Vector3(
+        toTgt.x + (dx / len) * warp.orbit.radius,
+        warp.orbit.height,
+        toTgt.z + (dz / len) * warp.orbit.radius,
+      );
+    } else if (warp.pose) {
+      // fixed framing: same position every time
       toPos = new THREE.Vector3(...warp.pose);
     } else {
       const dir = camera.position.clone().sub(toTgt);

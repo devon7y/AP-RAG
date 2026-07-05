@@ -43,25 +43,28 @@ export interface WarpRequest {
   duration: number;
   /** explicit end camera position — overrides the standoff/direction rule */
   pose?: [number, number, number];
+  /** land on the idle-orbit circle (fixed radius + height around center) at
+   *  the point NEAREST the current camera — the rig resolves the azimuth */
+  orbit?: { radius: number; height: number };
 }
 
-/** The canonical resting shots — fixed height and downward angle. */
+/** The canonical resting orbits — fixed height and downward angle. */
 export const HOME = {
   atlas: {
     center: [0, 4, 0] as [number, number, number],
-    pose: [0, 62, 92] as [number, number, number],
+    orbit: { radius: 92, height: 62 },
   },
   space: {
     center: [0, 0, 0] as [number, number, number],
-    pose: [0, 55, 118] as [number, number, number],
+    orbit: { radius: 118, height: 55 },
   },
 };
 
-/** Fly to the canonical resting shot for the current view. */
+/** Fly to the nearest point on the resting orbit for the current view. */
 export function warpHome(duration = 1.3): void {
   const st = useWorld.getState();
   const h = st.view === "space" ? HOME.space : HOME.atlas;
-  st.requestWarp(h.center, 0, duration, h.pose);
+  st.requestWarp(h.center, 0, duration, undefined, h.orbit);
 }
 
 export interface Lens {
@@ -157,6 +160,7 @@ interface WorldState {
     standoff: number,
     duration?: number,
     pose?: [number, number, number],
+    orbit?: { radius: number; height: number },
   ) => void;
   setLens: (patch: Partial<Lens>) => void;
   clearLens: () => void;
@@ -268,8 +272,8 @@ export const useWorld = create<WorldState>((set) => ({
     }),
   hover: (s) => set({ hovered: s }),
   setSearch: (query, hits) => set({ searchQuery: query, searchHits: hits }),
-  requestWarp: (center, standoff, duration = 2.0, pose) =>
-    set({ warp: { seq: ++warpSeq, center, standoff, duration, pose } }),
+  requestWarp: (center, standoff, duration = 2.0, pose, orbit) =>
+    set({ warp: { seq: ++warpSeq, center, standoff, duration, pose, orbit } }),
   setLens: (patch) =>
     set((s) => {
       // clearing the author lens closes the author card it opened
