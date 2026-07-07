@@ -215,6 +215,35 @@ EMBEDDING_BATCH_NUM = int(os.environ.get("EMBEDDING_BATCH_NUM", 128))
 # Fix 3: if set, embed via an OpenAI-compatible server (scripts/server.py) on its
 # own GPU instead of loading the model in-process. Empty = in-process (default).
 EMBED_ENDPOINT = os.environ.get("EMBED_ENDPOINT", "").strip()
+# ── Skip in-ingest entity/relation VDB writes (2026-07-07) ───────────────────────
+# At scale (measured ~1.4M graph nodes) LightRAG's per-merge entity/relation vector
+# upserts embed large defer-mode descriptions and hit ~109s each, stalling the
+# pipeline in ~40-min mega-flushes. Those vectors are REDUNDANT: the mandatory final
+# reembed (REBUILD_EMBEDDINGS=1) rebuilds every entity/relation vector from the graph
+# anyway. When set, wrap entities_vdb/relationships_vdb so their upsert()/delete() are
+# no-ops during ingest — the graph + KV stores still build fully, chunk vectors are
+# untouched, and the query path is unaffected (it only runs at retrieval, never during
+# ingest). MUST be followed by a final reembed before the store is served.
+SKIP_ENTITY_RELATION_VDB = os.environ.get("SKIP_ENTITY_RELATION_VDB", "0") == "1"
+
+
+class _SkipWriteVDB:
+    """Vector-storage proxy whose upsert()/delete() are no-ops; every other attribute
+    (query, index_done_callback, cosine_better_than_threshold, namespace, …) delegates
+    to the wrapped real storage. Injected only on entities_vdb/relationships_vdb in the
+    ingest path when SKIP_ENTITY_RELATION_VDB is set — see that flag's note."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    async def upsert(self, *args, **kwargs):
+        return None
+
+    async def delete(self, *args, **kwargs):
+        return None
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
 # Fix 1: opt-in incremental KV backends so LightRAG's per-doc _insert_done() stops
 # rewriting the giant JSON KV stores every document. Empty = LightRAG defaults
 # (JsonKVStorage / JsonDocStatusStorage). Requires the matching sidecar (e.g. Redis).
@@ -1858,6 +1887,16 @@ async def main():
     rag = LightRAG(**rag_kwargs)
 
     await rag.initialize_storages()
+
+    # Skip the redundant, expensive in-ingest entity/relation vector writes; the final
+    # reembed rebuilds them from the graph (see SKIP_ENTITY_RELATION_VDB). Instance
+    # swap only — LightRAG reads self.entities_vdb/self.relationships_vdb at each call
+    # site, so this needs no library patch. chunks_vdb is left intact.
+    if SKIP_ENTITY_RELATION_VDB:
+        rag.entities_vdb = _SkipWriteVDB(rag.entities_vdb)
+        rag.relationships_vdb = _SkipWriteVDB(rag.relationships_vdb)
+        print("[SKIP_VDB] entity/relation VDB writes DISABLED during ingest — "
+              "those vectors will be built by the mandatory final reembed", flush=True)
 
     # 3A: throttle the per-document full-file JSON/GraphML rewrites (O(N²) disk I/O
     # + multi-second event-loop stalls late in a big run). Ordered ticks keep
