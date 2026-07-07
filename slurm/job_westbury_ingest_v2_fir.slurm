@@ -8,11 +8,17 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=32G
 #SBATCH --gpus=h100:1
-#SBATCH --signal=B:TERM@600
-# ^ deliver SIGTERM to this shell 10 min BEFORE walltime: the trap below stops
+#SBATCH --signal=B:TERM@1200
+# ^ deliver SIGTERM to this shell 20 min BEFORE walltime: the trap below stops
 #   the ingest (its in-python handler flushes storages), leaving real time for
 #   the Qdrant stop + rsync-back. Without it, SLURM's ~30s KillWait silently
 #   dropped the cycle's Qdrant delta (vectors) on every walltime kill.
+#   Raised 600->1200 on 2026-07-06: the graceful KV flush now takes ~10 min as
+#   the stores have grown (5.7GB llm_cache + 2.2GB graphml), which consumed the
+#   entire 600s window on cycle 7 (47197774, TIMEOUT) and starved the Qdrant
+#   sync to ~3s. 1200s = ~10 min flush + ~2 min sync + buffer. rag_storage_full
+#   still flushes fine either way (it is the source of truth); this protects the
+#   per-cycle Qdrant checkpoint. The final reembed rebuilds all vectors anyway.
 
 # Fir ingest — mirrors job_westbury_ingest_v2_nibi.slurm. Only difference is the
 # WORKDIR path (/home/devon7y/scratch/devon7y/... on Fir). HF_HOME=$WORKDIR/hf_cache
