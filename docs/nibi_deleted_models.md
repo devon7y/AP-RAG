@@ -149,3 +149,12 @@ Deleted from `/scratch/devon7y/huggingface/` on **Nibi** to get its scratch unde
 ` | 512 |
 
 Total: 69 models, ~11.5 TB freed.
+
+**Additionally deleted** (stored flat in `huggingface/`, not HF-cache format) to cross under 1 TB:
+
+| Dir | Size | Likely repo |
+|---|---|---|
+| `Qwen3.5-397B-A17B-GGUF` | 228 G | `Qwen/Qwen3.5-397B-A17B-GGUF` |
+| `Qwen3-235B-A22B-GGUF` | 133 G | `Qwen/Qwen3-235B-A22B-GGUF` |
+
+Final Nibi scratch after all deletions: ~400 GiB (under the 1 TB soft quota, writable again).
