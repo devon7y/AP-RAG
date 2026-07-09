@@ -108,7 +108,9 @@ function ChipList({
       {values.map((v) => (
         <Badge
           asChild
-          className="max-w-[14rem] cursor-pointer font-normal transition-colors hover:bg-accent hover:text-accent-foreground"
+          // hover:bg-muted-foreground/30 (not accent — accent is ~invisible against the
+          // background in light mode): a clearly visible lighten/darken in both themes.
+          className="max-w-[14rem] cursor-pointer font-normal transition-colors hover:border-muted-foreground/50 hover:bg-muted-foreground/30"
           key={v}
           variant="outline"
         >
@@ -147,13 +149,15 @@ function HeaderCell({
   onSort: (key: string) => void;
   onResize: (id: ColumnId, px: number) => void;
 }) {
+  // Window-level listeners (not element capture): the header cell re-renders on every
+  // width update, so listeners must outlive it; window always sees the drag through.
   const startResize = (e: React.PointerEvent<HTMLButtonElement>) => {
     e.preventDefault();
     e.stopPropagation();
     const startX = e.clientX;
     const startWidth = width;
-    const target = e.currentTarget;
-    target.setPointerCapture(e.pointerId);
+    const prevCursor = document.body.style.cursor;
+    document.body.style.cursor = "col-resize";
     const move = (ev: PointerEvent) => {
       onResize(
         columnId,
@@ -161,11 +165,14 @@ function HeaderCell({
       );
     };
     const up = () => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", up);
+      document.body.style.cursor = prevCursor;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
     };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", up);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   };
 
   let sortControl: React.ReactNode = label;
@@ -261,6 +268,10 @@ export function PapersTable({
                 width={widths[c.id] ?? c.width}
               />
             ))}
+            {/* Width-less filler absorbs the leftover container width, so the fixed
+                layout honors each column's dragged width exactly instead of
+                redistributing the slack across all columns. */}
+            <th aria-hidden className="p-0" />
           </tr>
         </thead>
         <tbody className={cn(isLoading && "opacity-50")}>
@@ -294,6 +305,7 @@ export function PapersTable({
                     />
                   </td>
                 ))}
+                <td aria-hidden className="p-0" />
               </tr>
             );
           })}
