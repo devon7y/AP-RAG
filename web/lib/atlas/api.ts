@@ -53,12 +53,16 @@ export async function fetchVectors(qids: string[]): Promise<Record<string, numbe
   return (await r.json()).vectors;
 }
 
+/** One structured reference from the PC query server (apa_citations.build_ref_model). */
 export interface RagReference {
-  n?: number;
+  n?: string;
+  filename?: string;
   apa?: string;
-  file?: string;
-  pages?: string;
-  link?: string;
+  intext?: string;
+  drive_url?: string;
+  hades_path?: string;
+  /** PDF pages the cited passages came from */
+  pages?: number[];
   [k: string]: unknown;
 }
 

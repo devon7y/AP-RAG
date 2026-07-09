@@ -5,8 +5,10 @@ import {
   CircleDashed,
   Clock,
   Compass,
+  MessageCircleQuestion,
   PanelLeftClose,
   PanelLeftOpen,
+  PenLine,
   Radio,
   RotateCcw,
   Shuffle,
@@ -28,6 +30,8 @@ import {
   type WorldData,
 } from "./derive";
 import { fitAuthorTrail } from "./fit";
+import AskPanel from "./AskPanel";
+import DraftPanel from "./DraftPanel";
 import GamePanel from "./GamePanel";
 import InterpolatePanel from "./InterpolatePanel";
 import { useWorld, warpHome, type Instrument } from "./store";
@@ -42,10 +46,16 @@ import { VOID_VIOLET } from "./GhostLayer";
 
 const INSTRUMENTS: { key: Instrument; icon: React.ReactNode; label: string }[] = [
   { key: "navigate", icon: <Compass className="size-4" />, label: "Navigate" },
+  {
+    key: "ask",
+    icon: <MessageCircleQuestion className="size-4" />,
+    label: "Ask the atlas",
+  },
   { key: "time", icon: <Clock className="size-4" />, label: "Time machine" },
   { key: "lenses", icon: <SlidersHorizontal className="size-4" />, label: "Lenses" },
   { key: "interpolate", icon: <Spline className="size-4" />, label: "Interpolate" },
   { key: "ghosts", icon: <CircleDashed className="size-4" />, label: "Research gaps" },
+  { key: "draft", icon: <PenLine className="size-4" />, label: "Drop a draft" },
   { key: "radio", icon: <Radio className="size-4" />, label: "Radio" },
   { key: "game", icon: <Trophy className="size-4" />, label: "Semantle" },
 ];
@@ -114,8 +124,13 @@ export default function LeftPane({
       </nav>
 
       {paneOpen && (
-        <section className="hud-panel hud-scroll pointer-events-auto max-h-full w-[292px] overflow-y-auto p-4">
+        <section
+          className={`hud-panel hud-scroll pointer-events-auto max-h-full overflow-y-auto p-4 ${
+            instrument === "ask" ? "w-[360px]" : "w-[292px]"
+          }`}
+        >
           {instrument === "navigate" && <NavigatePanel data={data} corpus={corpus} />}
+          {instrument === "ask" && <AskPanel data={data} corpus={corpus} />}
           {instrument === "time" && <TimePanel />}
           {instrument === "lenses" && (
             <LensesPanel
@@ -129,6 +144,7 @@ export default function LeftPane({
             <InterpolatePanel data={data} corpus={corpus} authors={authors} />
           )}
           {instrument === "ghosts" && <GhostsPanel data={data} />}
+          {instrument === "draft" && <DraftPanel data={data} corpus={corpus} />}
           {instrument === "radio" && <RadioPanel data={data} corpus={corpus} />}
           {instrument === "game" && <GamePanel data={data} authors={authors} />}
         </section>

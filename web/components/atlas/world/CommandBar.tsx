@@ -3,22 +3,81 @@
 import { useEffect, useRef, useState } from "react";
 import { Search as SearchIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { qsearch } from "@/lib/atlas/api";
+import * as THREE from "three";
+import { qsearch, ragQuery } from "@/lib/atlas/api";
 import { SEQ_BLUE } from "@/lib/atlas/palette";
 import type { AuthorRec, CorpusData } from "@/lib/atlas/types";
+import { paperWorldPos } from "./PaperBeacons";
 import { shortCite, type WorldData } from "./derive";
 import { solveArithmeticWorld, traceGeodesicWorld } from "./engineBridge";
-import { fitArith, fitAuthorTrail, fitTrace } from "./fit";
+import { fitArith, fitAuthorTrail, fitPointsWarp, fitTrace } from "./fit";
 import { findAuthor, parseCommand, slotToEndpoint } from "./parse";
-import { useWorld, warpHome, type SearchHit } from "./store";
+import { useWorld, warpHome, type AskRef, type SearchHit } from "./store";
 import { uMorph } from "./uniforms";
 
 /**
  * The command line of the world (press "/"). A bare phrase warps you there;
- * "a -> b" runs the interpolation engine; "a - b + c" runs embedding
+ * a "?" prefix (or a trailing "?") asks the RAG engine and lights the cited
+ * papers; "a -> b" runs the interpolation engine; "a - b + c" runs embedding
  * arithmetic; "@author" lights their career trail; "year:", "journal:",
- * "kw:" set lenses; "ghost", "radio", "clear" drive instruments.
+ * "kw:" set lenses; "ghost", "draft", "radio", "clear" drive instruments.
  */
+
+/** The server appends its own "### References" block — the ask panel renders
+ *  the structured refs instead, so drop the text block (same heading regex as
+ *  apa_citations.strip_references_section). */
+function stripReferencesBlock(answer: string): string {
+  const m = answer.match(
+    /^[ \t]{0,3}(?:#{1,6}[ \t]*|\*\*[ \t]*)?references[ \t]*:?[ \t]*\**[ \t]*$/im,
+  );
+  return m?.index !== undefined ? answer.slice(0, m.index).trimEnd() : answer;
+}
+
+const baseName = (p: string) => p.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+
+/** Fire the RAG query without holding the command bar hostage (it can take
+ *  tens of seconds); the ask panel shows progress, and a newer question
+ *  simply supersedes this one. */
+async function answerAsk(question: string, data: WorldData, corpus: CorpusData) {
+  const current = () => {
+    const st = useWorld.getState();
+    return st.ask?.question === question && st.ask.status === "running" ? st : null;
+  };
+  try {
+    const res = await ragQuery({ question, mode: "hybrid" });
+    const fileToIdx = new Map(corpus.papers.map((p, i) => [baseName(p.file), i]));
+    const refs: AskRef[] = (res.references ?? []).map((r) => ({
+      paperIdx: fileToIdx.get(baseName(String(r.filename ?? ""))) ?? -1,
+      filename: String(r.filename ?? ""),
+      apa: String(r.apa ?? ""),
+      intext: String(r.intext ?? ""),
+      pages: Array.isArray(r.pages) ? r.pages : [],
+      drive: String(r.drive_url ?? ""),
+    }));
+    const st = current();
+    if (!st) return;
+    st.set("ask", {
+      question,
+      status: "done",
+      answer: stripReferencesBlock(res.answer ?? ""),
+      refs,
+    });
+    const pts = refs
+      .filter((r) => r.paperIdx >= 0)
+      .map((r) => paperWorldPos(data, r.paperIdx, uMorph.value, new THREE.Vector3()));
+    if (pts.length) fitPointsWarp(pts, 2.4);
+  } catch (err) {
+    const st = current();
+    if (!st) return;
+    st.set("ask", {
+      question,
+      status: "error",
+      answer: null,
+      refs: [],
+      error: String(err instanceof Error ? err.message : err),
+    });
+  }
+}
 
 function chunkWorldPos(data: WorldData, i: number, m: number): [number, number, number] {
   const gx = data.chunkGround[i * 3];
@@ -68,6 +127,8 @@ export default function CommandBar({
           st.selection !== null ||
           st.trace !== null ||
           st.arith !== null ||
+          st.ask !== null ||
+          st.draft !== null ||
           st.lens.author !== null ||
           st.lens.journal !== null ||
           st.lens.keyword !== null ||
@@ -83,6 +144,8 @@ export default function CommandBar({
         st.select(null);
         st.set("trace", null);
         st.set("arith", null);
+        st.set("ask", null);
+        st.set("draft", null);
         window.dispatchEvent(new Event("world:esc")); // panels clear local inputs
         setValue("");
         // nothing left to clear (or the camera is still idling) → fly home
@@ -220,6 +283,21 @@ export default function CommandBar({
           inputRef.current?.blur();
           break;
         }
+        case "ask": {
+          // fire-and-forget: the panel shows progress, the bar stays free
+          st.setInstrument("ask");
+          st.set("ask", {
+            question: cmd.question,
+            status: "running",
+            answer: null,
+            refs: [],
+          });
+          if (st.lens.keyword !== null) st.setLens({ keyword: null });
+          void answerAsk(cmd.question, data, corpus);
+          setValue("");
+          inputRef.current?.blur();
+          break;
+        }
         case "interpolate": {
           setBusy("tracing the geodesic…");
           st.setInstrument("interpolate");
@@ -316,13 +394,17 @@ export default function CommandBar({
           break;
         case "help":
           setNotice(
-            "/landscape · /galaxy · /radio · /gap · /reset · /play · /now · /semantle · /clear — plus @author, a -> b, a - b + c, journal:, kw:, year:1990..2005, \"quoted phrase\"",
+            "/landscape · /galaxy · /radio · /gap · /draft · /reset · /play · /now · /semantle · /clear — plus a question ending in ?, @author, a -> b, a - b + c, journal:, kw:, year:1990..2005, \"quoted phrase\"",
           );
           setValue("");
           break;
         case "ghost":
           st.set("planting", true);
           st.setInstrument("ghosts");
+          setValue("");
+          break;
+        case "draft":
+          st.setInstrument("draft");
           setValue("");
           break;
         case "radio":
@@ -335,6 +417,8 @@ export default function CommandBar({
           st.setSearch("", null);
           st.set("trace", null);
           st.set("arith", null);
+          st.set("ask", null);
+          st.set("draft", null);
           st.set("yearLo", 0);
           st.set("year", st.yearMax + 1);
           setValue("");
@@ -469,7 +553,7 @@ export default function CommandBar({
           onChange={(e) => onType(e.target.value)}
           onKeyDown={onHistoryKey}
           disabled={busy !== null}
-          placeholder="search the papers — / for commands…"
+          placeholder="search the papers — end with ? to ask, / for commands…"
           className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-3"
         />
         <button

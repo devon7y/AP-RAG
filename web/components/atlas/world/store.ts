@@ -15,10 +15,12 @@ export type WorldView = "atlas" | "space";
 
 export type Instrument =
   | "navigate"
+  | "ask"
   | "time"
   | "lenses"
   | "interpolate"
   | "ghosts"
+  | "draft"
   | "radio"
   | "game";
 
@@ -92,6 +94,34 @@ export interface GamePing {
   ts: number;
 }
 
+/** One cited source of an Ask-the-Atlas answer, located in the world. */
+export interface AskRef {
+  /** papers.json idx (-1 when the cited file isn't in the atlas pack) */
+  paperIdx: number;
+  filename: string;
+  apa: string;
+  intext: string;
+  /** PDF pages the cited passages came from */
+  pages: number[];
+  drive: string;
+}
+
+export interface AskState {
+  question: string;
+  status: "running" | "done" | "error";
+  answer: string | null;
+  refs: AskRef[];
+  error?: string;
+}
+
+export interface DraftState {
+  text: string;
+  status: "locating" | "done" | "error";
+  /** nearest passages to the draft's embedding (chunk idx + cosine) */
+  hits: { idx: number; score: number }[];
+  error?: string;
+}
+
 interface WorldState {
   view: WorldView;
   instrument: Instrument;
@@ -128,6 +158,12 @@ interface WorldState {
   trace: Trace | null;
   traceT: number; // probe position 0..1 along the geodesic
   arith: ArithResult | null;
+
+  // ask the atlas (question → synthesized answer + cited papers as evidence)
+  ask: AskState | null;
+
+  // drop a draft (your own text located in the corpus)
+  draft: DraftState | null;
 
   // ghosts
   ghosts: PlantedGhost[];
@@ -204,6 +240,9 @@ export const useWorld = create<WorldState>((set) => ({
   trace: null,
   traceT: 0.5,
   arith: null,
+
+  ask: null,
+  draft: null,
 
   ghosts: [],
   planting: false,

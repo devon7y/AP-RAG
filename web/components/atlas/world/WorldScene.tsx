@@ -19,6 +19,7 @@ import CameraRig, { useIntroWarp } from "./CameraRig";
 import ChunkCloud from "./ChunkCloud";
 import CommandBar from "./CommandBar";
 import { deriveWorld, shortCite, type WorldData } from "./derive";
+import DraftLayer from "./DraftLayer";
 import GhostLayer, { useGhostSites } from "./GhostLayer";
 import InspectorPanel from "./InspectorPanel";
 import Labels from "./Labels";
@@ -333,6 +334,7 @@ function World({
   const knn = useKnn();
   const lens = useWorld((s) => s.lens);
   const instrument = useWorld((s) => s.instrument);
+  const ask = useWorld((s) => s.ask);
 
   useRover(corpus, knn);
   useGhostPlanting(data, corpus !== null);
@@ -349,6 +351,28 @@ function World({
   // metadata lens → dim masks + the gold oeuvre
   const masks = useMemo(() => {
     if (!corpus) return { chunks: null, papers: null, gold: null };
+
+    // ask-the-atlas evidence: while its panel is open, the cited papers
+    // pulse gold and everything else steps back (same optics as a lens)
+    if (instrument === "ask" && ask?.status === "done") {
+      const cited = new Set(
+        ask.refs.map((r) => r.paperIdx).filter((i) => i >= 0),
+      );
+      if (cited.size > 0) {
+        const papers = new Float32Array(corpus.papers.length);
+        const gold = new Float32Array(corpus.papers.length);
+        for (let i = 0; i < corpus.papers.length; i++) {
+          papers[i] = cited.has(i) ? 0 : 1;
+          gold[i] = cited.has(i) ? 1 : 0;
+        }
+        const chunks = new Float32Array(data.n);
+        for (let i = 0; i < data.n; i++) {
+          chunks[i] = cited.has(corpus.atlas.paper[i]) ? 0 : 1;
+        }
+        return { chunks, papers, gold };
+      }
+    }
+
     const { author, journal, keyword } = lens;
     if (author === null && !journal && !keyword)
       return { chunks: null, papers: null, gold: null };
@@ -389,7 +413,7 @@ function World({
       chunks[i] = paperPass[corpus.atlas.paper[i]] ? 0 : 1;
     }
     return { chunks, papers, gold };
-  }, [corpus, authors, paperMeta, lens, data]);
+  }, [corpus, authors, paperMeta, lens, data, instrument, ask]);
 
   const roverPosRef = useMemo<{ current: THREE.Vector3 | null }>(
     () => ({ current: null }),
@@ -413,6 +437,7 @@ function World({
         <PaperBeacons data={data} lensMask={masks.papers} goldMask={masks.gold} />
         <SkyLayer data={data} corpus={corpus} />
         {instrument === "ghosts" && <GhostLayer data={data} sites={ghostSites} />}
+        {instrument === "draft" && <DraftLayer data={data} />}
         <ArcLayer data={data} />
         <RoverLayer data={data} roverPosRef={roverPosRef} />
         <TrailsLayer data={data} corpus={corpus} authors={authors} />

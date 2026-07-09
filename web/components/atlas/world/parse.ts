@@ -5,12 +5,13 @@ import type { AuthorRec } from "@/lib/atlas/types";
 /**
  * One language for the command bar:
  *   memory consolidation             → semantic warp
+ *   what predicts humor ratings?     → ask the atlas (?-prefix or trailing ?)
  *   humor -> word frequency          → interpolation geodesic
  *   humor - comedy + memory          → embedding arithmetic
  *   @Westbury                        → author lens + trail
  *   year:1990..2005 | year:1995      → time window
  *   journal:cognition | kw:entropy   → metadata lens
- *   ghost | radio | clear            → instruments
+ *   ghost | draft | radio | clear    → instruments
  */
 
 export interface SignedTerm {
@@ -20,6 +21,7 @@ export interface SignedTerm {
 
 export type Command =
   | { kind: "warp"; query: string }
+  | { kind: "ask"; question: string }
   | { kind: "interpolate"; a: string; b: string }
   | { kind: "arithmetic"; terms: SignedTerm[] }
   | { kind: "author"; name: string }
@@ -33,6 +35,7 @@ export type Command =
   | { kind: "game" }
   | { kind: "help" }
   | { kind: "ghost" }
+  | { kind: "draft" }
   | { kind: "radio" }
   | { kind: "clear" };
 
@@ -100,6 +103,8 @@ export function parseCommand(raw: string): Command | null {
       case "gap":
       case "gaps":
         return { kind: "ghost" };
+      case "draft":
+        return { kind: "draft" };
       case "reset":
       case "home":
         return { kind: "reset" };
@@ -115,6 +120,18 @@ export function parseCommand(raw: string): Command | null {
       default:
         return { kind: "help" }; // unknown slash → show the command list
     }
+  }
+
+  // ask the atlas: "?" prefix or a trailing "?" turns the input into a
+  // question for the RAG engine (beats every other pattern, so "a -> b?"
+  // is a question, not a geodesic)
+  if (input.startsWith("?") || input.endsWith("?")) {
+    const question = (
+      input.startsWith("?") ? input.slice(1) : input
+    ).trim();
+    return question.replace(/\?+$/, "").trim()
+      ? { kind: "ask", question }
+      : { kind: "help" };
   }
 
   const yearM = lower.match(/^year:\s*(\d{4})(?:\s*(?:\.\.|-|–)\s*(\d{4}))?$/);
