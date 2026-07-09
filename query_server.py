@@ -11,6 +11,8 @@ Endpoints:
     POST /query           — synthesized answer (LLM over retrieved context)
     POST /retrieve        — structured retrieval only (entities/relationships/chunks), no LLM
     POST /search          — metadata-filtered semantic search → ranked papers
+    GET  /papers          — manifest as a table: filter/quick-match/sort/paginate (Paper Database)
+    GET  /paper           — full manifest record for one paper (detail drawer)
     POST /embed           — raw query/document embeddings (Atlas of Mind support)
     POST /qsearch         — raw chunk-vector search over Qdrant (Atlas of Mind support)
     POST /vectors         — fetch stored chunk vectors by Qdrant point id (Atlas support)
@@ -23,7 +25,7 @@ import time
 from contextlib import asynccontextmanager
 
 import numpy as np
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
@@ -198,10 +200,13 @@ class Filters(BaseModel):
     years: list[int] | None = None         # discrete years (any-match)
     year_from: int | None = None
     year_to: int | None = None
+    date_from: str | None = None           # "YYYY" | "YYYY-MM" | "YYYY-MM-DD" (precision-aware)
+    date_to: str | None = None             # window is inclusive; year-only records still match
     journals: list[str] | None = None      # container-title substrings
     subjects: list[str] | None = None
     keywords: list[str] | None = None
     affiliations: list[str] | None = None
+    types: list[str] | None = None         # record types (article/book/chapter/…), exact
 
 
 class QueryRequest(BaseModel):
@@ -431,6 +436,7 @@ def _compute_facets(manifest: dict) -> dict:
     subjects: set[str] = set()
     keywords: set[str] = set()
     affiliations: set[str] = set()
+    types: set[str] = set()
     for rec in (manifest or {}).values():
         if not isinstance(rec, dict):
             continue
@@ -441,6 +447,9 @@ def _compute_facets(manifest: dict) -> dict:
         ct = (rec.get("container_title") or "").strip()
         if ct:
             journals.add(ct)
+        t = (rec.get("type") or "").strip()
+        if t:
+            types.add(t)
         for key, bucket in (("subjects", subjects), ("keywords", keywords),
                             ("affiliations", affiliations)):
             for v in (rec.get(key) or []):
@@ -450,7 +459,7 @@ def _compute_facets(manifest: dict) -> dict:
     srt = lambda s: sorted(s, key=str.lower)  # noqa: E731
     return {"authors": srt(authors), "journals": srt(journals),
             "subjects": srt(subjects), "keywords": srt(keywords),
-            "affiliations": srt(affiliations)}
+            "affiliations": srt(affiliations), "types": srt(types)}
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -586,9 +595,13 @@ def _enrich_references(refs: list[dict], id_to_pages: dict | None = None) -> lis
         rm = apa.build_ref_model(rid, r.get("file_path") or "", manifest,
                                  HADES_PAPERS_BASE, pages=id_to_pages.get(rid),
                                  drive_map=drive_map)
+        mrec = manifest.get(rm["filename"]) if isinstance(manifest, dict) else None
+        mrec = mrec if isinstance(mrec, dict) else {}
         out.append({**r, "apa": rm["apa"], "intext": rm["intext"],
                     "filename": rm["filename"], "drive_url": rm["drive_url"],
-                    "hades_path": rm["hades_path"], "pages": rm["pages"]})
+                    "hades_path": rm["hades_path"], "pages": rm["pages"],
+                    "date": mrec.get("date") or "",
+                    "date_precision": mrec.get("date_precision") or ""})
     return out
 
 
@@ -644,8 +657,78 @@ async def search_papers(req: SearchRequest):
     pages_by_file = await _pages_by_file(chunks)
     papers = search.rank_papers(chunks, manifest, HADES_PAPERS_BASE, pages_by_file,
                                 drive_map=apa.load_drive_map(APRAG_DRIVE_MAP))
+    # Merge the slim bib fields onto each ranked paper so the web Paper Database's
+    # deep-search view can fill its table columns without a second lookup. Additive —
+    # the aprag CLI/MCP ignore the extra keys.
+    for p in papers:
+        rec = manifest.get(p["filename"])
+        if isinstance(rec, dict):
+            p.update({k: v for k, v in search.slim_paper_row(p["filename"], rec).items()
+                      if k not in p})
     return {"status": "success", "papers": papers, "count": len(papers),
             "matched_files": (None if filenames is None else len(filenames))}
+
+
+# ── Paper Database listing (the web /papers table) ────────────────────────────
+
+
+def _paper_row(filename: str, record: dict, manifest: dict, drive_map: dict) -> dict:
+    """Slim manifest fields + APA strings + Drive link for one table row."""
+    rm = apa.build_ref_model("", filename, manifest, HADES_PAPERS_BASE,
+                             drive_map=drive_map)
+    return {**search.slim_paper_row(filename, record),
+            "apa": rm["apa"], "intext": rm["intext"], "drive_url": rm["drive_url"]}
+
+
+@app.get("/papers", dependencies=[Depends(require_api_key)])
+def list_papers(
+    q: str | None = None,
+    sort: str = "year",
+    order: str = "desc",
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=500),
+    authors: list[str] | None = Query(default=None),
+    journals: list[str] | None = Query(default=None),
+    subjects: list[str] | None = Query(default=None),
+    keywords: list[str] | None = Query(default=None),
+    affiliations: list[str] | None = Query(default=None),
+    types: list[str] | None = Query(default=None),
+    year: int | None = None,
+    year_from: int | None = None,
+    year_to: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+):
+    """Browse the manifest as a table: metadata filters (same semantics as /query·
+    /retrieve·/search) + quick text match + sort + pagination. Pure manifest read —
+    works even when Qdrant/embeddings are down."""
+    manifest = apa.load_manifest(APA_MANIFEST)
+    filters = {k: v for k, v in {
+        "authors": authors, "journals": journals, "subjects": subjects,
+        "keywords": keywords, "affiliations": affiliations, "types": types,
+        "year": year, "year_from": year_from, "year_to": year_to,
+        "date_from": date_from, "date_to": date_to,
+    }.items() if v not in (None, [], "")}
+    total, page = search.list_papers(manifest, filters=filters or None, q=q,
+                                     sort=sort, order=order, offset=offset, limit=limit)
+    drive_map = apa.load_drive_map(APRAG_DRIVE_MAP)
+    rows = [_paper_row(fn, rec, manifest, drive_map) for fn, rec in page]
+    return {"papers": rows, "total": total, "offset": offset, "limit": limit}
+
+
+@app.get("/paper", dependencies=[Depends(require_api_key)])
+def paper_detail(filename: str):
+    """Full manifest record for one paper (abstract, affiliations, editors, provenance
+    flags) + APA strings + locators — the Paper Database detail drawer."""
+    manifest = apa.load_manifest(APA_MANIFEST)
+    record = manifest.get(apa._basename(filename))
+    if not isinstance(record, dict):
+        raise HTTPException(status_code=404, detail="unknown paper")
+    rm = apa.build_ref_model("", filename, manifest, HADES_PAPERS_BASE,
+                             drive_map=apa.load_drive_map(APRAG_DRIVE_MAP))
+    return {**record, "filename": rm["filename"], "apa": rm["apa"],
+            "intext": rm["intext"], "drive_url": rm["drive_url"],
+            "hades_path": rm["hades_path"]}
 
 
 # ── Atlas of Mind support (web/app/(atlas) proxies these over the tunnel) ─────

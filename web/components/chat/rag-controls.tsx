@@ -5,25 +5,20 @@ import { useMemo, useState } from "react";
 import { useActiveChat } from "@/hooks/use-active-chat";
 import {
   REASONING_EFFORTS,
-  type ReasoningEffort,
   RETRIEVAL_MODES,
+  type ReasoningEffort,
   type RetrievalMode,
 } from "@/lib/ai/models";
 import type { Facets } from "@/lib/aprag/client";
 import { detectFilters } from "@/lib/aprag/detect";
 import type { RagFilters } from "@/lib/aprag/types";
 import { cn } from "@/lib/utils";
-import { FacetInput, useFacets } from "./facet-input";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from "../ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger } from "../ui/select";
+import { FacetInput, useFacets } from "./facet-input";
 
 const MODE_LABEL: Record<RetrievalMode, string> = {
   auto: "Auto Retrieval",
@@ -61,13 +56,14 @@ const REASONING_HINT: Record<ReasoningEffort, string> = {
 };
 
 // Each metadata filter that maps to a Facets key, surfaced as its own composer button.
-const FACET_FILTERS: { key: keyof RagFilters & keyof Facets; label: string }[] = [
-  { key: "authors", label: "Authors" },
-  { key: "journals", label: "Journals" },
-  { key: "subjects", label: "Subjects" },
-  { key: "keywords", label: "Keywords" },
-  { key: "affiliations", label: "Affiliations" },
-];
+const FACET_FILTERS: { key: keyof RagFilters & keyof Facets; label: string }[] =
+  [
+    { key: "authors", label: "Authors" },
+    { key: "journals", label: "Journals" },
+    { key: "subjects", label: "Subjects" },
+    { key: "keywords", label: "Keywords" },
+    { key: "affiliations", label: "Affiliations" },
+  ];
 
 export function RagControls() {
   const {
@@ -116,67 +112,71 @@ export function RagControls() {
   return (
     <div className="flex flex-wrap items-center gap-1">
       {/* Retrieval mode — full label in the trigger, hint in the menu */}
-        <Select
-          onValueChange={(v) => setRetrievalMode(v as RetrievalMode)}
-          value={retrievalMode}
+      <Select
+        onValueChange={(v) => setRetrievalMode(v as RetrievalMode)}
+        value={retrievalMode}
+      >
+        <SelectTrigger
+          className="h-7 gap-1.5 rounded-lg border-0 px-2 text-xs shadow-none hover:bg-accent"
+          size="sm"
         >
-          <SelectTrigger
-            className="h-7 gap-1.5 rounded-lg border-0 px-2 text-xs shadow-none hover:bg-accent"
-            size="sm"
-          >
-            <NetworkIcon className="size-3.5" />
-            {MODE_LABEL[retrievalMode]}
-          </SelectTrigger>
-          <SelectContent align="start" position="popper">
-            {RETRIEVAL_MODES.map((m) => (
-              <SelectItem key={m} value={m}>
-                <span>{MODE_LABEL[m]}</span>
-                <span className="ml-2 text-muted-foreground text-xs">
-                  {MODE_HINT[m]}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          <NetworkIcon className="size-3.5" />
+          {MODE_LABEL[retrievalMode]}
+        </SelectTrigger>
+        <SelectContent align="start" position="popper">
+          {RETRIEVAL_MODES.map((m) => (
+            <SelectItem key={m} value={m}>
+              <span>{MODE_LABEL[m]}</span>
+              <span className="ml-2 text-muted-foreground text-xs">
+                {MODE_HINT[m]}
+              </span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
 
-        {/* Reasoning effort — short label in the trigger, hint in the menu */}
-        <Select
-          onValueChange={(v) => setReasoning(v as ReasoningEffort)}
-          value={reasoning}
+      {/* Reasoning effort — short label in the trigger, hint in the menu */}
+      <Select
+        onValueChange={(v) => setReasoning(v as ReasoningEffort)}
+        value={reasoning}
+      >
+        <SelectTrigger
+          className="h-7 gap-1.5 rounded-lg border-0 px-2 text-xs shadow-none hover:bg-accent"
+          size="sm"
         >
-          <SelectTrigger
-            className="h-7 gap-1.5 rounded-lg border-0 px-2 text-xs shadow-none hover:bg-accent"
-            size="sm"
-          >
-            <Brain className="size-3.5" />
-            {REASONING_LABEL[reasoning]}
-          </SelectTrigger>
-          <SelectContent align="start" position="popper">
-            {REASONING_EFFORTS.map((r) => (
-              <SelectItem key={r} value={r}>
-                <span>{REASONING_LABEL[r]}</span>
-                <span className="ml-2 text-muted-foreground text-xs">
-                  {REASONING_HINT[r]}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          <Brain className="size-3.5" />
+          {REASONING_LABEL[reasoning]}
+        </SelectTrigger>
+        <SelectContent align="start" position="popper">
+          {REASONING_EFFORTS.map((r) => (
+            <SelectItem key={r} value={r}>
+              <span>{REASONING_LABEL[r]}</span>
+              <span className="ml-2 text-muted-foreground text-xs">
+                {REASONING_HINT[r]}
+              </span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
 
-        {/* Individual metadata filters, inline */}
-        {FACET_FILTERS.map((f) => (
-          <FacetFilterButton
-            active={dimActive(f.key)}
-            key={f.key}
-            label={f.label}
-            onChange={setList(f.key)}
-            onOpen={() => setFacetsEnabled(true)}
-            options={facets[f.key]}
-            selected={filters?.[f.key] ?? []}
-          />
-        ))}
+      {/* Individual metadata filters, inline */}
+      {FACET_FILTERS.map((f) => (
+        <FacetFilterButton
+          active={dimActive(f.key)}
+          key={f.key}
+          label={f.label}
+          onChange={setList(f.key)}
+          onOpen={() => setFacetsEnabled(true)}
+          options={facets[f.key] ?? []}
+          selected={filters?.[f.key] ?? []}
+        />
+      ))}
 
-        <YearFilterButton active={yearActive} filters={filters} setFilters={setFilters} />
+      <YearFilterButton
+        active={yearActive}
+        filters={filters}
+        setFilters={setFilters}
+      />
     </div>
   );
 }
