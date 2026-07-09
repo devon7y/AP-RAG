@@ -1,7 +1,7 @@
-# Paper Database — feature plan
+# Papers Database — feature plan
 
 A browsable, sortable, filterable table of every paper in the corpus, opened from a
-**Paper Database** button in the web sidebar (directly under **Research Digest**), plus a
+**Papers Database** button in the web sidebar (directly under **Research Digest**), plus a
 universal search bar that finds papers even when the user only half-remembers the details.
 
 ---
@@ -100,7 +100,7 @@ Mirroring `api/facets` / `api/stats`:
 ## 3. Frontend — `/papers` page + sidebar button
 
 **Entry point**: a `SidebarMenuButton` in `app-sidebar.tsx` directly under Research Digest
-(above Papers Atlas), icon `LibraryIcon`/`TableIcon`, tooltip "Paper Database — browse,
+(above Papers Atlas), icon `LibraryIcon`/`TableIcon`, tooltip "Papers Database — browse,
 sort, and filter every paper in the corpus". It navigates to a **full page** at
 `web/app/(chat)/papers/page.tsx` — a dialog can't do a 10k-row table justice, and a page
 gives us shareable URLs.

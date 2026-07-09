@@ -2,7 +2,7 @@ import { auth } from "@/app/(auth)/auth";
 import { getPaper, listPapers } from "@/lib/aprag/client";
 import type { RagFilters } from "@/lib/aprag/types";
 
-// Paper Database proxy: browse rows (GET /papers on the query server) or one full
+// Papers Database proxy: browse rows (GET /papers on the query server) or one full
 // record (`?filename=` → GET /paper). Behind auth; the tunnel URL + key stay
 // server-side, like every other query-server proxy.
 
@@ -66,7 +66,7 @@ export async function GET(request: Request) {
     return Response.json(result);
   } catch {
     return Response.json(
-      { error: "paper database unavailable" },
+      { error: "papers database unavailable" },
       { status: 502 }
     );
   }

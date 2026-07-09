@@ -51,10 +51,10 @@ export type RagFilters = {
   subjects?: string[];
   keywords?: string[];
   affiliations?: string[];
-  types?: string[]; // record types (article/book/…) — used by the Paper Database, not chat chips
+  types?: string[]; // record types (article/book/…) — used by the Papers Database, not chat chips
 };
 
-// ── Paper Database (/papers) shapes ──────────────────────────────────────────
+// ── Papers Database (/papers) shapes ──────────────────────────────────────────
 
 export type PaperAuthor = { family?: string; given?: string };
 

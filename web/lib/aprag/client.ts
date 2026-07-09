@@ -162,7 +162,7 @@ export type Facets = {
   subjects: string[];
   keywords: string[];
   affiliations: string[];
-  types?: string[]; // optional: absent from a query server predating the Paper Database
+  types?: string[]; // optional: absent from a query server predating the Papers Database
 };
 
 // GET /facets — distinct filter values (authors/journals/...) for the filter autocomplete.
@@ -193,7 +193,7 @@ export async function getFacetsCached(): Promise<Facets | null> {
   }
 }
 
-// ── Paper Database (browse + deep search) ─────────────────────────────────────
+// ── Papers Database (browse + deep search) ─────────────────────────────────────
 
 export type PaperListParams = {
   q?: string;
@@ -289,7 +289,7 @@ export async function getPaper(filename: string): Promise<PaperDetail> {
   return (await res.json()) as PaperDetail;
 }
 
-// POST /search — semantic chunk search folded into ranked papers (the Paper Database's
+// POST /search — semantic chunk search folded into ranked papers (the Papers Database's
 // deep-search tier), honoring the same metadata filters as browsing.
 export async function searchPapersRanked(params: {
   question: string;

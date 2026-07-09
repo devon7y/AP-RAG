@@ -1,6 +1,6 @@
 import type { PaperAuthor, PaperRow, RagFilters } from "@/lib/aprag/types";
 
-// Pure helpers for the Paper Database page: URL ⇄ state serialization (the URL is the
+// Pure helpers for the Papers Database page: URL ⇄ state serialization (the URL is the
 // single source of truth, so filtered/sorted views are shareable), display formatting,
 // and a plain fetcher (the API routes return `{error}` bodies, not ChatbotError codes).
 

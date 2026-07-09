@@ -2,7 +2,7 @@ import { auth } from "@/app/(auth)/auth";
 import { searchPapersRanked } from "@/lib/aprag/client";
 import type { RagFilters } from "@/lib/aprag/types";
 
-// Paper Database deep search: semantic chunk search folded into ranked papers
+// Papers Database deep search: semantic chunk search folded into ranked papers
 // (the query server's POST /search), honoring the same metadata filters as browsing.
 
 const MAX_QUESTION_CHARS = 2000;
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
     return Response.json(result);
   } catch {
     return Response.json(
-      { error: "paper database unavailable" },
+      { error: "papers database unavailable" },
       { status: 502 }
     );
   }

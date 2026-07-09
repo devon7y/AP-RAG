@@ -138,11 +138,11 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                   <SidebarMenuButton
                     asChild
                     className="h-8 rounded-lg text-[13px] text-sidebar-foreground/70 transition-colors duration-150 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                    tooltip="Paper Database — browse, sort, and filter every paper in the corpus"
+                    tooltip="Papers Database — browse, sort, and filter every paper in the corpus"
                   >
                     <Link href="/papers" onClick={() => setOpenMobile(false)}>
                       <DatabaseIcon className="size-4" />
-                      <span className="font-medium">Paper Database</span>
+                      <span className="font-medium">Papers Database</span>
                     </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>

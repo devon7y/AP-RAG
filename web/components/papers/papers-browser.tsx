@@ -44,7 +44,7 @@ const BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
 type DeepResult = { papers: RankedPaper[]; matched_files: number | null };
 
-// The Paper Database page: a server-driven table over the papers manifest with a
+// The Papers Database page: a server-driven table over the papers manifest with a
 // two-tier universal search. All view state (search, filters, sort, page) lives in the
 // URL, so any view is shareable and the back button walks through view changes.
 export function PapersBrowser() {
@@ -176,7 +176,7 @@ export function PapersBrowser() {
       <header className="flex items-center gap-2 px-3 py-2 md:px-4">
         <SidebarToggle />
         <DatabaseIcon className="size-4 text-muted-foreground" />
-        <h1 className="font-semibold text-sm">Paper Database</h1>
+        <h1 className="font-semibold text-sm">Papers Database</h1>
         {!deepMode && total > 0 && (
           <span className="text-muted-foreground text-xs">
             {total.toLocaleString()} papers
@@ -204,7 +204,7 @@ export function PapersBrowser() {
 
       {error && (
         <div className="border-border/60 border-b bg-destructive/10 px-4 py-2 text-destructive text-sm">
-          Paper database unreachable — the backend may be offline. Retry in a
+          Papers database unreachable — the backend may be offline. Retry in a
           moment.
         </div>
       )}

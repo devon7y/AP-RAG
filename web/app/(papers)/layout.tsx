@@ -7,7 +7,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { auth } from "../(auth)/auth";
 
 // Same sidebar shell as the chat layout, but rendering the route's own page instead of
-// ChatShell — full-page experiences (the Paper Database) that keep the app sidebar.
+// ChatShell — full-page experiences (the Papers Database) that keep the app sidebar.
 export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <Suspense fallback={<div className="flex h-dvh bg-sidebar" />}>

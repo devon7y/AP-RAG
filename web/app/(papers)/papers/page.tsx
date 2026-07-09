@@ -3,7 +3,7 @@ import { Suspense } from "react";
 import { PapersBrowser } from "@/components/papers/papers-browser";
 
 export const metadata: Metadata = {
-  title: "Paper Database — AP-RAG",
+  title: "Papers Database — AP-RAG",
   description:
     "Browse, sort, filter, and search every paper in the AP-RAG corpus.",
 };
