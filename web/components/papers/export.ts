@@ -5,7 +5,7 @@ import { apiListQueryString, type PapersQuery, paperFetcher } from "./lib";
 // Client-side export of the CURRENT filtered set (browse mode pages through the API;
 // deep mode exports the ranked list already in memory).
 
-const PAGE = 500; // server max per request
+const PAGE = 1000; // server max per request
 const EXPORT_CAP = 10_000; // corpus is ~10k; guard against runaway loops all the same
 
 export async function fetchAllRows(

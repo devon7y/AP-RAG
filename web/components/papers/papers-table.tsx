@@ -6,6 +6,7 @@ import {
   ArrowUpIcon,
   ExternalLinkIcon,
 } from "lucide-react";
+import type React from "react";
 import type { PaperRow, RankedPaper } from "@/lib/aprag/types";
 import { cn } from "@/lib/utils";
 import { Badge } from "../ui/badge";
@@ -19,7 +20,10 @@ import {
 } from "./lib";
 
 // Column model. `sort` names the server sort key a header click drives; columns without
-// one are unsortable. Visibility is toggled from the toolbar (title is always shown).
+// one are unsortable. `width` is the default px width — the user can drag the header
+// edge to resize (persisted), and visibility is toggled from the toolbar (title always
+// shows). The table uses fixed layout, so widths are exact and the row scrolls
+// horizontally inside its container when the sum exceeds the viewport.
 export type ColumnId =
   | "title"
   | "authors"
@@ -39,79 +43,53 @@ export const COLUMNS: {
   label: string;
   sort?: string;
   defaultVisible: boolean;
-  className: string;
+  width: number;
 }[] = [
   {
     id: "title",
     label: "Title",
     sort: "title",
     defaultVisible: true,
-    className: "min-w-[20rem]",
+    width: 340,
   },
   {
     id: "authors",
     label: "Authors",
     sort: "first_author",
     defaultVisible: true,
-    className: "min-w-[9rem]",
+    width: 150,
   },
-  {
-    id: "year",
-    label: "Year",
-    sort: "year",
-    defaultVisible: true,
-    className: "w-16",
-  },
+  { id: "year", label: "Year", sort: "year", defaultVisible: true, width: 64 },
   {
     id: "date",
     label: "Date",
     sort: "date",
     defaultVisible: false,
-    className: "w-24",
+    width: 100,
   },
   {
     id: "journal",
     label: "Journal",
     sort: "journal",
     defaultVisible: true,
-    className: "min-w-[12rem]",
+    width: 200,
   },
-  {
-    id: "volisspp",
-    label: "Vol(Iss), pp",
-    defaultVisible: false,
-    className: "min-w-[7rem]",
-  },
-  { id: "type", label: "Type", defaultVisible: false, className: "w-20" },
-  { id: "doi", label: "DOI", defaultVisible: true, className: "min-w-[8rem]" },
-  {
-    id: "publisher",
-    label: "Publisher",
-    defaultVisible: false,
-    className: "min-w-[10rem]",
-  },
-  {
-    id: "keywords",
-    label: "Keywords",
-    defaultVisible: false,
-    className: "min-w-[12rem]",
-  },
-  {
-    id: "subjects",
-    label: "Subjects",
-    defaultVisible: false,
-    className: "min-w-[12rem]",
-  },
-  { id: "source", label: "Source", defaultVisible: false, className: "w-20" },
+  { id: "volisspp", label: "Vol(Iss), pp", defaultVisible: false, width: 120 },
+  { id: "type", label: "Type", defaultVisible: false, width: 88 },
+  { id: "doi", label: "DOI", defaultVisible: true, width: 160 },
+  { id: "publisher", label: "Publisher", defaultVisible: false, width: 160 },
+  { id: "keywords", label: "Keywords", defaultVisible: false, width: 240 },
+  { id: "subjects", label: "Subjects", defaultVisible: false, width: 240 },
+  { id: "source", label: "Source", defaultVisible: false, width: 90 },
 ];
+
+const MIN_COL_WIDTH = 56;
 
 export function defaultColumnVisibility(): Record<ColumnId, boolean> {
   return Object.fromEntries(
     COLUMNS.map((c) => [c.id, c.defaultVisible])
   ) as Record<ColumnId, boolean>;
 }
-
-const CHIP_LIMIT = 2;
 
 function ChipList({
   values,
@@ -127,10 +105,10 @@ function ChipList({
   }
   return (
     <span className="flex flex-wrap gap-1">
-      {values.slice(0, CHIP_LIMIT).map((v) => (
+      {values.map((v) => (
         <Badge
           asChild
-          className="max-w-[10rem] cursor-pointer font-normal"
+          className="max-w-[14rem] cursor-pointer font-normal transition-colors hover:bg-accent hover:text-accent-foreground"
           key={v}
           variant="outline"
         >
@@ -146,55 +124,85 @@ function ChipList({
           </button>
         </Badge>
       ))}
-      {values.length > CHIP_LIMIT && (
-        <span className="text-muted-foreground text-xs">
-          +{values.length - CHIP_LIMIT}
-        </span>
-      )}
     </span>
   );
 }
 
 function HeaderCell({
   label,
+  columnId,
   sortKey,
   activeSort,
   order,
+  width,
   onSort,
-  className,
+  onResize,
 }: {
   label: string;
+  columnId: ColumnId;
   sortKey?: string;
   activeSort: string;
   order: SortOrder;
+  width: number;
   onSort: (key: string) => void;
-  className: string;
+  onResize: (id: ColumnId, px: number) => void;
 }) {
-  if (!sortKey) {
-    return (
-      <th className={cn("px-3 py-2 text-left font-medium", className)}>
-        {label}
-      </th>
-    );
-  }
-  const isActive = activeSort === sortKey;
-  let Icon = ArrowUpDownIcon;
-  if (isActive) {
-    Icon = order === "asc" ? ArrowUpIcon : ArrowDownIcon;
-  }
-  return (
-    <th className={cn("px-3 py-2 text-left font-medium", className)}>
+  const startResize = (e: React.PointerEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = width;
+    const target = e.currentTarget;
+    target.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => {
+      onResize(
+        columnId,
+        Math.max(MIN_COL_WIDTH, Math.round(startWidth + ev.clientX - startX))
+      );
+    };
+    const up = () => {
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", up);
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", up);
+  };
+
+  let sortControl: React.ReactNode = label;
+  if (sortKey) {
+    const isActive = activeSort === sortKey;
+    let Icon = ArrowUpDownIcon;
+    if (isActive) {
+      Icon = order === "asc" ? ArrowUpIcon : ArrowDownIcon;
+    }
+    sortControl = (
       <button
         className={cn(
-          "inline-flex items-center gap-1 hover:text-foreground",
+          "inline-flex max-w-full items-center gap-1 hover:text-foreground",
           isActive ? "text-foreground" : "text-muted-foreground"
         )}
         onClick={() => onSort(sortKey)}
         type="button"
       >
-        {label}
-        <Icon className={cn("size-3", !isActive && "opacity-50")} />
+        <span className="truncate">{label}</span>
+        <Icon className={cn("size-3 shrink-0", !isActive && "opacity-50")} />
       </button>
+    );
+  }
+
+  return (
+    <th
+      className="relative overflow-hidden px-3 py-2 text-left font-medium"
+      style={{ width }}
+    >
+      {sortControl}
+      <button
+        aria-label={`Resize ${label} column`}
+        className="absolute inset-y-0 right-0 w-1.5 cursor-col-resize touch-none border-0 bg-transparent p-0 hover:bg-primary/30 active:bg-primary/40"
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={startResize}
+        type="button"
+      />
     </th>
   );
 }
@@ -202,9 +210,11 @@ function HeaderCell({
 export function PapersTable({
   rows,
   visible,
+  widths,
   sort,
   order,
   onSort,
+  onResizeColumn,
   onOpen,
   onAddFilter,
   deepMode,
@@ -212,9 +222,11 @@ export function PapersTable({
 }: {
   rows: (PaperRow | RankedPaper)[];
   visible: Record<ColumnId, boolean>;
+  widths: Partial<Record<ColumnId, number>>;
   sort: string;
   order: SortOrder;
   onSort: (key: string) => void;
+  onResizeColumn: (id: ColumnId, px: number) => void;
   onOpen: (filename: string) => void;
   onAddFilter: (dim: ListFilterKey, value: string) => void;
   deepMode: boolean;
@@ -224,22 +236,29 @@ export function PapersTable({
 
   return (
     <div className="min-h-0 flex-1 overflow-auto">
-      <table className="w-full border-collapse text-[13px]">
+      <table className="min-w-full table-fixed border-collapse text-[13px]">
         <thead className="sticky top-0 z-10 bg-background shadow-[inset_0_-1px_0_0_var(--border)]">
           <tr>
             {deepMode && (
-              <th className="w-20 px-3 py-2 text-left font-medium">Match</th>
+              <th
+                className="px-3 py-2 text-left font-medium"
+                style={{ width: 80 }}
+              >
+                Match
+              </th>
             )}
             {columns.map((c) => (
               <HeaderCell
                 activeSort={sort}
-                className={c.className}
+                columnId={c.id}
                 key={c.id}
                 label={c.label}
+                onResize={onResizeColumn}
                 onSort={onSort}
-                // Relevance order is fixed in deep mode — header sorting is browse-only.
                 order={order}
+                // Relevance order is fixed in deep mode — header sorting is browse-only.
                 sortKey={deepMode ? undefined : c.sort}
+                width={widths[c.id] ?? c.width}
               />
             ))}
           </tr>
@@ -266,7 +285,7 @@ export function PapersTable({
                   </td>
                 )}
                 {columns.map((c) => (
-                  <td className={cn("px-3 py-2", c.className)} key={c.id}>
+                  <td className="overflow-hidden px-3 py-2" key={c.id}>
                     <Cell
                       column={c.id}
                       deepMode={deepMode}
@@ -285,7 +304,7 @@ export function PapersTable({
         <div className="flex flex-col items-center gap-1 py-16 text-center text-muted-foreground text-sm">
           <p>No papers match.</p>
           <p className="text-xs">
-            Try fewer filters, or press Enter for a semantic deep search.
+            Try fewer filters, or press Enter for a semantic search.
           </p>
         </div>
       )}
@@ -328,7 +347,7 @@ function Cell({
     }
     case "authors":
       return (
-        <span title={fullAuthorList(row.authors)}>
+        <span className="block truncate" title={fullAuthorList(row.authors)}>
           {compactAuthors(row.authors)}
         </span>
       );
@@ -339,7 +358,11 @@ function Cell({
     case "journal":
       return <span className="line-clamp-2">{row.container_title}</span>;
     case "volisspp":
-      return <span className="tabular-nums">{volIssuePages(row)}</span>;
+      return (
+        <span className="block truncate tabular-nums">
+          {volIssuePages(row)}
+        </span>
+      );
     case "type":
       return <span className="capitalize">{row.type}</span>;
     case "doi":

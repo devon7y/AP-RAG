@@ -16,7 +16,7 @@ export type PapersQuery = {
   filters: RagFilters | null;
 };
 
-export const PER_CHOICES = [25, 50, 100, 200] as const;
+export const PER_CHOICES = [25, 50, 100, 200, 500, 1000] as const;
 
 export const DEFAULT_QUERY: PapersQuery = {
   q: "",
@@ -24,7 +24,7 @@ export const DEFAULT_QUERY: PapersQuery = {
   sort: "year",
   order: "desc",
   page: 0,
-  per: 50,
+  per: 100,
   filters: null,
 };
 

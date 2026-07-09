@@ -686,7 +686,7 @@ def list_papers(
     sort: str = "year",
     order: str = "desc",
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=500),
+    limit: int = Query(default=50, ge=1, le=1000),
     authors: list[str] | None = Query(default=None),
     journals: list[str] | None = Query(default=None),
     subjects: list[str] | None = Query(default=None),

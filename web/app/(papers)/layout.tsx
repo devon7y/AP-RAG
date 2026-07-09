@@ -29,7 +29,9 @@ async function SidebarShell({ children }: { children: React.ReactNode }) {
   return (
     <SidebarProvider defaultOpen={!isCollapsed}>
       <AppSidebar user={session?.user} />
-      <SidebarInset>
+      {/* min-w-0: let the inset shrink below its content's intrinsic width, so a wide
+          table scrolls inside its own container instead of stretching the page. */}
+      <SidebarInset className="min-w-0">
         <Toaster
           position="top-center"
           theme="system"

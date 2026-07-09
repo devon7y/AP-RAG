@@ -240,7 +240,7 @@ function TermChips({
         {values.map((v) => (
           <Badge
             asChild
-            className="cursor-pointer font-normal"
+            className="cursor-pointer font-normal transition-colors hover:bg-accent hover:text-accent-foreground"
             key={v}
             variant="outline"
           >

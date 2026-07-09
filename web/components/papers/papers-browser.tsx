@@ -102,6 +102,10 @@ export function PapersBrowser() {
     () => ({ ...defaultColumnVisibility(), ...storedColumns }),
     [storedColumns]
   );
+  // User-dragged column widths (px), persisted; unset columns use their defaults.
+  const [colWidths, setColWidths] = useLocalStorage<
+    Partial<Record<ColumnId, number>>
+  >("aprag:papers:colwidths", {});
 
   const [openFilename, setOpenFilename] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -210,11 +214,15 @@ export function PapersBrowser() {
         isLoading={isLoading}
         onAddFilter={onAddFilter}
         onOpen={setOpenFilename}
+        onResizeColumn={(id, px) =>
+          setColWidths((prev) => ({ ...prev, [id]: px }))
+        }
         onSort={onSort}
         order={query.order}
         rows={rows}
         sort={query.sort}
         visible={visible}
+        widths={colWidths}
       />
 
       <footer className="flex flex-wrap items-center justify-between gap-2 border-border/60 border-t px-3 py-2 md:px-4">

@@ -6,7 +6,6 @@ import {
   FilterIcon,
   Loader2Icon,
   SearchIcon,
-  SparklesIcon,
   XIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -106,7 +105,7 @@ export function PapersToolbar({
           <SearchIcon className="-translate-y-1/2 absolute top-1/2 left-2.5 size-4 text-muted-foreground" />
           <Input
             autoComplete="off"
-            className="h-9 pr-16 pl-8"
+            className={cn("h-9 pl-8", text.trim() ? "pr-24 sm:pr-56" : "pr-9")}
             onChange={(e) => changeText(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
@@ -119,36 +118,36 @@ export function PapersToolbar({
                 clear();
               }
             }}
-            placeholder="Search title, author, journal, DOI… — press Enter for semantic deep search"
+            placeholder="Search title, author, journal, DOI… — press Enter for semantic search"
             value={text}
           />
-          {(text || deep) && (
-            <button
-              aria-label="Clear search"
-              className="-translate-y-1/2 absolute top-1/2 right-2 rounded-sm p-1 text-muted-foreground hover:text-foreground"
-              onClick={clear}
-              type="button"
-            >
-              <XIcon className="size-4" />
-            </button>
-          )}
+          <div className="-translate-y-1/2 absolute top-1/2 right-2 flex items-center gap-1.5">
+            {deepLoading && (
+              <Loader2Icon className="size-4 animate-spin text-muted-foreground" />
+            )}
+            {!deepLoading && text.trim() && (
+              <span
+                className="hidden items-center gap-1 text-[11px] text-muted-foreground sm:flex"
+                title="Semantic search over the papers' text — finds papers even when you don't remember exact details"
+              >
+                <kbd className="rounded border border-border bg-muted px-1 py-px font-sans">
+                  Enter
+                </kbd>
+                for semantic search
+              </span>
+            )}
+            {(text || deep) && (
+              <button
+                aria-label="Clear search"
+                className="rounded-sm p-1 text-muted-foreground hover:text-foreground"
+                onClick={clear}
+                type="button"
+              >
+                <XIcon className="size-4" />
+              </button>
+            )}
+          </div>
         </div>
-
-        <Button
-          className="h-9"
-          disabled={!text.trim() || deepLoading}
-          onClick={() => onDeepSearch(text.trim())}
-          title="Semantic search over the papers' text — finds papers even when you don't remember exact details"
-          type="button"
-          variant="outline"
-        >
-          {deepLoading ? (
-            <Loader2Icon className="size-4 animate-spin" />
-          ) : (
-            <SparklesIcon className="size-4" />
-          )}
-          Deep search
-        </Button>
 
         <FiltersPopover
           filters={filters}

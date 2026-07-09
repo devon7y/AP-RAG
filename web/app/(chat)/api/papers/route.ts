@@ -15,7 +15,7 @@ const LIST_KEYS = [
   "types",
 ] as const;
 
-const MAX_LIMIT = 500;
+const MAX_LIMIT = 1000;
 
 export async function GET(request: Request) {
   const session = await auth();
