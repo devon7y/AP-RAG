@@ -6,6 +6,7 @@ import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import type { WorldData } from "./derive";
+import type { PlanePose } from "./PlaneLayer";
 import { useWorld, warpHome } from "./store";
 import { uMorph } from "./uniforms";
 
@@ -35,9 +36,12 @@ interface Tween {
 
 export default function CameraRig({
   getRoverPos,
+  getPlanePose,
 }: {
   /** current rover world position (or null when the radio is off) */
   getRoverPos: () => THREE.Vector3 | null;
+  /** current 747 pose (or null when it isn't flying) */
+  getPlanePose: () => PlanePose | null;
 }) {
   const controls = useRef<OrbitControlsImpl>(null);
   const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
@@ -45,6 +49,10 @@ export default function CameraRig({
   const tween = useRef<Tween | null>(null);
   const baseFov = useRef<number | null>(null);
   const followTmp = useMemo(() => new THREE.Vector3(), []);
+  const chaseFwd = useMemo(() => new THREE.Vector3(), []);
+  const chasePos = useMemo(() => new THREE.Vector3(), []);
+  const chaseTgt = useMemo(() => new THREE.Vector3(), []);
+  const chasing = useRef(false);
 
   // the idle orbit stops for good the moment the user moves the camera
   useEffect(() => {
@@ -126,8 +134,30 @@ export default function CameraRig({
       return;
     }
 
-    // rover follow
+    // 747 chase cam — sit behind and above the jet, look past its nose
     const st = useWorld.getState();
+    const plane = getPlanePose();
+    if (plane && st.planeOn && st.planeFollow) {
+      chaseFwd.set(0, 0, 1).applyQuaternion(plane.quat);
+      chasePos
+        .copy(plane.pos)
+        .addScaledVector(chaseFwd, -14)
+        .addScaledVector(UP, 5);
+      camera.position.lerp(chasePos, 1 - Math.exp(-3.2 * dt));
+      if (camera.position.y < 1.6) camera.position.y = 1.6;
+      chaseTgt.copy(plane.pos).addScaledVector(chaseFwd, 6);
+      ctl.target.lerp(chaseTgt, 1 - Math.exp(-5 * dt));
+      if (ctl.enabled) ctl.enabled = false;
+      chasing.current = true;
+      ctl.update();
+      return;
+    }
+    if (chasing.current) {
+      chasing.current = false;
+      ctl.enabled = true;
+    }
+
+    // rover follow
     if (st.radioOn && st.radioFollow) {
       const rover = getRoverPos();
       if (rover) {

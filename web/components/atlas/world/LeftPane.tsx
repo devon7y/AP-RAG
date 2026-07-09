@@ -9,6 +9,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   PenLine,
+  Plane,
   Radio,
   RotateCcw,
   Shuffle,
@@ -57,6 +58,7 @@ const INSTRUMENTS: { key: Instrument; icon: React.ReactNode; label: string }[] =
   { key: "ghosts", icon: <CircleDashed className="size-4" />, label: "Research gaps" },
   { key: "draft", icon: <PenLine className="size-4" />, label: "Drop a draft" },
   { key: "radio", icon: <Radio className="size-4" />, label: "Radio" },
+  { key: "plane", icon: <Plane className="size-4" />, label: "Boeing 747" },
   { key: "game", icon: <Trophy className="size-4" />, label: "Semantle" },
 ];
 
@@ -146,6 +148,7 @@ export default function LeftPane({
           {instrument === "ghosts" && <GhostsPanel data={data} />}
           {instrument === "draft" && <DraftPanel data={data} corpus={corpus} />}
           {instrument === "radio" && <RadioPanel data={data} corpus={corpus} />}
+          {instrument === "plane" && <PlanePanel />}
           {instrument === "game" && <GamePanel data={data} authors={authors} />}
         </section>
       )}
@@ -871,6 +874,106 @@ function RadioPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------------- the 747 ---------------- */
+
+function PlanePanel() {
+  const planeOn = useWorld((s) => s.planeOn);
+  const planeFollow = useWorld((s) => s.planeFollow);
+  const set = useWorld((s) => s.set);
+  const setView = useWorld((s) => s.setView);
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <H>Boeing 747</H>
+        <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+          Spawn a jumbo jet over the landscape and fly it yourself. Put it into
+          a mountainside and the fireball opens the nearest paper&apos;s card —
+          literature review by air disaster.
+        </p>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => {
+          if (planeOn) {
+            set("planeOn", false);
+          } else {
+            setView("atlas"); // the runway is the landscape, not the galaxy
+            set("autoRotate", false);
+            set("planeOn", true);
+          }
+        }}
+        className={`w-full rounded-md border px-3 py-2 text-[11px] tracking-widest uppercase transition-colors ${
+          planeOn
+            ? "border-[#d03b3b] text-[#d03b3b]"
+            : "border-[#3987e5]/70 text-[#3987e5]"
+        }`}
+      >
+        {planeOn ? "◼ eject" : "✈ take off"}
+      </button>
+
+      <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-2">
+        <input
+          type="checkbox"
+          checked={planeFollow}
+          onChange={() => set("planeFollow", !planeFollow)}
+          className="h-3 w-3 accent-[#3987e5]"
+        />
+        chase camera
+      </label>
+
+      <div>
+        <p className="text-[11px] text-ink-2">Controls</p>
+        <ul className="mt-1.5 space-y-1 text-[11px] text-ink-3">
+          <li>
+            <code className="text-ink-2">W / ↑</code> climb ·{" "}
+            <code className="text-ink-2">S / ↓</code> dive
+          </li>
+          <li>
+            <code className="text-ink-2">A / ←</code> bank left ·{" "}
+            <code className="text-ink-2">D / →</code> bank right
+          </li>
+          <li>
+            <code className="text-ink-2">Shift</code> throttle up ·{" "}
+            <code className="text-ink-2">Ctrl</code> throttle down
+          </li>
+          <li>
+            <code className="text-ink-2">Esc</code> eject
+          </li>
+        </ul>
+      </div>
+
+      <p className="text-[10px] leading-relaxed text-ink-3">
+        Crashing selects the paper beacon nearest the wreck, exactly as
+        clicking it would.
+      </p>
+
+      <p className="border-t hairline pt-2 text-[10px] leading-relaxed text-ink-3">
+        Aircraft:{" "}
+        <a
+          href="https://sketchfab.com/3d-models/boeing-747-400-4c0c7664e4ea4e248311c8ba93fe3b20"
+          target="_blank"
+          rel="noreferrer"
+          className="underline decoration-dotted hover:text-ink-2"
+        >
+          “Boeing 747-400”
+        </a>{" "}
+        by Jonne Okkonen,{" "}
+        <a
+          href="https://creativecommons.org/licenses/by-sa/4.0/"
+          target="_blank"
+          rel="noreferrer"
+          className="underline decoration-dotted hover:text-ink-2"
+        >
+          CC BY-SA 4.0
+        </a>{" "}
+        (recompressed).
+      </p>
     </div>
   );
 }

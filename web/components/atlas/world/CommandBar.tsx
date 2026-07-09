@@ -122,6 +122,7 @@ export default function CommandBar({
         const st = useWorld.getState();
         const hadSomething =
           st.planting ||
+          st.planeOn ||
           st.radioOn ||
           st.searchHits !== null ||
           st.selection !== null ||
@@ -139,6 +140,7 @@ export default function CommandBar({
           st.set("paneOpen", false);
         }
         st.set("planting", false);
+        st.set("planeOn", false);
         st.setSearch("", null);
         st.clearLens(); // also closes an open author card
         st.select(null);

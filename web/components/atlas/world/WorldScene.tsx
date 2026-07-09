@@ -25,6 +25,7 @@ import InspectorPanel from "./InspectorPanel";
 import Labels from "./Labels";
 import LeftPane from "./LeftPane";
 import PaperBeacons from "./PaperBeacons";
+import PlaneLayer, { type PlanePose } from "./PlaneLayer";
 import RoverLayer, { useRover } from "./RoverLayer";
 import SkyLayer from "./SkyLayer";
 import { useWorld, type PlantedGhost } from "./store";
@@ -419,6 +420,11 @@ function World({
     () => ({ current: null }),
     [],
   );
+  const planePoseRef = useMemo<{ current: PlanePose | null }>(
+    () => ({ current: null }),
+    [],
+  );
+  const planeOn = useWorld((s) => s.planeOn);
   const ghostSites = useGhostSites(data);
 
   if (!corpus || !constellations) return null;
@@ -440,13 +446,17 @@ function World({
         {instrument === "draft" && <DraftLayer data={data} />}
         <ArcLayer data={data} />
         <RoverLayer data={data} roverPosRef={roverPosRef} />
+        <PlaneLayer data={data} poseRef={planePoseRef} />
         <TrailsLayer data={data} corpus={corpus} authors={authors} />
         <Labels data={data} />
         <WorldPicker
           data={data}
           ghostSites={instrument === "ghosts" ? ghostSites : []}
         />
-        <CameraRig getRoverPos={() => roverPosRef.current} />
+        <CameraRig
+          getRoverPos={() => roverPosRef.current}
+          getPlanePose={() => planePoseRef.current}
+        />
       </HDRCanvas>
 
       {/* chrome */}
@@ -470,6 +480,12 @@ function World({
         paperMeta={paperMeta}
         constellations={constellations}
       />
+
+      {planeOn && (
+        <p className="hud-panel pointer-events-none absolute bottom-4 left-1/2 z-40 -translate-x-1/2 px-3 py-1.5 text-[11px] text-ink-3">
+          ✈ W/↑ climb · S/↓ dive · A/D bank · Shift boost · Ctrl slow · Esc eject
+        </p>
+      )}
 
       <p className="pointer-events-none absolute right-5 bottom-4 z-40 hidden text-[11px] text-ink-3 sm:block">
         drag to orbit · ctrl+drag to pan · scroll to zoom · click to inspect ·

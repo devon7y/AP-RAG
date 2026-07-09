@@ -22,6 +22,7 @@ export type Instrument =
   | "ghosts"
   | "draft"
   | "radio"
+  | "plane"
   | "game";
 
 export type Selection =
@@ -181,6 +182,10 @@ interface WorldState {
   radioFollow: boolean;
   radioSentence: string | null;
 
+  // the 747 (crash-to-read)
+  planeOn: boolean;
+  planeFollow: boolean;
+
   // semantle (daily passage → first author)
   gamePings: GamePing[];
   /** today's passage chunk idx — pulses on the map */
@@ -256,6 +261,9 @@ export const useWorld = create<WorldState>((set) => ({
   radioBias: 0,
   radioFollow: true,
   radioSentence: null,
+
+  planeOn: false,
+  planeFollow: true,
 
   gamePings: [],
   gameChunk: null,
