@@ -177,12 +177,14 @@ export default function CameraRig({
       shake.current *= Math.exp(-2.6 * dt);
     }
 
-    // 747 chase cam — FULLY manual, bypassing OrbitControls. We never call
-    // ctl.update() here: it re-derives the camera from spherical coords around
-    // the target, which fights a follow-cam and makes the plane jitter/drift.
-    // drei only auto-updates when ctl.enabled, so disabling it hands us the
-    // camera outright. Position eases in; the look-at is rigid on the plane so
-    // the jet stays pinned dead-center no matter how fast it moves.
+    // 747 chase cam — FULLY manual and RIGID, bypassing OrbitControls. The
+    // camera is an exact offset from the plane's transform with ZERO time-
+    // based smoothing, so it cannot lag or snap on a frame-rate spike (an
+    // eased follow drifted its distance during lag spikes, which read as
+    // jitter). The plane's own motion is smooth, so a camera bolted to it is
+    // rock-steady. We never call ctl.update() (it re-derives the camera from
+    // spherical coords and fights a follow-cam); drei only auto-updates when
+    // ctl.enabled, so disabling it hands us the camera outright.
     const st = useWorld.getState();
     const plane = getPlanePose();
     if (plane && st.planeOn && st.planeFollow) {
@@ -191,12 +193,12 @@ export default function CameraRig({
         .copy(plane.pos)
         .addScaledVector(chaseFwd, -CHASE.back)
         .addScaledVector(UP, CHASE.up);
-      camera.position.lerp(chasePos, 1 - Math.exp(-16 * dt));
+      camera.position.copy(chasePos); // rigid — no lerp, frame-rate independent
       if (camera.position.y < 0.06) camera.position.y = 0.06;
       chaseTgt.copy(plane.pos).addScaledVector(chaseFwd, CHASE.ahead);
       ctl.target.copy(chaseTgt); // keep synced so the eject handoff is smooth
       camera.up.set(0, 1, 0);
-      camera.lookAt(chaseTgt); // rigid aim — no orbit math, no oscillation
+      camera.lookAt(chaseTgt); // rigid aim
       ctl.enabled = false;
       // hugging the tail — pull the near-clip plane in so it doesn't slice
       // through the fuselage (restored by the teardown when the chase ends)
