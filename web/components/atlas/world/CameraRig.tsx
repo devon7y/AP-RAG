@@ -164,13 +164,19 @@ export default function CameraRig({
         .copy(plane.pos)
         .addScaledVector(chaseFwd, -CHASE.back)
         .addScaledVector(UP, CHASE.up);
-      camera.position.lerp(chasePos, 1 - Math.exp(-6 * dt));
-      if (camera.position.y < 0.12) camera.position.y = 0.12;
+      camera.position.lerp(chasePos, 1 - Math.exp(-9 * dt));
+      if (camera.position.y < 0.06) camera.position.y = 0.06;
       chaseTgt.copy(plane.pos).addScaledVector(chaseFwd, CHASE.ahead);
-      ctl.target.lerp(chaseTgt, 1 - Math.exp(-9 * dt));
+      ctl.target.lerp(chaseTgt, 1 - Math.exp(-12 * dt));
       if (ctl.enabled) ctl.enabled = false;
-      ctl.minDistance = 0.3;
+      ctl.minDistance = 0.02;
       ctl.maxPolarAngle = Math.PI;
+      // hugging the tail — pull the near-clip plane in so it doesn't slice
+      // through the fuselage (restored the moment the chase ends)
+      if (camera.near !== 0.01) {
+        camera.near = 0.01;
+        camera.updateProjectionMatrix();
+      }
       chasing.current = true;
       ctl.update();
       return;
@@ -179,6 +185,8 @@ export default function CameraRig({
       chasing.current = false;
       ctl.enabled = true;
       ctl.minDistance = 3; // restore the resting orbit constraint
+      camera.near = 0.1; // restore the atlas's default near-clip
+      camera.updateProjectionMatrix();
     }
 
     // rover follow

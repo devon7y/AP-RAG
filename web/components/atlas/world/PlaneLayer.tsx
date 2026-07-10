@@ -53,9 +53,10 @@ const SPAWN_RADIUS = 92; // the home orbit ring
 const SPAWN_ALT = 34;
 const TRAIL_N = 110;
 
-/** Chase-cam offsets (world units) — right on the tail, so the jet fills the
- *  frame and the landscape reads enormous. CameraRig shares these. */
-export const CHASE = { back: 0.42, up: 0.13, ahead: 0.29 };
+/** Chase-cam offsets (world units) — hugging the tail, so the jet fills the
+ *  frame and the landscape reads planetary. At this range CameraRig drops the
+ *  camera's near-clip plane so the tail doesn't slice through it. */
+export const CHASE = { back: 0.2, up: 0.065, ahead: 0.26 };
 
 /** GPWS trigger: below this AGL (display feet) the terrain alarm sounds. */
 const WARN_AGL_FT = 350;

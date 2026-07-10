@@ -53,65 +53,96 @@ export function startEngine(): EngineSound | null {
   master.connect(c.destination);
   master.gain.setTargetAtTime(0.9 * MASTER, c.currentTime, 0.6);
 
-  // turbine roar — broadband noise that opens up with N1
+  // deep rumble — the bass foundation of a huge turbofan. Low-passed noise
+  // with a resonant cutoff gives throaty body WITHOUT a tonal propeller buzz
+  // (it's noise, not an oscillator, so there's no blade-passing pitch).
+  const rumble = c.createBufferSource();
+  rumble.buffer = noise();
+  rumble.loop = true;
+  const rumbleLp = c.createBiquadFilter();
+  rumbleLp.type = "lowpass";
+  rumbleLp.frequency.value = 130;
+  rumbleLp.Q.value = 1.7;
+  const rumbleGain = c.createGain();
+  rumbleGain.gain.value = 0.14;
+  rumble.connect(rumbleLp).connect(rumbleGain).connect(master);
+
+  // sub weight — a very low sine for the chest-thump of 60,000 lbf of thrust
+  const sub = c.createOscillator();
+  sub.type = "sine";
+  sub.frequency.value = 44;
+  const subGain = c.createGain();
+  subGain.gain.value = 0.06;
+  sub.connect(subGain).connect(master);
+
+  // body roar — band-passed noise in the low-mid, bridges rumble and air
   const roar = c.createBufferSource();
   roar.buffer = noise();
   roar.loop = true;
   const roarBp = c.createBiquadFilter();
   roarBp.type = "bandpass";
-  roarBp.frequency.value = 700;
-  roarBp.Q.value = 0.45;
+  roarBp.frequency.value = 230;
+  roarBp.Q.value = 0.7;
   const roarGain = c.createGain();
-  roarGain.gain.value = 0.05;
+  roarGain.gain.value = 0.08;
   roar.connect(roarBp).connect(roarGain).connect(master);
 
-  // exhaust hiss — the jet's high white rush
+  // spool whine — a subtle shimmer far on top, NOT the dominant voice; kept
+  // low in both level and pitch so the engine never reads as a toy
+  const whineA = c.createOscillator();
+  whineA.type = "sine";
+  whineA.frequency.value = 520;
+  const whineB = c.createOscillator();
+  whineB.type = "sine";
+  whineB.frequency.value = 520 * 1.5;
+  const whineBGain = c.createGain();
+  whineBGain.gain.value = 0.4;
+  const whineGain = c.createGain();
+  whineGain.gain.value = 0.004;
+  whineA.connect(whineGain);
+  whineB.connect(whineBGain).connect(whineGain);
+  whineGain.connect(master);
+
+  // exhaust hiss — a thin layer of air over the top
   const hiss = c.createBufferSource();
   hiss.buffer = noise();
   hiss.loop = true;
   const hissHp = c.createBiquadFilter();
   hissHp.type = "highpass";
-  hissHp.frequency.value = 2600;
+  hissHp.frequency.value = 3400;
   const hissGain = c.createGain();
-  hissGain.gain.value = 0.01;
+  hissGain.gain.value = 0.004;
   hiss.connect(hissHp).connect(hissGain).connect(master);
 
-  // spool whine — thin tones far above any prop, with one harmonic
-  const whineA = c.createOscillator();
-  whineA.type = "sine";
-  whineA.frequency.value = 2100;
-  const whineB = c.createOscillator();
-  whineB.type = "sine";
-  whineB.frequency.value = 2100 * 1.52;
-  const whineBGain = c.createGain();
-  whineBGain.gain.value = 0.45;
-  const whineGain = c.createGain();
-  whineGain.gain.value = 0.006;
-  whineA.connect(whineGain);
-  whineB.connect(whineBGain).connect(whineGain);
-  whineGain.connect(master);
-
+  rumble.start();
+  sub.start();
   roar.start();
-  hiss.start();
   whineA.start();
   whineB.start();
+  hiss.start();
 
   let stopped = false;
   return {
     update(throttle, speed) {
       if (stopped) return;
       const t = c.currentTime;
-      roarGain.gain.setTargetAtTime(0.05 + 0.2 * throttle, t, 0.15);
-      roarBp.frequency.setTargetAtTime(650 + throttle * 900 + speed * 40, t, 0.2);
+      // the rumble & sub carry the mass — they grow most with throttle and
+      // stay deep (105–225 Hz), so spooling up reads as sheer power
+      rumbleGain.gain.setTargetAtTime(0.11 + 0.28 * throttle, t, 0.15);
+      rumbleLp.frequency.setTargetAtTime(105 + throttle * 120 + speed * 6, t, 0.2);
+      subGain.gain.setTargetAtTime(0.05 + 0.1 * throttle, t, 0.2);
+      sub.frequency.setTargetAtTime(40 + throttle * 22, t, 0.3);
+      roarGain.gain.setTargetAtTime(0.06 + 0.17 * throttle, t, 0.15);
+      roarBp.frequency.setTargetAtTime(200 + throttle * 240 + speed * 14, t, 0.2);
+      const f = 440 + throttle * 760;
+      whineA.frequency.setTargetAtTime(f, t, 0.35);
+      whineB.frequency.setTargetAtTime(f * 1.5, t, 0.35);
+      whineGain.gain.setTargetAtTime(0.003 + 0.008 * throttle, t, 0.2);
       hissGain.gain.setTargetAtTime(
-        0.008 + 0.05 * throttle + speed * 0.0015,
+        0.003 + 0.02 * throttle + speed * 0.001,
         t,
         0.15,
       );
-      const f = 1900 + throttle * 3300;
-      whineA.frequency.setTargetAtTime(f, t, 0.35);
-      whineB.frequency.setTargetAtTime(f * 1.52, t, 0.35);
-      whineGain.gain.setTargetAtTime(0.005 + 0.015 * throttle, t, 0.2);
     },
     stop() {
       if (stopped) return;
@@ -119,10 +150,12 @@ export function startEngine(): EngineSound | null {
       master.gain.setTargetAtTime(0, c.currentTime, 0.2);
       window.setTimeout(() => {
         try {
+          rumble.stop();
+          sub.stop();
           roar.stop();
-          hiss.stop();
           whineA.stop();
           whineB.stop();
+          hiss.stop();
           master.disconnect();
         } catch {
           /* already gone */
