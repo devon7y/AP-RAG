@@ -1,11 +1,13 @@
 "use client";
 
 /**
- * Procedural WebAudio for the 747 — no audio assets shipped. The engine is
- * filtered looping noise (turbine wash) over a detuned sawtooth pair (spool
- * whine + rumble); the crash is a lowpass-swept noise boom with a sub thump
- * and a crackle tail. Call primePlaneAudio() from a user gesture (the
- * take-off button) so the AudioContext is allowed to start.
+ * Procedural WebAudio for the 747 — no audio assets shipped. The engine is a
+ * turbofan, not a prop: a broadband turbine roar (bandpassed noise that opens
+ * with throttle), a high exhaust hiss (highpassed noise), and a thin spool
+ * whine way up at 2–5 kHz with a harmonic — no low sawtooth drone anywhere.
+ * The crash is a lowpass-swept noise boom with a sub thump and crackle tail.
+ * Call primePlaneAudio() from a user gesture (the take-off button) so the
+ * AudioContext is allowed to start.
  */
 
 let ctx: AudioContext | null = null;
@@ -51,35 +53,46 @@ export function startEngine(): EngineSound | null {
   master.connect(c.destination);
   master.gain.setTargetAtTime(0.9 * MASTER, c.currentTime, 0.6);
 
-  // turbine wash — bandpassed noise
-  const wash = c.createBufferSource();
-  wash.buffer = noise();
-  wash.loop = true;
-  const bp = c.createBiquadFilter();
-  bp.type = "bandpass";
-  bp.frequency.value = 320;
-  bp.Q.value = 0.6;
-  const washGain = c.createGain();
-  washGain.gain.value = 0.05;
-  wash.connect(bp).connect(washGain).connect(master);
+  // turbine roar — broadband noise that opens up with N1
+  const roar = c.createBufferSource();
+  roar.buffer = noise();
+  roar.loop = true;
+  const roarBp = c.createBiquadFilter();
+  roarBp.type = "bandpass";
+  roarBp.frequency.value = 700;
+  roarBp.Q.value = 0.45;
+  const roarGain = c.createGain();
+  roarGain.gain.value = 0.05;
+  roar.connect(roarBp).connect(roarGain).connect(master);
 
-  // spool whine — two detuned saws through a lowpass
+  // exhaust hiss — the jet's high white rush
+  const hiss = c.createBufferSource();
+  hiss.buffer = noise();
+  hiss.loop = true;
+  const hissHp = c.createBiquadFilter();
+  hissHp.type = "highpass";
+  hissHp.frequency.value = 2600;
+  const hissGain = c.createGain();
+  hissGain.gain.value = 0.01;
+  hiss.connect(hissHp).connect(hissGain).connect(master);
+
+  // spool whine — thin tones far above any prop, with one harmonic
   const whineA = c.createOscillator();
-  whineA.type = "sawtooth";
-  whineA.frequency.value = 62;
+  whineA.type = "sine";
+  whineA.frequency.value = 2100;
   const whineB = c.createOscillator();
-  whineB.type = "sawtooth";
-  whineB.frequency.value = 62 * 1.01;
-  const lp = c.createBiquadFilter();
-  lp.type = "lowpass";
-  lp.frequency.value = 180;
+  whineB.type = "sine";
+  whineB.frequency.value = 2100 * 1.52;
+  const whineBGain = c.createGain();
+  whineBGain.gain.value = 0.45;
   const whineGain = c.createGain();
-  whineGain.gain.value = 0.03;
-  whineA.connect(lp);
-  whineB.connect(lp);
-  lp.connect(whineGain).connect(master);
+  whineGain.gain.value = 0.006;
+  whineA.connect(whineGain);
+  whineB.connect(whineBGain).connect(whineGain);
+  whineGain.connect(master);
 
-  wash.start();
+  roar.start();
+  hiss.start();
   whineA.start();
   whineB.start();
 
@@ -88,13 +101,17 @@ export function startEngine(): EngineSound | null {
     update(throttle, speed) {
       if (stopped) return;
       const t = c.currentTime;
-      washGain.gain.setTargetAtTime(0.04 + 0.16 * throttle, t, 0.15);
-      bp.frequency.setTargetAtTime(260 + speed * 38 + throttle * 320, t, 0.2);
-      whineGain.gain.setTargetAtTime(0.02 + 0.075 * throttle, t, 0.15);
-      const f = 54 + throttle * 44;
-      whineA.frequency.setTargetAtTime(f, t, 0.3);
-      whineB.frequency.setTargetAtTime(f * 1.013, t, 0.3);
-      lp.frequency.setTargetAtTime(150 + throttle * 420 + speed * 8, t, 0.25);
+      roarGain.gain.setTargetAtTime(0.05 + 0.2 * throttle, t, 0.15);
+      roarBp.frequency.setTargetAtTime(650 + throttle * 900 + speed * 40, t, 0.2);
+      hissGain.gain.setTargetAtTime(
+        0.008 + 0.05 * throttle + speed * 0.0015,
+        t,
+        0.15,
+      );
+      const f = 1900 + throttle * 3300;
+      whineA.frequency.setTargetAtTime(f, t, 0.35);
+      whineB.frequency.setTargetAtTime(f * 1.52, t, 0.35);
+      whineGain.gain.setTargetAtTime(0.005 + 0.015 * throttle, t, 0.2);
     },
     stop() {
       if (stopped) return;
@@ -102,7 +119,8 @@ export function startEngine(): EngineSound | null {
       master.gain.setTargetAtTime(0, c.currentTime, 0.2);
       window.setTimeout(() => {
         try {
-          wash.stop();
+          roar.stop();
+          hiss.stop();
           whineA.stop();
           whineB.stop();
           master.disconnect();
@@ -110,6 +128,52 @@ export function startEngine(): EngineSound | null {
           /* already gone */
         }
       }, 900);
+    },
+  };
+}
+
+export interface WarningSound {
+  stop(): void;
+}
+
+/** GPWS-style terrain siren — a rising whoop on loop while too low. */
+export function startAltitudeWarning(): WarningSound | null {
+  if (!ctx) return null;
+  const c = ctx;
+  const g = c.createGain();
+  g.gain.value = 0;
+  g.connect(c.destination);
+  g.gain.setTargetAtTime(0.13 * MASTER, c.currentTime, 0.05);
+
+  const osc = c.createOscillator();
+  osc.type = "triangle";
+  osc.frequency.value = 620;
+  // sawtooth LFO sweeps the pitch up ~2.4× per second: whoop, whoop, whoop
+  const lfo = c.createOscillator();
+  lfo.type = "sawtooth";
+  lfo.frequency.value = 2.4;
+  const depth = c.createGain();
+  depth.gain.value = 330;
+  lfo.connect(depth).connect(osc.frequency);
+  osc.connect(g);
+  osc.start();
+  lfo.start();
+
+  let stopped = false;
+  return {
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      g.gain.setTargetAtTime(0, c.currentTime, 0.06);
+      window.setTimeout(() => {
+        try {
+          osc.stop();
+          lfo.stop();
+          g.disconnect();
+        } catch {
+          /* already gone */
+        }
+      }, 400);
     },
   };
 }

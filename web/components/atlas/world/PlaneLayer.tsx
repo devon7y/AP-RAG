@@ -14,8 +14,10 @@ import { glowTexture, ringTexture, sampleField, type WorldData } from "./derive"
 import { paperWorldPos } from "./PaperBeacons";
 import {
   playExplosion,
+  startAltitudeWarning,
   startEngine,
   type EngineSound,
+  type WarningSound,
 } from "./planeAudio";
 import { useWorld } from "./store";
 import { HEIGHT_SCALE, uMorph } from "./uniforms";
@@ -38,9 +40,9 @@ const REAL_747_URL = "/models/boeing747.glb";
 
 /* ---------------- flight constants ---------------- */
 
-const SCALE = 0.12; // model units → world units (≈1-unit jet: the world reads vast)
-const SPEED_MIN = 4;
-const SPEED_MAX = 15;
+const SCALE = 0.03; // model units → world units (≈0.26-unit jet: the world is a planet)
+const SPEED_MIN = 2.5;
+const SPEED_MAX = 9;
 const TURN_RATE = 0.5; // rad/s at full bank — ponderous, like 390 tonnes
 const PITCH_RATE = 0.5;
 const PITCH_MAX = 0.55;
@@ -53,7 +55,10 @@ const TRAIL_N = 110;
 
 /** Chase-cam offsets (world units) — right on the tail, so the jet fills the
  *  frame and the landscape reads enormous. CameraRig shares these. */
-export const CHASE = { back: 1.7, up: 0.5, ahead: 1.15 };
+export const CHASE = { back: 0.42, up: 0.13, ahead: 0.29 };
+
+/** GPWS trigger: below this AGL (display feet) the terrain alarm sounds. */
+const WARN_AGL_FT = 350;
 
 /** Live cockpit readouts for the DOM HUD (written every frame, read by rAF —
  *  deliberately outside React state). Display units: 1 world unit ≈ 34 m,
@@ -68,6 +73,8 @@ export const planeTelemetry = {
   pitchDeg: 0,
   rollDeg: 0,
   throttle: 0,
+  /** GPWS: true while dangerously close to the terrain */
+  warning: false,
 };
 
 export interface PlanePose {
@@ -325,10 +332,10 @@ function applyLivery(
 
 /* ---------------- the crash ---------------- */
 
-const DEBRIS_N = 240;
-const SMOKE_N = 16;
-const FIRE_N = 9;
-const FIRE_COLORS = ["#fff3d0", "#ffab45", "#ff6a22"];
+const DEBRIS_N = 420;
+const SMOKE_N = 24;
+const FIRE_N = 22;
+const FLAME_SUSTAIN = 4.2; // the wreck keeps re-igniting flames this long
 const EXPLOSION_LIFE = 10;
 
 let smokeTex: THREE.CanvasTexture | null = null;
@@ -373,6 +380,7 @@ interface Explosion {
   fireScale0: Float32Array;
   ring: THREE.Sprite;
   flash: THREE.Sprite;
+  fireGlow: THREE.Sprite;
   scorch: THREE.Mesh;
   disposables: (THREE.BufferGeometry | THREE.Material)[];
 }
@@ -429,12 +437,12 @@ function buildExplosion(): Explosion {
     smoke.push(s);
   }
 
-  // the fireball — a flickering cluster, not one perfect sphere
+  // the fireball — a flickering cluster of tongues, each color-ramped
+  // white-hot → orange → ember red as it ages (set per frame)
   const fire: THREE.Sprite[] = [];
   for (let i = 0; i < FIRE_N; i++) {
     const m = new THREE.SpriteMaterial({
       map: glowTexture(),
-      color: FIRE_COLORS[i % FIRE_COLORS.length],
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
@@ -463,6 +471,8 @@ function buildExplosion(): Explosion {
   };
   const flash = sprite(glowTexture(), "#ffffff");
   const ring = sprite(ringTexture(), "#ffb36b");
+  // the burning wreck lights the ground long after the blast
+  const fireGlow = sprite(glowTexture(), "#ff7a2a");
 
   // scorched ground where the jet died
   const scorchGeo = new THREE.CircleGeometry(1.8, 40);
@@ -494,6 +504,7 @@ function buildExplosion(): Explosion {
     fireScale0: new Float32Array(FIRE_N),
     ring,
     flash,
+    fireGlow,
     scorch,
     disposables,
   };
@@ -587,6 +598,7 @@ export default function PlaneLayer({
   const crashGroundY = useRef(0);
   const timeouts = useRef<number[]>([]);
   const engine = useRef<EngineSound | null>(null);
+  const warnSound = useRef<WarningSound | null>(null);
   const lastY = useRef(0);
   const vsSmooth = useRef(0);
   const pose = useMemo<PlanePose>(
@@ -595,6 +607,7 @@ export default function PlaneLayer({
   );
   const tmp = useMemo(() => new THREE.Vector3(), []);
   const fwd = useMemo(() => new THREE.Vector3(), []);
+  const crashPos = useMemo(() => new THREE.Vector3(), []);
 
   const clearTrails = () => {
     trailL.pts.length = 0;
@@ -621,7 +634,7 @@ export default function PlaneLayer({
       pitch.current = 0;
       roll.current = 0;
       throttle.current = 0.55;
-      speed.current = 8;
+      speed.current = 5;
       lastY.current = g.position.y;
       vsSmooth.current = 0;
       g.rotation.set(0, yaw.current, 0);
@@ -643,6 +656,9 @@ export default function PlaneLayer({
       mode.current = null;
       poseRef.current = null;
       planeTelemetry.active = false;
+      planeTelemetry.warning = false;
+      warnSound.current?.stop();
+      warnSound.current = null;
       clearTrails();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -740,7 +756,9 @@ export default function PlaneLayer({
         if (o instanceof THREE.Mesh) o.geometry.dispose();
       });
       engine.current?.stop();
+      warnSound.current?.stop();
       planeTelemetry.active = false;
+      planeTelemetry.warning = false;
     },
     [airframe, explosion, trailL, trailR],
   );
@@ -753,11 +771,15 @@ export default function PlaneLayer({
     expT.current = 0;
     poseRef.current = null;
     planeTelemetry.active = false;
+    planeTelemetry.warning = false;
+    warnSound.current?.stop();
+    warnSound.current = null;
 
     const gy = groundHeightAt(data, g.position.x, g.position.z);
     crashGroundY.current = Math.max(gy, 0);
-    g.position.y = crashGroundY.current + 0.2;
+    g.position.y = crashGroundY.current + 0.08;
     const cp = g.position;
+    crashPos.copy(cp);
 
     // debris carries the jet's momentum plus a hot radial burst
     fwd.set(
@@ -768,7 +790,7 @@ export default function PlaneLayer({
     const pa = explosion.posAttr.array as Float32Array;
     for (let i = 0; i < DEBRIS_N; i++) {
       pa[i * 3] = cp.x;
-      pa[i * 3 + 1] = cp.y + 0.18;
+      pa[i * 3 + 1] = cp.y + 0.08;
       pa[i * 3 + 2] = cp.z;
       const u = Math.random() * 2 - 1;
       const th = Math.random() * Math.PI * 2;
@@ -791,7 +813,7 @@ export default function PlaneLayer({
         cp.z + (Math.random() - 0.5) * 1.0,
       );
       explosion.fireVel[i * 3] = (Math.random() - 0.5) * 0.5 + fwd.x * 1.0;
-      explosion.fireVel[i * 3 + 1] = 0.5 + Math.random() * 0.9;
+      explosion.fireVel[i * 3 + 1] = 0.8 + Math.random() * 1.3; // the fireball climbs
       explosion.fireVel[i * 3 + 2] = (Math.random() - 0.5) * 0.5 + fwd.z * 1.0;
       explosion.fireAge[i] = -i * 0.035;
       explosion.fireLife[i] = 1.5 + Math.random() * 0.7;
@@ -818,6 +840,7 @@ export default function PlaneLayer({
 
     explosion.flash.position.set(cp.x, cp.y + 0.55, cp.z);
     explosion.ring.position.set(cp.x, cp.y + 0.25, cp.z);
+    explosion.fireGlow.position.set(cp.x, crashGroundY.current + 0.3, cp.z);
     explosion.scorch.position.set(cp.x, crashGroundY.current + 0.05, cp.z);
     (explosion.scorch.material as THREE.MeshBasicMaterial).opacity = 0;
     explosion.group.visible = true;
@@ -857,7 +880,7 @@ export default function PlaneLayer({
       const vs = explosion.vels;
       const floor = crashGroundY.current + 0.05;
       for (let i = 0; i < DEBRIS_N; i++) {
-        vs[i * 3 + 1] -= 9.5 * dt;
+        vs[i * 3 + 1] -= 8.5 * dt;
         pa[i * 3] += vs[i * 3] * dt;
         pa[i * 3 + 1] += vs[i * 3 + 1] * dt;
         pa[i * 3 + 2] += vs[i * 3 + 2] * dt;
@@ -870,28 +893,57 @@ export default function PlaneLayer({
       }
       explosion.posAttr.needsUpdate = true;
       (explosion.points.material as THREE.PointsMaterial).opacity =
-        Math.max(0, 1 - e / 2.6) * boost;
+        Math.max(0, 1 - e / 3.2) * boost;
 
       for (let i = 0; i < FIRE_N; i++) {
         explosion.fireAge[i] += dt;
-        const age = explosion.fireAge[i];
-        const life = explosion.fireLife[i];
+        let age = explosion.fireAge[i];
         const s = explosion.fire[i];
-        if (age < 0 || age > life) {
+        if (age > explosion.fireLife[i]) {
+          if (e < FLAME_SUSTAIN) {
+            // the wreck keeps burning — this tongue of flame re-ignites
+            s.position.set(
+              crashPos.x + (Math.random() - 0.5) * 0.7,
+              crashGroundY.current + 0.1 + Math.random() * 0.2,
+              crashPos.z + (Math.random() - 0.5) * 0.7,
+            );
+            explosion.fireVel[i * 3] = (Math.random() - 0.5) * 0.3;
+            explosion.fireVel[i * 3 + 1] = 0.35 + Math.random() * 0.8;
+            explosion.fireVel[i * 3 + 2] = (Math.random() - 0.5) * 0.3;
+            explosion.fireAge[i] = 0;
+            explosion.fireLife[i] = 0.7 + Math.random() * 0.9;
+            explosion.fireScale0[i] = 0.45 + Math.random() * 0.7;
+            age = 0;
+          } else {
+            s.visible = false;
+            continue;
+          }
+        }
+        if (age < 0) {
           s.visible = false;
           continue;
         }
+        const life = explosion.fireLife[i];
         s.visible = true;
         s.position.x += explosion.fireVel[i * 3] * dt;
         s.position.y += explosion.fireVel[i * 3 + 1] * dt;
         s.position.z += explosion.fireVel[i * 3 + 2] * dt;
         const grow = 1 - Math.exp(-3.5 * age);
         const shrink = 1 - 0.85 * Math.max(0, age / life - 0.55) / 0.45;
-        const flicker = 0.72 + 0.28 * Math.sin(t * 17 + i * 2.4);
+        const flicker = 0.7 + 0.3 * Math.sin(t * 19 + i * 2.4);
         s.scale.setScalar(
           explosion.fireScale0[i] * (0.4 + 2.6 * grow) * shrink,
         );
-        s.material.opacity = (1 - age / life) * flicker * boost;
+        // white-hot → orange → ember red across each flame's life
+        const k = age / life;
+        if (k < 0.3) {
+          const u = k / 0.3;
+          s.material.color.setRGB(1.9, 1.7 - 0.95 * u, 1.3 - 1.1 * u);
+        } else {
+          const u = (k - 0.3) / 0.7;
+          s.material.color.setRGB(1.9 - 0.8 * u, 0.75 - 0.53 * u, 0.2 - 0.15 * u);
+        }
+        s.material.opacity = (1 - k) * flicker * boost;
       }
 
       for (let i = 0; i < SMOKE_N; i++) {
@@ -909,19 +961,30 @@ export default function PlaneLayer({
         s.position.z += explosion.smokeVel[i * 3 + 2] * dt;
         s.material.rotation = i * 1.7 + age * 0.35 * (i % 2 ? 1 : -1);
         s.scale.setScalar(explosion.smokeScale0[i] + age * 0.8);
+        // young smoke glows fire-lit orange, then cools to sooty gray
+        const lit = Math.max(0, 1 - age / 1.2);
+        s.material.color.setRGB(1 + 0.9 * lit, 1 + 0.15 * lit, 1 - 0.45 * lit);
         s.material.opacity =
-          Math.min(1, age * 2.5) * (1 - age / life) * 0.55;
+          Math.min(1, age * 2.5) * (1 - age / life) * 0.6;
       }
 
       const bump =
         e > 0.26 && e < 0.44 ? Math.sin((Math.PI * (e - 0.26)) / 0.18) : 0;
-      explosion.flash.scale.setScalar(10);
+      const bump2 =
+        e > 0.6 && e < 0.78 ? Math.sin((Math.PI * (e - 0.6)) / 0.18) : 0;
+      explosion.flash.scale.setScalar(14);
       explosion.flash.material.opacity =
-        (Math.max(0, 1 - e / 0.13) + 0.45 * bump) * boost;
+        (Math.max(0, 1 - e / 0.13) + 0.5 * bump + 0.3 * bump2) * boost;
 
-      const rt = Math.min(1, e / 0.85);
-      explosion.ring.scale.setScalar(1 + 16 * rt);
-      explosion.ring.material.opacity = Math.pow(1 - rt, 1.5) * 0.8 * boost;
+      const rt = Math.min(1, e / 0.7);
+      explosion.ring.scale.setScalar(1 + 20 * rt);
+      explosion.ring.material.opacity = Math.pow(1 - rt, 1.5) * 0.9 * boost;
+
+      // the burning wreck throws flickering orange light until the flames die
+      const glowLife = Math.max(0, 1 - e / (FLAME_SUSTAIN + 1.6));
+      explosion.fireGlow.scale.setScalar(2.6 + 0.5 * Math.sin(t * 11));
+      explosion.fireGlow.material.opacity =
+        glowLife * (0.4 + 0.2 * Math.sin(t * 23 + 1.3)) * boost;
 
       (explosion.scorch.material as THREE.MeshBasicMaterial).opacity =
         Math.min(1, e * 2.5) * 0.7 * Math.max(0, 1 - e / EXPLOSION_LIFE);
@@ -967,9 +1030,9 @@ export default function PlaneLayer({
     const target = SPEED_MIN + (SPEED_MAX - SPEED_MIN) * throttle.current;
     speed.current += (target - speed.current) * Math.min(1, 0.22 * dt);
     speed.current = THREE.MathUtils.clamp(
-      speed.current - pitch.current * 4.5 * dt, // dives gain speed, climbs bleed it
-      3,
-      20,
+      speed.current - pitch.current * 3 * dt, // dives gain speed, climbs bleed it
+      2,
+      12,
     );
     fwd.set(
       Math.sin(yaw.current) * Math.cos(pitch.current),
@@ -1005,7 +1068,7 @@ export default function PlaneLayer({
 
     /* ---- terrain contact (only while the world is a landscape) ---- */
     const gy = Math.max(groundHeightAt(data, g.position.x, g.position.z), 0);
-    if (uMorph.value < 0.5 && g.position.y <= gy + 0.15) {
+    if (uMorph.value < 0.5 && g.position.y <= gy + 0.05) {
       crash();
       return;
     }
@@ -1015,10 +1078,21 @@ export default function PlaneLayer({
     lastY.current = g.position.y;
     vsSmooth.current += (vsRaw - vsSmooth.current) * Math.min(1, dt * 4);
     planeTelemetry.active = true;
-    planeTelemetry.kts = speed.current * 29;
+    planeTelemetry.kts = speed.current * 48;
     planeTelemetry.altFt = g.position.y * 112;
     planeTelemetry.aglFt = Math.max(0, (g.position.y - gy) * 112);
     planeTelemetry.vsFpm = vsSmooth.current;
+    planeTelemetry.warning = planeTelemetry.aglFt < WARN_AGL_FT;
+
+    // GPWS siren tracks the warning state (and the sound toggle)
+    const wantSiren =
+      planeTelemetry.warning && useWorld.getState().planeSound;
+    if (wantSiren && !warnSound.current) {
+      warnSound.current = startAltitudeWarning();
+    } else if (!wantSiren && warnSound.current) {
+      warnSound.current.stop();
+      warnSound.current = null;
+    }
     planeTelemetry.heading =
       (Math.atan2(fwd.x, fwd.z) * (180 / Math.PI) + 360) % 360;
     planeTelemetry.pitchDeg = pitch.current * (180 / Math.PI);

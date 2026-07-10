@@ -144,11 +144,11 @@ export default function CameraRig({
       return;
     }
 
-    // post-crash camera rattle (decays over ~1.2 s)
+    // post-crash camera rattle (decays over ~1.2 s; scaled to the close cam)
     if (shake.current > 0.004) {
-      camera.position.x += (Math.random() - 0.5) * 0.5 * shake.current;
-      camera.position.y += (Math.random() - 0.5) * 0.4 * shake.current;
-      camera.position.z += (Math.random() - 0.5) * 0.5 * shake.current;
+      camera.position.x += (Math.random() - 0.5) * 0.18 * shake.current;
+      camera.position.y += (Math.random() - 0.5) * 0.14 * shake.current;
+      camera.position.z += (Math.random() - 0.5) * 0.18 * shake.current;
       shake.current *= Math.exp(-2.6 * dt);
     }
 
@@ -165,7 +165,7 @@ export default function CameraRig({
         .addScaledVector(chaseFwd, -CHASE.back)
         .addScaledVector(UP, CHASE.up);
       camera.position.lerp(chasePos, 1 - Math.exp(-6 * dt));
-      if (camera.position.y < 0.45) camera.position.y = 0.45;
+      if (camera.position.y < 0.12) camera.position.y = 0.12;
       chaseTgt.copy(plane.pos).addScaledVector(chaseFwd, CHASE.ahead);
       ctl.target.lerp(chaseTgt, 1 - Math.exp(-9 * dt));
       if (ctl.enabled) ctl.enabled = false;

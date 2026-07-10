@@ -61,6 +61,7 @@ export default function PlaneHud() {
   const needle = useRef<SVGLineElement>(null);
   const n1Val = useRef<HTMLSpanElement>(null);
   const horizon = useRef<HTMLDivElement>(null);
+  const warn = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let raf = 0;
@@ -110,6 +111,16 @@ export default function PlaneHud() {
         horizon.current.style.transform = `rotate(${t.rollDeg.toFixed(1)}deg) translateY(${(
           t.pitchDeg * 2
         ).toFixed(1)}px)`;
+
+      if (warn.current) {
+        // GPWS banner: hard red flash while below the terrain floor
+        warn.current.style.visibility = t.warning ? "visible" : "hidden";
+        warn.current.style.opacity = t.warning
+          ? Math.floor(performance.now() / 280) % 2 === 0
+            ? "1"
+            : "0.3"
+          : "0";
+      }
     };
     tick();
     return () => cancelAnimationFrame(raf);
@@ -117,6 +128,22 @@ export default function PlaneHud() {
 
   return (
     <div className="pointer-events-none absolute inset-0 z-40 font-sans">
+      {/* ---- GPWS terrain warning (top-center) ---- */}
+      <div
+        ref={warn}
+        className="absolute top-6 left-1/2 -translate-x-1/2 rounded-[3px] border-2 px-5 py-1.5 font-mono text-sm font-bold tracking-[0.25em]"
+        style={{
+          visibility: "hidden",
+          borderColor: "#ff2a2a",
+          background: "rgba(46,2,2,0.88)",
+          color: "#ff3b30",
+          textShadow: "0 0 12px rgba(255,42,42,0.8)",
+          boxShadow: "0 0 18px rgba(255,42,42,0.35)",
+        }}
+      >
+        ⚠ TERRAIN · PULL UP
+      </div>
+
       {/* ---- compass rose (top-left) ---- */}
       <div className="absolute top-20 left-5">
         <div className={`${PANEL} relative h-32 w-32 rounded-full`}>
@@ -171,7 +198,7 @@ export default function PlaneHud() {
           <p className={`${LABEL} border-b border-white/15 px-2 py-1`}>
             airspeed
           </p>
-          <div className="relative" style={{ height: TAPE_H }}>
+          <div className="relative overflow-hidden" style={{ height: TAPE_H }}>
             <div ref={spdInner} className="absolute inset-x-0">
               {SPD_TICKS.map((v) => (
                 <div
@@ -209,8 +236,8 @@ export default function PlaneHud() {
           </p>
         </div>
 
-        {/* engine N1 dial */}
-        <div className={`${PANEL} px-2 pt-1 pb-1.5`}>
+        {/* engine N1 dial — fixed width so digit count never reflows it */}
+        <div className={`${PANEL} w-[100px] px-2 pt-1 pb-1.5 text-center`}>
           <p className={LABEL}>engine n1</p>
           <svg width="84" height="72" viewBox="0 0 84 72" className="mt-0.5">
             <g transform="translate(0,-6)">
@@ -236,7 +263,7 @@ export default function PlaneHud() {
             </g>
           </svg>
           <p className="text-center font-mono text-[11px] text-white tabular-nums">
-            <span ref={n1Val}>55</span>
+            <span ref={n1Val} className="inline-block w-7 text-right">55</span>
             <span className="text-[9px] text-[#c6ccd4]"> %</span>
           </p>
         </div>
@@ -291,7 +318,7 @@ export default function PlaneHud() {
           <p className={`${LABEL} border-b border-white/15 px-2 py-1`}>
             altitude
           </p>
-          <div className="relative" style={{ height: TAPE_H }}>
+          <div className="relative overflow-hidden" style={{ height: TAPE_H }}>
             <div ref={altInner} className="absolute inset-x-0">
               {ALT_TICKS.map((v) => (
                 <div
@@ -328,8 +355,8 @@ export default function PlaneHud() {
           </p>
         </div>
 
-        {/* vertical speed */}
-        <div className={`${PANEL} flex flex-col items-center px-1.5 pt-1 pb-1.5`}>
+        {/* vertical speed — fixed width so the fpm digits never reflow it */}
+        <div className={`${PANEL} flex w-[56px] flex-col items-center px-1.5 pt-1 pb-1.5`}>
           <p className={LABEL}>vs</p>
           <div className="relative my-1 h-40 w-4">
             <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 bg-white/25" />
