@@ -64,6 +64,14 @@ export default function CameraRig({
     return () => window.removeEventListener("world:plane-crash", onCrash);
   }, []);
 
+  // hand the camera to the chase the instant flight starts, so OrbitControls
+  // never gets a frame to fight it (the chase is fully manual thereafter)
+  const planeOn = useWorld((s) => s.planeOn);
+  useEffect(() => {
+    const ctl = controls.current;
+    if (ctl && planeOn && useWorld.getState().planeFollow) ctl.enabled = false;
+  }, [planeOn]);
+
   // the idle orbit stops for good the moment the user moves the camera
   useEffect(() => {
     const ctl = controls.current;
@@ -123,6 +131,23 @@ export default function CameraRig({
     const ctl = controls.current;
     if (!ctl) return;
 
+    // chase teardown — runs BEFORE the tween branch so an eject-into-warp
+    // still restores the near-clip and orbit constraints the chase changed.
+    // enabled is only handed back when no tween owns the camera (a warp sets
+    // enabled itself and must keep it false until it completes).
+    const followState = useWorld.getState();
+    const flyingNow =
+      followState.planeOn &&
+      followState.planeFollow &&
+      getPlanePose() !== null;
+    if (chasing.current && !flyingNow) {
+      chasing.current = false;
+      ctl.minDistance = 3;
+      camera.near = 0.1;
+      camera.updateProjectionMatrix();
+      if (!tween.current) ctl.enabled = true;
+    }
+
     // warp tween
     const tw = tween.current;
     if (tw) {
@@ -152,10 +177,12 @@ export default function CameraRig({
       shake.current *= Math.exp(-2.6 * dt);
     }
 
-    // 747 chase cam — right on the tail so the jet reads big and the world
-    // reads vast; the user's orbit input is suspended while it flies. The
-    // orbit constraints (minDistance 3, horizon polar clamp) must be lifted
-    // for the duration — ctl.update() re-applies them to the camera we set.
+    // 747 chase cam — FULLY manual, bypassing OrbitControls. We never call
+    // ctl.update() here: it re-derives the camera from spherical coords around
+    // the target, which fights a follow-cam and makes the plane jitter/drift.
+    // drei only auto-updates when ctl.enabled, so disabling it hands us the
+    // camera outright. Position eases in; the look-at is rigid on the plane so
+    // the jet stays pinned dead-center no matter how fast it moves.
     const st = useWorld.getState();
     const plane = getPlanePose();
     if (plane && st.planeOn && st.planeFollow) {
@@ -164,29 +191,21 @@ export default function CameraRig({
         .copy(plane.pos)
         .addScaledVector(chaseFwd, -CHASE.back)
         .addScaledVector(UP, CHASE.up);
-      camera.position.lerp(chasePos, 1 - Math.exp(-9 * dt));
+      camera.position.lerp(chasePos, 1 - Math.exp(-16 * dt));
       if (camera.position.y < 0.06) camera.position.y = 0.06;
       chaseTgt.copy(plane.pos).addScaledVector(chaseFwd, CHASE.ahead);
-      ctl.target.lerp(chaseTgt, 1 - Math.exp(-12 * dt));
-      if (ctl.enabled) ctl.enabled = false;
-      ctl.minDistance = 0.02;
-      ctl.maxPolarAngle = Math.PI;
+      ctl.target.copy(chaseTgt); // keep synced so the eject handoff is smooth
+      camera.up.set(0, 1, 0);
+      camera.lookAt(chaseTgt); // rigid aim — no orbit math, no oscillation
+      ctl.enabled = false;
       // hugging the tail — pull the near-clip plane in so it doesn't slice
-      // through the fuselage (restored the moment the chase ends)
+      // through the fuselage (restored by the teardown when the chase ends)
       if (camera.near !== 0.01) {
         camera.near = 0.01;
         camera.updateProjectionMatrix();
       }
       chasing.current = true;
-      ctl.update();
       return;
-    }
-    if (chasing.current) {
-      chasing.current = false;
-      ctl.enabled = true;
-      ctl.minDistance = 3; // restore the resting orbit constraint
-      camera.near = 0.1; // restore the atlas's default near-clip
-      camera.updateProjectionMatrix();
     }
 
     // rover follow

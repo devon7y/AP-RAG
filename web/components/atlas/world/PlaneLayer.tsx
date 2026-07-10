@@ -246,7 +246,7 @@ function build747(): Airframe {
       disposables.push(gm);
       const gs = new THREE.Sprite(gm);
       gs.position.set(sx * ex, -0.52, ez - 0.55);
-      gs.scale.setScalar(0.55);
+      gs.scale.setScalar(0.34);
       group.add(gs);
       engineGlows.push(gs);
     }
@@ -264,7 +264,7 @@ function build747(): Airframe {
     disposables.push(m);
     const s = new THREE.Sprite(m);
     s.position.set(x, y, z);
-    s.scale.setScalar(0.5);
+    s.scale.setScalar(0.28);
     group.add(s);
     return s;
   };
@@ -328,6 +328,55 @@ function applyLivery(
     const isEngine = olds.some((m) => /engine/i.test(m.name ?? ""));
     o.material = isEngine ? engines : body;
     for (const m of olds) m.dispose();
+  });
+}
+
+/**
+ * The nav lights, strobe, engine glows and contrail emitters were placed for
+ * the procedural stand-in; the real scan's wings are swept and lower, so they
+ * float. Measure the loaded jet's actual wingtips and fin (its verts are in
+ * the same baked frame as the group), then pin every light onto real geometry.
+ */
+function anchorRealJet(
+  scene: THREE.Group,
+  airframe: Airframe,
+  wing: { L: THREE.Vector3; R: THREE.Vector3 },
+): void {
+  scene.updateMatrixWorld(true);
+  const v = new THREE.Vector3();
+  const rTip = new THREE.Vector3(-Infinity, 0, 0);
+  const lTip = new THREE.Vector3(Infinity, 0, 0);
+  const finTip = new THREE.Vector3(0, -Infinity, 0);
+  scene.traverse((o) => {
+    if (!(o instanceof THREE.Mesh)) return;
+    const pos = o.geometry.getAttribute("position") as
+      | THREE.BufferAttribute
+      | undefined;
+    if (!pos) return;
+    const m = o.matrixWorld;
+    for (let i = 0; i < pos.count; i += 4) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(m);
+      if (v.x > rTip.x) rTip.copy(v);
+      if (v.x < lTip.x) lTip.copy(v);
+      if (v.y > finTip.y) finTip.copy(v);
+    }
+  });
+  if (!Number.isFinite(rTip.x) || !Number.isFinite(lTip.x)) return;
+
+  airframe.navRight.position.copy(rTip);
+  airframe.navLeft.position.copy(lTip);
+  airframe.strobe.position.set(finTip.x, finTip.y + 0.15, finTip.z);
+  wing.R.copy(rTip);
+  wing.L.copy(lTip);
+
+  // engine glows: spread along each wing (fractions of half-span), slung a
+  // little below and forward of the wing line
+  const span = rTip.x;
+  const gy = (rTip.y + lTip.y) / 2 - 0.4;
+  const gz = 0.15;
+  const frac = [-0.34, -0.62, 0.34, 0.62]; // [-inner, -outer, +inner, +outer]
+  airframe.engineGlows.forEach((glowSprite, i) => {
+    glowSprite.position.set(span * frac[i], gy, gz);
   });
 }
 
@@ -609,6 +658,14 @@ export default function PlaneLayer({
   const tmp = useMemo(() => new THREE.Vector3(), []);
   const fwd = useMemo(() => new THREE.Vector3(), []);
   const crashPos = useMemo(() => new THREE.Vector3(), []);
+  // contrail emit points (group-local); re-pinned to the real wingtips on load
+  const wingAnchors = useMemo(
+    () => ({
+      L: new THREE.Vector3(-3.85, -0.12, -1.15),
+      R: new THREE.Vector3(3.85, -0.12, -1.15),
+    }),
+    [],
+  );
 
   const clearTrails = () => {
     trailL.pts.length = 0;
@@ -694,6 +751,7 @@ export default function PlaneLayer({
         loader.setMeshoptDecoder(MeshoptDecoder);
         const gltf = await loader.loadAsync(REAL_747_URL);
         applyLivery(gltf.scene, airframe.disposables);
+        anchorRealJet(gltf.scene, airframe, wingAnchors);
         realJet.current = gltf.scene;
         airframe.group.add(gltf.scene);
         airframe.hull.visible = false; // the stand-in retires; lights stay on
@@ -1112,11 +1170,11 @@ export default function PlaneLayer({
       gs.material.opacity = (0.12 + 0.6 * throttle.current) * boost;
     }
 
-    for (const [trail, sx] of [
-      [trailL, -3.85],
-      [trailR, 3.85],
+    for (const [trail, anchor] of [
+      [trailL, wingAnchors.L],
+      [trailR, wingAnchors.R],
     ] as const) {
-      tmp.set(sx, -0.12, -1.15);
+      tmp.copy(anchor);
       g.localToWorld(tmp);
       trail.pts.push(tmp.x, tmp.y, tmp.z);
       if (trail.pts.length > TRAIL_N * 3) trail.pts.splice(0, 3);
