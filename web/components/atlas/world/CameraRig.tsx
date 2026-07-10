@@ -194,8 +194,13 @@ export default function CameraRig({
         .addScaledVector(chaseFwd, -CHASE.back)
         .addScaledVector(UP, CHASE.up);
       camera.position.copy(chasePos); // rigid — no lerp, frame-rate independent
-      if (camera.position.y < 0.06) camera.position.y = 0.06;
-      chaseTgt.copy(plane.pos).addScaledVector(chaseFwd, CHASE.ahead);
+      if (camera.position.y < 0.05) camera.position.y = 0.05;
+      // aim ahead of the plane and slightly UP, so the shot sits level behind
+      // the fuselage rather than looking down on it
+      chaseTgt
+        .copy(plane.pos)
+        .addScaledVector(chaseFwd, CHASE.ahead)
+        .addScaledVector(UP, CHASE.aimUp);
       ctl.target.copy(chaseTgt); // keep synced so the eject handoff is smooth
       camera.up.set(0, 1, 0);
       camera.lookAt(chaseTgt); // rigid aim

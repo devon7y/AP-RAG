@@ -53,10 +53,12 @@ const SPAWN_RADIUS = 92; // the home orbit ring
 const SPAWN_ALT = 34;
 const TRAIL_N = 110;
 
-/** Chase-cam offsets (world units) — hugging the tail, so the jet fills the
- *  frame and the landscape reads planetary. At this range CameraRig drops the
+/** Chase-cam offsets (world units) — a behind-the-tail view, nearly level
+ *  with the fuselage (not looking down on it). `back`/`up` place the camera;
+ *  the look-at is `ahead` of the plane and lifted by `aimUp` so the shot is
+ *  level and the horizon reads ahead. At this range CameraRig drops the
  *  camera's near-clip plane so the tail doesn't slice through it. */
-export const CHASE = { back: 0.2, up: 0.065, ahead: 0.26 };
+export const CHASE = { back: 0.34, up: 0.05, ahead: 0.32, aimUp: 0.04 };
 
 /** GPWS trigger: below this AGL (display feet) the terrain alarm sounds. */
 const WARN_AGL_FT = 350;
@@ -431,7 +433,6 @@ interface Explosion {
   ring: THREE.Sprite;
   flash: THREE.Sprite;
   fireGlow: THREE.Sprite;
-  scorch: THREE.Mesh;
   disposables: (THREE.BufferGeometry | THREE.Material)[];
 }
 
@@ -524,19 +525,6 @@ function buildExplosion(): Explosion {
   // the burning wreck lights the ground long after the blast
   const fireGlow = sprite(glowTexture(), "#ff7a2a");
 
-  // scorched ground where the jet died
-  const scorchGeo = new THREE.CircleGeometry(1.8, 40);
-  const scorchMat = new THREE.MeshBasicMaterial({
-    color: 0x050403,
-    transparent: true,
-    opacity: 0,
-    depthWrite: false,
-  });
-  disposables.push(scorchGeo, scorchMat);
-  const scorch = new THREE.Mesh(scorchGeo, scorchMat);
-  scorch.rotation.x = -Math.PI / 2;
-  group.add(scorch);
-
   return {
     group,
     points,
@@ -555,7 +543,6 @@ function buildExplosion(): Explosion {
     ring,
     flash,
     fireGlow,
-    scorch,
     disposables,
   };
 }
@@ -900,8 +887,6 @@ export default function PlaneLayer({
     explosion.flash.position.set(cp.x, cp.y + 0.55, cp.z);
     explosion.ring.position.set(cp.x, cp.y + 0.25, cp.z);
     explosion.fireGlow.position.set(cp.x, crashGroundY.current + 0.3, cp.z);
-    explosion.scorch.position.set(cp.x, crashGroundY.current + 0.05, cp.z);
-    (explosion.scorch.material as THREE.MeshBasicMaterial).opacity = 0;
     explosion.group.visible = true;
     g.visible = false;
     clearTrails();
@@ -1044,9 +1029,6 @@ export default function PlaneLayer({
       explosion.fireGlow.scale.setScalar(2.6 + 0.5 * Math.sin(t * 11));
       explosion.fireGlow.material.opacity =
         glowLife * (0.4 + 0.2 * Math.sin(t * 23 + 1.3)) * boost;
-
-      (explosion.scorch.material as THREE.MeshBasicMaterial).opacity =
-        Math.min(1, e * 2.5) * 0.7 * Math.max(0, 1 - e / EXPLOSION_LIFE);
 
       if (e > EXPLOSION_LIFE) {
         explosion.group.visible = false;
