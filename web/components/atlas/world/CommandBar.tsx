@@ -105,6 +105,7 @@ export default function CommandBar({
   const inputRef = useRef<HTMLInputElement>(null);
 
   const searchHits = useWorld((s) => s.searchHits);
+  const planeOn = useWorld((s) => s.planeOn);
   const searchQuery = useWorld((s) => s.searchQuery);
 
   useEffect(() => {
@@ -140,7 +141,13 @@ export default function CommandBar({
           st.set("paneOpen", false);
         }
         st.set("planting", false);
+        const wasFlying = st.planeOn;
         st.set("planeOn", false);
+        if (wasFlying) {
+          // ejecting drops you mid-air — take the camera home
+          st.set("autoRotate", true);
+          warpHome(1.5);
+        }
         st.setSearch("", null);
         st.clearLens(); // also closes an open author card
         st.select(null);
@@ -462,6 +469,8 @@ export default function CommandBar({
   };
 
   const maxScore = searchHits?.length ? Math.max(...searchHits.map((h) => h.score)) : 1;
+
+  if (planeOn) return null; // cockpit mode: the HUD owns the bottom of the screen
 
   return (
     <div className="absolute bottom-5 left-1/2 z-40 w-[560px] max-w-[92vw] -translate-x-1/2">

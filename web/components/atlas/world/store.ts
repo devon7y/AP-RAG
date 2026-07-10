@@ -185,6 +185,7 @@ interface WorldState {
   // the 747 (crash-to-read)
   planeOn: boolean;
   planeFollow: boolean;
+  planeSound: boolean;
 
   // semantle (daily passage → first author)
   gamePings: GamePing[];
@@ -264,6 +265,7 @@ export const useWorld = create<WorldState>((set) => ({
 
   planeOn: false,
   planeFollow: true,
+  planeSound: true,
 
   gamePings: [],
   gameChunk: null,

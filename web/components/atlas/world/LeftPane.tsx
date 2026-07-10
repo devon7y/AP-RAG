@@ -21,6 +21,7 @@ import {
 import { qsearch } from "@/lib/atlas/api";
 import type { AuthorRec, CorpusData, PaperMeta } from "@/lib/atlas/types";
 import { buildStation } from "./walk";
+import { primePlaneAudio } from "./planeAudio";
 import { primeVoices } from "./tts";
 import {
   AGE_MID,
@@ -77,6 +78,10 @@ export default function LeftPane({
   const setInstrument = useWorld((s) => s.setInstrument);
   const paneOpen = useWorld((s) => s.paneOpen);
   const set = useWorld((s) => s.set);
+  const planeOn = useWorld((s) => s.planeOn);
+
+  // cockpit mode: while the 747 flies, the world is the whole interface
+  if (planeOn) return null;
 
   return (
     <div className="pointer-events-none absolute top-20 bottom-20 left-4 z-40 flex items-start gap-2">
@@ -883,6 +888,7 @@ function RadioPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) {
 function PlanePanel() {
   const planeOn = useWorld((s) => s.planeOn);
   const planeFollow = useWorld((s) => s.planeFollow);
+  const planeSound = useWorld((s) => s.planeSound);
   const set = useWorld((s) => s.set);
   const setView = useWorld((s) => s.setView);
 
@@ -902,7 +908,10 @@ function PlanePanel() {
         onClick={() => {
           if (planeOn) {
             set("planeOn", false);
+            set("autoRotate", true);
+            warpHome(1.4);
           } else {
+            primePlaneAudio(); // unlock WebAudio inside the user gesture
             setView("atlas"); // the runway is the landscape, not the galaxy
             set("autoRotate", false);
             set("planeOn", true);
@@ -917,15 +926,26 @@ function PlanePanel() {
         {planeOn ? "◼ eject" : "✈ take off"}
       </button>
 
-      <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-2">
-        <input
-          type="checkbox"
-          checked={planeFollow}
-          onChange={() => set("planeFollow", !planeFollow)}
-          className="h-3 w-3 accent-[#3987e5]"
-        />
-        chase camera
-      </label>
+      <div className="flex gap-4 text-xs text-ink-2">
+        <label className="flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            checked={planeFollow}
+            onChange={() => set("planeFollow", !planeFollow)}
+            className="h-3 w-3 accent-[#3987e5]"
+          />
+          chase camera
+        </label>
+        <label className="flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            checked={planeSound}
+            onChange={() => set("planeSound", !planeSound)}
+            className="h-3 w-3 accent-[#3987e5]"
+          />
+          sound
+        </label>
+      </div>
 
       <div>
         <p className="text-[11px] text-ink-2">Controls</p>

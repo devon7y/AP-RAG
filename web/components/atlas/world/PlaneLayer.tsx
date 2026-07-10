@@ -3,51 +3,75 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import { MeshStandardNodeMaterial } from "three/webgpu";
+import {
+  MeshPhysicalNodeMaterial,
+  MeshStandardNodeMaterial,
+} from "three/webgpu";
+import { mix, positionLocal, smoothstep, vec3 } from "three/tsl";
 import { WORLD_SIZE } from "@/lib/atlas/data";
 import { useAtlasStore } from "@/lib/atlas/store";
 import { glowTexture, ringTexture, sampleField, type WorldData } from "./derive";
 import { paperWorldPos } from "./PaperBeacons";
+import {
+  playExplosion,
+  startEngine,
+  type EngineSound,
+} from "./planeAudio";
 import { useWorld } from "./store";
 import { HEIGHT_SCALE, uMorph } from "./uniforms";
 
 /**
- * The Boeing 747 — a pilotable jumbo jet over the landscape. Spawned from the
- * flight instrument, steered with WASD/arrows, throttled with Shift/Ctrl.
- * Terrain contact ends the flight in a fireball, and the crash opens the
- * nearest paper's card exactly as clicking its beacon would — literature
- * review by air disaster.
+ * The Boeing 747 — a pilotable jumbo over the landscape. It spawns on the
+ * home camera ring at a random azimuth, flies heavy (it is a 747), and ends
+ * every story one of two ways: an eject, or a fireball on a mountainside
+ * that opens the nearest paper's card exactly as clicking its beacon would.
  *
- * Two airframes share one transform: a procedural jet (capsules, extruded
- * airfoils, nacelle cylinders — zero network weight) flies immediately, and a
- * real scan ("Boeing 747-400" by Jonne Okkonen, CC BY-SA 4.0, meshopt-
- * compressed to 3.4 MB) streams in lazily on first take-off and replaces the
- * procedural hull. The GLB is pre-baked: centered, nose +Z, length 8.6 model
- * units — same frame as the procedural jet. While parked, nothing renders and
- * nothing downloads.
+ * Two airframes share one transform: a tiny procedural jet flies instantly,
+ * and the real scan ("Boeing 747-400" by Jonne Okkonen, CC BY-SA 4.0,
+ * meshopt-compressed to 3.4 MB, PCA-aligned nose-+Z and rescaled at bake
+ * time) streams in on the first take-off and replaces the procedural hull,
+ * wearing a procedural livery (no UVs in the scan — the paint is banded in
+ * model space). While parked, nothing renders and nothing downloads.
  */
 
 const REAL_747_URL = "/models/boeing747.glb";
+
+/* ---------------- flight constants ---------------- */
+
+const SCALE = 0.24; // model units → world units (≈2.1-unit jet: the world reads huge)
+const SPEED_MIN = 5;
+const SPEED_MAX = 17;
+const TURN_RATE = 0.5; // rad/s at full bank — ponderous, like 390 tonnes
+const PITCH_RATE = 0.5;
+const PITCH_MAX = 0.55;
+const BANK_MAX = 0.42;
+const CEILING = 55;
+const BOUND = 84; // beyond this radius the jet is steered home
+const SPAWN_RADIUS = 92; // the home orbit ring
+const SPAWN_ALT = 34;
+const TRAIL_N = 110;
+
+/** Live cockpit readouts for the DOM HUD (written every frame, read by rAF —
+ *  deliberately outside React state). Display units: 1 world unit ≈ 34 m,
+ *  fudged into round aviation numbers. */
+export const planeTelemetry = {
+  active: false,
+  kts: 0,
+  altFt: 0,
+  aglFt: 0,
+  vsFpm: 0,
+  heading: 0,
+  pitchDeg: 0,
+  rollDeg: 0,
+  throttle: 0,
+};
 
 export interface PlanePose {
   pos: THREE.Vector3;
   quat: THREE.Quaternion;
 }
 
-/* ---------------- flight constants ---------------- */
-
-const SCALE = 0.5; // model units → world units
-const SPEED_MIN = 6;
-const SPEED_MAX = 26;
-const TURN_RATE = 1.1; // rad/s at full bank
-const PITCH_RATE = 1.25;
-const PITCH_MAX = 0.85;
-const BANK_MAX = 0.55;
-const CEILING = 58;
-const BOUND = 72; // beyond this radius the jet is steered home
-const TRAIL_N = 90;
-
-/* ---------------- the airframe ---------------- */
+/* ---------------- the procedural stand-in airframe ---------------- */
 
 const BODY = "#dfe5ec";
 const WING = "#c9d0da";
@@ -137,7 +161,6 @@ function build747(): Airframe {
   }
 
   // main wings — swept, tapered, slight dihedral (shape XY → XZ via rotateX)
-  // shape: x = span outward, y maps to -Z after rotation (sweep goes aft)
   const wingShape: [number, number][] = [
     [0.5, -0.95],
     [3.6, 1.0],
@@ -233,8 +256,8 @@ function build747(): Airframe {
     group.add(s);
     return s;
   };
-  const navLeft = navSprite("#ff4d4d", -3.6, -0.18, -1.15);
-  const navRight = navSprite("#4dff7a", 3.6, -0.18, -1.15);
+  const navLeft = navSprite("#ff4d4d", -3.85, -0.12, -1.05);
+  const navRight = navSprite("#4dff7a", 3.85, -0.12, -1.05);
   const strobe = navSprite("#ffffff", 0, 1.9, -2.95);
 
   group.scale.setScalar(SCALE);
@@ -243,20 +266,110 @@ function build747(): Airframe {
   return { group, hull, disposables, engineGlows, navLeft, navRight, strobe };
 }
 
-/* ---------------- the explosion ---------------- */
+/* ---------------- livery for the real jet (the scan has no UVs) ---------- */
 
-const DEBRIS_N = 150;
+function applyLivery(
+  root: THREE.Group,
+  disposables: (THREE.BufferGeometry | THREE.Material)[],
+): void {
+  const body = new MeshPhysicalNodeMaterial();
+  body.metalness = 0.32;
+  body.roughness = 0.3;
+  body.clearcoat = 0.55;
+  body.clearcoatRoughness = 0.3;
+  body.side = THREE.DoubleSide;
+  {
+    // banded paint in baked model space: silver belly, blue cheatline along
+    // the window line, white crown, blue tail fin (all ascending smoothsteps
+    // — WGSL requires low < high)
+    const white = vec3(0.93, 0.94, 0.97);
+    const belly = vec3(0.55, 0.6, 0.68);
+    const blue = vec3(0.12, 0.32, 0.7);
+    const y = positionLocal.y;
+    const z = positionLocal.z;
+    const bellyMask = smoothstep(-0.26, -0.14, y).oneMinus();
+    const cheatMask = smoothstep(-0.3, -0.2, y).mul(
+      smoothstep(-0.04, 0.04, y).oneMinus(),
+    );
+    const finMask = smoothstep(-3.6, -2.8, z)
+      .oneMinus()
+      .mul(smoothstep(0.28, 0.55, y));
+    body.colorNode = mix(
+      mix(mix(white, belly, bellyMask), blue, cheatMask),
+      blue,
+      finMask,
+    );
+  }
+
+  const engines = new MeshStandardNodeMaterial();
+  engines.color = new THREE.Color("#3f454f");
+  engines.metalness = 0.85;
+  engines.roughness = 0.32;
+  engines.side = THREE.DoubleSide;
+
+  disposables.push(body, engines);
+
+  root.traverse((o) => {
+    if (!(o instanceof THREE.Mesh)) return;
+    const old = o.material as THREE.Material | THREE.Material[];
+    const olds = Array.isArray(old) ? old : [old];
+    const isEngine = olds.some((m) => /engine/i.test(m.name ?? ""));
+    o.material = isEngine ? engines : body;
+    for (const m of olds) m.dispose();
+  });
+}
+
+/* ---------------- the crash ---------------- */
+
+const DEBRIS_N = 240;
+const SMOKE_N = 16;
+const FIRE_N = 9;
+const FIRE_COLORS = ["#fff3d0", "#ffab45", "#ff6a22"];
+const EXPLOSION_LIFE = 10;
+
+let smokeTex: THREE.CanvasTexture | null = null;
+function smokeTexture(): THREE.CanvasTexture {
+  if (smokeTex) return smokeTex;
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const g2 = canvas.getContext("2d")!;
+  const grad = g2.createRadialGradient(
+    size / 2,
+    size / 2,
+    0,
+    size / 2,
+    size / 2,
+    size / 2,
+  );
+  grad.addColorStop(0, "rgba(58,50,42,0.85)");
+  grad.addColorStop(0.45, "rgba(36,31,26,0.5)");
+  grad.addColorStop(1, "rgba(20,17,14,0)");
+  g2.fillStyle = grad;
+  g2.fillRect(0, 0, size, size);
+  smokeTex = new THREE.CanvasTexture(canvas);
+  return smokeTex;
+}
 
 interface Explosion {
   group: THREE.Group;
   points: THREE.Points;
   posAttr: THREE.BufferAttribute;
   vels: Float32Array;
-  fireCore: THREE.Sprite;
-  fireMid: THREE.Sprite;
-  fireOuter: THREE.Sprite;
+  smoke: THREE.Sprite[];
+  smokeVel: Float32Array;
+  smokeAge: Float32Array;
+  smokeLife: Float32Array;
+  smokeScale0: Float32Array;
+  fire: THREE.Sprite[];
+  fireVel: Float32Array;
+  fireAge: Float32Array;
+  fireLife: Float32Array;
+  fireScale0: Float32Array;
   ring: THREE.Sprite;
   flash: THREE.Sprite;
+  scorch: THREE.Mesh;
   disposables: (THREE.BufferGeometry | THREE.Material)[];
 }
 
@@ -265,6 +378,7 @@ function buildExplosion(): Explosion {
   const group = new THREE.Group();
   group.visible = false;
 
+  // white-hot → ember debris spray
   const geo = new THREE.BufferGeometry();
   const posAttr = new THREE.BufferAttribute(
     new Float32Array(DEBRIS_N * 3),
@@ -275,15 +389,15 @@ function buildExplosion(): Explosion {
   const c = new THREE.Color();
   for (let i = 0; i < DEBRIS_N; i++) {
     const t = i / DEBRIS_N;
-    if (t < 0.25) c.setRGB(1.5, 1.35, 1.05); // white-hot
-    else if (t < 0.65) c.setRGB(1.6, 0.7, 0.2); // orange
-    else c.setRGB(1.2, 0.28, 0.08); // ember red
+    if (t < 0.22) c.setRGB(1.6, 1.45, 1.1);
+    else if (t < 0.6) c.setRGB(1.7, 0.72, 0.2);
+    else c.setRGB(1.25, 0.3, 0.08);
     colors.set([c.r, c.g, c.b], i * 3);
   }
   geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   const pMat = new THREE.PointsMaterial({
     map: glowTexture(),
-    size: 0.9,
+    size: 0.75,
     vertexColors: true,
     transparent: true,
     depthWrite: false,
@@ -295,45 +409,88 @@ function buildExplosion(): Explosion {
   points.frustumCulled = false;
   group.add(points);
 
-  const sprite = (color: string) => {
+  // billowing smoke column (normal blending — it must read DARK)
+  const smoke: THREE.Sprite[] = [];
+  for (let i = 0; i < SMOKE_N; i++) {
+    const m = new THREE.SpriteMaterial({
+      map: smokeTexture(),
+      transparent: true,
+      depthWrite: false,
+      opacity: 0,
+    });
+    disposables.push(m);
+    const s = new THREE.Sprite(m);
+    s.visible = false;
+    group.add(s);
+    smoke.push(s);
+  }
+
+  // the fireball — a flickering cluster, not one perfect sphere
+  const fire: THREE.Sprite[] = [];
+  for (let i = 0; i < FIRE_N; i++) {
     const m = new THREE.SpriteMaterial({
       map: glowTexture(),
+      color: FIRE_COLORS[i % FIRE_COLORS.length],
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      opacity: 0,
+    });
+    disposables.push(m);
+    const s = new THREE.Sprite(m);
+    s.visible = false;
+    group.add(s);
+    fire.push(s);
+  }
+
+  const sprite = (map: THREE.Texture, color: string) => {
+    const m = new THREE.SpriteMaterial({
+      map,
       color,
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
+      opacity: 0,
     });
     disposables.push(m);
     const s = new THREE.Sprite(m);
     group.add(s);
     return s;
   };
-  const fireCore = sprite("#fff4d8");
-  const fireMid = sprite("#ff9a3d");
-  const fireOuter = sprite("#ff5a1f");
-  const flash = sprite("#ffffff");
+  const flash = sprite(glowTexture(), "#ffffff");
+  const ring = sprite(ringTexture(), "#ffb36b");
 
-  const ringMat = new THREE.SpriteMaterial({
-    map: ringTexture(),
-    color: "#ffb36b",
+  // scorched ground where the jet died
+  const scorchGeo = new THREE.CircleGeometry(2.6, 40);
+  const scorchMat = new THREE.MeshBasicMaterial({
+    color: 0x050403,
     transparent: true,
+    opacity: 0,
     depthWrite: false,
-    blending: THREE.AdditiveBlending,
   });
-  disposables.push(ringMat);
-  const ring = new THREE.Sprite(ringMat);
-  group.add(ring);
+  disposables.push(scorchGeo, scorchMat);
+  const scorch = new THREE.Mesh(scorchGeo, scorchMat);
+  scorch.rotation.x = -Math.PI / 2;
+  group.add(scorch);
 
   return {
     group,
     points,
     posAttr,
     vels: new Float32Array(DEBRIS_N * 3),
-    fireCore,
-    fireMid,
-    fireOuter,
+    smoke,
+    smokeVel: new Float32Array(SMOKE_N * 3),
+    smokeAge: new Float32Array(SMOKE_N),
+    smokeLife: new Float32Array(SMOKE_N),
+    smokeScale0: new Float32Array(SMOKE_N),
+    fire,
+    fireVel: new Float32Array(FIRE_N * 3),
+    fireAge: new Float32Array(FIRE_N),
+    fireLife: new Float32Array(FIRE_N),
+    fireScale0: new Float32Array(FIRE_N),
     ring,
     flash,
+    scorch,
     disposables,
   };
 }
@@ -358,7 +515,7 @@ function makeTrail(): {
     new THREE.LineBasicMaterial({
       color: "#bcd2ff",
       transparent: true,
-      opacity: 0.28,
+      opacity: 0.22,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     }),
@@ -404,6 +561,7 @@ export default function PlaneLayer({
   poseRef: { current: PlanePose | null };
 }) {
   const planeOn = useWorld((s) => s.planeOn);
+  const planeSound = useWorld((s) => s.planeSound);
   const camera = useThree((s) => s.camera);
   const boost = useAtlasStore((s) => s.hdrBoost);
 
@@ -413,16 +571,20 @@ export default function PlaneLayer({
   const trailR = useMemo(makeTrail, []);
 
   // flight state — refs, never React state (per-frame)
-  const mode = useRef<"flying" | "exploding" | null>(null);
+  const mode = useRef<"flying" | null>(null);
   const yaw = useRef(0);
   const pitch = useRef(0);
   const roll = useRef(0);
-  const speed = useRef(12);
-  const throttle = useRef(0.5);
+  const speed = useRef(9);
+  const throttle = useRef(0.55);
   const keys = useRef<Set<string>>(new Set());
-  const explodeT = useRef(0);
+  const expActive = useRef(false);
+  const expT = useRef(0);
   const crashGroundY = useRef(0);
   const timeouts = useRef<number[]>([]);
+  const engine = useRef<EngineSound | null>(null);
+  const lastY = useRef(0);
+  const vsSmooth = useRef(0);
   const pose = useMemo<PlanePose>(
     () => ({ pos: new THREE.Vector3(), quat: new THREE.Quaternion() }),
     [],
@@ -430,43 +592,69 @@ export default function PlaneLayer({
   const tmp = useMemo(() => new THREE.Vector3(), []);
   const fwd = useMemo(() => new THREE.Vector3(), []);
 
+  const clearTrails = () => {
+    trailL.pts.length = 0;
+    trailR.pts.length = 0;
+    trailL.geo.setDrawRange(0, 0);
+    trailR.geo.setDrawRange(0, 0);
+  };
+
   // spawn / despawn
   useEffect(() => {
     if (planeOn) {
-      camera.getWorldDirection(fwd);
-      yaw.current = Math.atan2(fwd.x, fwd.z);
+      const st = useWorld.getState();
+      st.select(null); // a fresh flight closes whatever card was open
+
+      // wheels-up from a random point on the home orbit ring, flying inward
+      const az = Math.random() * Math.PI * 2;
+      const g = airframe.group;
+      g.position.set(
+        Math.sin(az) * SPAWN_RADIUS,
+        SPAWN_ALT,
+        Math.cos(az) * SPAWN_RADIUS,
+      );
+      yaw.current = az + Math.PI; // toward the center of the world
       pitch.current = 0;
       roll.current = 0;
-      throttle.current = 0.5;
-      speed.current = 12;
-      const g = airframe.group;
-      g.position.copy(camera.position).addScaledVector(fwd, 24);
-      g.position.x = THREE.MathUtils.clamp(g.position.x, -55, 55);
-      g.position.z = THREE.MathUtils.clamp(g.position.z, -55, 55);
-      const floor = groundHeightAt(data, g.position.x, g.position.z) + 14;
-      g.position.y = THREE.MathUtils.clamp(
-        g.position.y,
-        Math.max(floor, 16),
-        44,
-      );
+      throttle.current = 0.55;
+      speed.current = 9;
+      lastY.current = g.position.y;
+      vsSmooth.current = 0;
       g.rotation.set(0, yaw.current, 0);
       g.visible = true;
-      trailL.pts.length = 0;
-      trailR.pts.length = 0;
-      trailL.geo.setDrawRange(0, 0);
-      trailR.geo.setDrawRange(0, 0);
+      clearTrails();
       mode.current = "flying";
+
+      // put the camera right on its tail so the jet reads big immediately
+      if (st.planeFollow) {
+        fwd.set(Math.sin(yaw.current), 0, Math.cos(yaw.current));
+        camera.position
+          .copy(g.position)
+          .addScaledVector(fwd, -4.6)
+          .add(new THREE.Vector3(0, 1.35, 0));
+      }
     } else if (mode.current === "flying") {
       // ejected mid-air (panel toggle / Esc) — vanish without the fireball
       airframe.group.visible = false;
       mode.current = null;
       poseRef.current = null;
-      trailL.pts.length = 0;
-      trailR.pts.length = 0;
-      trailL.geo.setDrawRange(0, 0);
-      trailR.geo.setDrawRange(0, 0);
+      planeTelemetry.active = false;
+      clearTrails();
     }
-  }, [planeOn, airframe, camera, data, fwd, trailL, trailR, poseRef]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planeOn, airframe, camera]);
+
+  // engine sound — runs while flying and audible
+  useEffect(() => {
+    if (planeOn && planeSound) {
+      engine.current = startEngine();
+      return () => {
+        engine.current?.stop();
+        engine.current = null;
+      };
+    }
+    return undefined;
+  }, [planeOn, planeSound]);
 
   // the real 747 — streamed in once, on the first take-off, so the page's
   // initial load never pays for it; the procedural jet flies until it lands
@@ -484,6 +672,7 @@ export default function PlaneLayer({
         const loader = new GLTFLoader();
         loader.setMeshoptDecoder(MeshoptDecoder);
         const gltf = await loader.loadAsync(REAL_747_URL);
+        applyLivery(gltf.scene, airframe.disposables);
         realJet.current = gltf.scene;
         airframe.group.add(gltf.scene);
         airframe.hull.visible = false; // the stand-in retires; lights stay on
@@ -539,17 +728,15 @@ export default function PlaneLayer({
       for (const id of timeouts.current) window.clearTimeout(id);
       for (const d of airframe.disposables) d.dispose();
       for (const d of explosion.disposables) d.dispose();
-      realJet.current?.traverse((o) => {
-        if (o instanceof THREE.Mesh) {
-          o.geometry.dispose();
-          const m = o.material as THREE.Material | THREE.Material[];
-          for (const mat of Array.isArray(m) ? m : [m]) mat.dispose();
-        }
-      });
       trailL.geo.dispose();
       (trailL.line.material as THREE.Material).dispose();
       trailR.geo.dispose();
       (trailR.line.material as THREE.Material).dispose();
+      realJet.current?.traverse((o) => {
+        if (o instanceof THREE.Mesh) o.geometry.dispose();
+      });
+      engine.current?.stop();
+      planeTelemetry.active = false;
     },
     [airframe, explosion, trailL, trailR],
   );
@@ -557,15 +744,18 @@ export default function PlaneLayer({
   const crash = () => {
     const st = useWorld.getState();
     const g = airframe.group;
-    mode.current = "exploding";
-    explodeT.current = 0;
+    mode.current = null;
+    expActive.current = true;
+    expT.current = 0;
     poseRef.current = null;
+    planeTelemetry.active = false;
 
     const gy = groundHeightAt(data, g.position.x, g.position.z);
     crashGroundY.current = Math.max(gy, 0);
-    g.position.y = crashGroundY.current + 0.5;
+    g.position.y = crashGroundY.current + 0.3;
+    const cp = g.position;
 
-    // seed debris: the jet's momentum plus a hot radial burst
+    // debris carries the jet's momentum plus a hot radial burst
     fwd.set(
       Math.sin(yaw.current) * Math.cos(pitch.current),
       Math.sin(pitch.current),
@@ -573,39 +763,69 @@ export default function PlaneLayer({
     );
     const pa = explosion.posAttr.array as Float32Array;
     for (let i = 0; i < DEBRIS_N; i++) {
-      pa[i * 3] = g.position.x;
-      pa[i * 3 + 1] = g.position.y + 0.3;
-      pa[i * 3 + 2] = g.position.z;
+      pa[i * 3] = cp.x;
+      pa[i * 3 + 1] = cp.y + 0.25;
+      pa[i * 3 + 2] = cp.z;
       const u = Math.random() * 2 - 1;
       const th = Math.random() * Math.PI * 2;
       const s2 = Math.sqrt(1 - u * u);
-      const burst = 3.5 + Math.random() * 7;
+      const burst = 3 + Math.random() * 8;
       explosion.vels[i * 3] =
-        s2 * Math.cos(th) * burst + fwd.x * speed.current * 0.3;
-      explosion.vels[i * 3 + 1] =
-        Math.abs(u) * burst + 2.5 + Math.random() * 5;
+        s2 * Math.cos(th) * burst + fwd.x * speed.current * 0.6;
+      explosion.vels[i * 3 + 1] = Math.abs(u) * burst + 2 + Math.random() * 5;
       explosion.vels[i * 3 + 2] =
-        s2 * Math.sin(th) * burst + fwd.z * speed.current * 0.3;
+        s2 * Math.sin(th) * burst + fwd.z * speed.current * 0.6;
     }
     explosion.posAttr.needsUpdate = true;
-    explosion.group.position.set(0, 0, 0);
-    const at = (s: THREE.Sprite, lift: number) =>
-      s.position.set(g.position.x, g.position.y + lift, g.position.z);
-    at(explosion.fireCore, 0.8);
-    at(explosion.fireMid, 1.2);
-    at(explosion.fireOuter, 1.6);
-    at(explosion.ring, 0.4);
-    at(explosion.flash, 1.0);
+
+    // seed the fire cluster
+    for (let i = 0; i < FIRE_N; i++) {
+      const s = explosion.fire[i];
+      s.position.set(
+        cp.x + (Math.random() - 0.5) * 1.4,
+        cp.y + 0.3 + Math.random() * 0.8,
+        cp.z + (Math.random() - 0.5) * 1.4,
+      );
+      explosion.fireVel[i * 3] = (Math.random() - 0.5) * 0.6 + fwd.x * 1.2;
+      explosion.fireVel[i * 3 + 1] = 0.6 + Math.random() * 1.1;
+      explosion.fireVel[i * 3 + 2] = (Math.random() - 0.5) * 0.6 + fwd.z * 1.2;
+      explosion.fireAge[i] = -i * 0.035;
+      explosion.fireLife[i] = 1.5 + Math.random() * 0.7;
+      explosion.fireScale0[i] = 1.1 + Math.random() * 1.5;
+      s.visible = false;
+    }
+
+    // seed the smoke column
+    for (let i = 0; i < SMOKE_N; i++) {
+      const s = explosion.smoke[i];
+      s.position.set(
+        cp.x + (Math.random() - 0.5) * 1.2,
+        cp.y + 0.4 + Math.random() * 0.5,
+        cp.z + (Math.random() - 0.5) * 1.2,
+      );
+      explosion.smokeVel[i * 3] = (Math.random() - 0.5) * 0.5;
+      explosion.smokeVel[i * 3 + 1] = 0.55 + Math.random() * 0.85;
+      explosion.smokeVel[i * 3 + 2] = (Math.random() - 0.5) * 0.5;
+      explosion.smokeAge[i] = -i * 0.12; // the column builds, puff by puff
+      explosion.smokeLife[i] = 4.5 + Math.random() * 3;
+      explosion.smokeScale0[i] = 1 + Math.random() * 1.1;
+      s.visible = false;
+    }
+
+    explosion.flash.position.set(cp.x, cp.y + 0.9, cp.z);
+    explosion.ring.position.set(cp.x, cp.y + 0.35, cp.z);
+    explosion.scorch.position.set(cp.x, crashGroundY.current + 0.05, cp.z);
+    (explosion.scorch.material as THREE.MeshBasicMaterial).opacity = 0;
     explosion.group.visible = true;
     g.visible = false;
-    trailL.pts.length = 0;
-    trailR.pts.length = 0;
-    trailL.geo.setDrawRange(0, 0);
-    trailR.geo.setDrawRange(0, 0);
+    clearTrails();
+
+    window.dispatchEvent(new CustomEvent("world:plane-crash"));
+    if (st.planeSound) playExplosion();
 
     // the payoff: the crash opens the nearest paper, exactly like clicking
     // its beacon, then the camera flies over to frame it
-    const idx = nearestPaper(data, g.position);
+    const idx = nearestPaper(data, cp);
     st.set("planeOn", false);
     timeouts.current.push(
       window.setTimeout(() => {
@@ -615,12 +835,8 @@ export default function PlaneLayer({
         paperWorldPos(data, idx, uMorph.value, tmp);
         useWorld
           .getState()
-          .requestWarp(
-            [tmp.x, tmp.y, tmp.z],
-            9 + data.paperSize[idx] * 2,
-            1.8,
-          );
-      }, 1700),
+          .requestWarp([tmp.x, tmp.y, tmp.z], 9 + data.paperSize[idx] * 2, 1.9);
+      }, 1900),
     );
   };
 
@@ -629,47 +845,87 @@ export default function PlaneLayer({
     const t = state.clock.elapsedTime;
     const g = airframe.group;
 
-    /* ---- explosion playback (independent of planeOn) ---- */
-    if (mode.current === "exploding") {
-      explodeT.current += dt;
-      const e = explodeT.current;
+    /* ---- explosion playback (independent of the next flight) ---- */
+    if (expActive.current) {
+      expT.current += dt;
+      const e = expT.current;
       const pa = explosion.posAttr.array as Float32Array;
       const vs = explosion.vels;
-      const floor = crashGroundY.current + 0.06;
+      const floor = crashGroundY.current + 0.05;
       for (let i = 0; i < DEBRIS_N; i++) {
-        vs[i * 3 + 1] -= 12 * dt;
+        vs[i * 3 + 1] -= 9.5 * dt;
         pa[i * 3] += vs[i * 3] * dt;
         pa[i * 3 + 1] += vs[i * 3 + 1] * dt;
         pa[i * 3 + 2] += vs[i * 3 + 2] * dt;
         if (pa[i * 3 + 1] < floor) {
           pa[i * 3 + 1] = floor;
-          vs[i * 3 + 1] *= -0.3;
-          vs[i * 3] *= 0.6;
-          vs[i * 3 + 2] *= 0.6;
+          vs[i * 3 + 1] *= -0.32;
+          vs[i * 3] *= 0.55;
+          vs[i * 3 + 2] *= 0.55;
         }
       }
       explosion.posAttr.needsUpdate = true;
       (explosion.points.material as THREE.PointsMaterial).opacity =
-        Math.max(0, 1 - e / 2.1) * boost;
+        Math.max(0, 1 - e / 2.6) * boost;
 
-      const ease = 1 - Math.exp(-3.2 * e);
-      const fade = (life: number) => Math.max(0, 1 - e / life);
-      explosion.fireCore.scale.setScalar(2 + 7 * ease);
-      explosion.fireCore.material.opacity = fade(0.8) * boost;
-      explosion.fireMid.scale.setScalar(3 + 11 * ease);
-      explosion.fireMid.material.opacity = fade(1.2) * 0.85 * boost;
-      explosion.fireOuter.scale.setScalar(4 + 15 * ease);
-      explosion.fireOuter.material.opacity = fade(1.6) * 0.6 * boost;
-      explosion.ring.scale.setScalar(1 + 26 * Math.min(1, e / 0.9));
-      explosion.ring.material.opacity = fade(0.9) * 0.7 * boost;
-      explosion.flash.scale.setScalar(24);
-      explosion.flash.material.opacity = fade(0.15) * boost;
-
-      if (e > 2.3) {
-        explosion.group.visible = false;
-        mode.current = null;
+      for (let i = 0; i < FIRE_N; i++) {
+        explosion.fireAge[i] += dt;
+        const age = explosion.fireAge[i];
+        const life = explosion.fireLife[i];
+        const s = explosion.fire[i];
+        if (age < 0 || age > life) {
+          s.visible = false;
+          continue;
+        }
+        s.visible = true;
+        s.position.x += explosion.fireVel[i * 3] * dt;
+        s.position.y += explosion.fireVel[i * 3 + 1] * dt;
+        s.position.z += explosion.fireVel[i * 3 + 2] * dt;
+        const grow = 1 - Math.exp(-3.5 * age);
+        const shrink = 1 - 0.85 * Math.max(0, age / life - 0.55) / 0.45;
+        const flicker = 0.72 + 0.28 * Math.sin(t * 17 + i * 2.4);
+        s.scale.setScalar(
+          explosion.fireScale0[i] * (0.5 + 3.2 * grow) * shrink,
+        );
+        s.material.opacity = (1 - age / life) * flicker * boost;
       }
-      return;
+
+      for (let i = 0; i < SMOKE_N; i++) {
+        explosion.smokeAge[i] += dt;
+        const age = explosion.smokeAge[i];
+        const life = explosion.smokeLife[i];
+        const s = explosion.smoke[i];
+        if (age < 0 || age > life) {
+          s.visible = false;
+          continue;
+        }
+        s.visible = true;
+        s.position.x += explosion.smokeVel[i * 3] * dt;
+        s.position.y += explosion.smokeVel[i * 3 + 1] * dt;
+        s.position.z += explosion.smokeVel[i * 3 + 2] * dt;
+        s.material.rotation = i * 1.7 + age * 0.35 * (i % 2 ? 1 : -1);
+        s.scale.setScalar(explosion.smokeScale0[i] + age * 1.05);
+        s.material.opacity =
+          Math.min(1, age * 2.5) * (1 - age / life) * 0.55;
+      }
+
+      const bump =
+        e > 0.26 && e < 0.44 ? Math.sin((Math.PI * (e - 0.26)) / 0.18) : 0;
+      explosion.flash.scale.setScalar(16);
+      explosion.flash.material.opacity =
+        (Math.max(0, 1 - e / 0.13) + 0.45 * bump) * boost;
+
+      const rt = Math.min(1, e / 0.85);
+      explosion.ring.scale.setScalar(1 + 21 * rt);
+      explosion.ring.material.opacity = Math.pow(1 - rt, 1.5) * 0.8 * boost;
+
+      (explosion.scorch.material as THREE.MeshBasicMaterial).opacity =
+        Math.min(1, e * 2.5) * 0.7 * Math.max(0, 1 - e / EXPLOSION_LIFE);
+
+      if (e > EXPLOSION_LIFE) {
+        explosion.group.visible = false;
+        expActive.current = false;
+      }
     }
 
     if (mode.current !== "flying") return;
@@ -684,8 +940,9 @@ export default function PlaneLayer({
       (ks.has("s") || ks.has("arrowdown") ? 1 : 0);
     const thr = (ks.has("shift") ? 1 : 0) - (ks.has("control") ? 1 : 0);
 
+    // 390 tonnes: every response is slow and committed
     throttle.current = THREE.MathUtils.clamp(
-      throttle.current + thr * 0.55 * dt,
+      throttle.current + thr * 0.28 * dt,
       0,
       1,
     );
@@ -694,19 +951,21 @@ export default function PlaneLayer({
       -PITCH_MAX,
       PITCH_MAX,
     );
-    if (!pit) pitch.current *= Math.max(0, 1 - 1.1 * dt); // gentle auto-level
-    roll.current +=
-      (-turn * BANK_MAX - roll.current) * Math.min(1, 6 * dt);
+    if (!pit) pitch.current *= Math.max(0, 1 - 0.35 * dt); // lazy auto-trim
+    roll.current += (-turn * BANK_MAX - roll.current) * Math.min(1, 2.2 * dt);
     yaw.current +=
-      turn * TURN_RATE * dt * (0.4 + 0.6 * Math.min(1, speed.current / 16));
+      (-roll.current / BANK_MAX) *
+      TURN_RATE *
+      dt *
+      (0.5 + 0.5 * Math.min(1, speed.current / 12));
 
     /* ---- fly ---- */
     const target = SPEED_MIN + (SPEED_MAX - SPEED_MIN) * throttle.current;
-    speed.current += (target - speed.current) * Math.min(1, 0.8 * dt);
+    speed.current += (target - speed.current) * Math.min(1, 0.22 * dt);
     speed.current = THREE.MathUtils.clamp(
-      speed.current - pitch.current * 7 * dt, // dives gain speed, climbs bleed it
-      4,
-      34,
+      speed.current - pitch.current * 4.5 * dt, // dives gain speed, climbs bleed it
+      3.5,
+      22,
     );
     fwd.set(
       Math.sin(yaw.current) * Math.cos(pitch.current),
@@ -727,11 +986,11 @@ export default function PlaneLayer({
       yaw.current +=
         THREE.MathUtils.clamp(d, -1, 1) *
         Math.min(1, (r - BOUND) / 16) *
-        1.8 *
+        1.6 *
         dt;
-      if (r > BOUND + 22) {
-        g.position.x *= (BOUND + 22) / r;
-        g.position.z *= (BOUND + 22) / r;
+      if (r > BOUND + 26) {
+        g.position.x *= (BOUND + 26) / r;
+        g.position.z *= (BOUND + 26) / r;
       }
     }
 
@@ -741,13 +1000,28 @@ export default function PlaneLayer({
     poseRef.current = pose;
 
     /* ---- terrain contact (only while the world is a landscape) ---- */
-    if (uMorph.value < 0.5) {
-      const gy = Math.max(groundHeightAt(data, g.position.x, g.position.z), 0);
-      if (g.position.y <= gy + 0.9) {
-        crash();
-        return;
-      }
+    const gy = Math.max(groundHeightAt(data, g.position.x, g.position.z), 0);
+    if (uMorph.value < 0.5 && g.position.y <= gy + 0.35) {
+      crash();
+      return;
     }
+
+    /* ---- cockpit telemetry for the HUD ---- */
+    const vsRaw = ((g.position.y - lastY.current) / Math.max(dt, 1e-4)) * 112 * 60;
+    lastY.current = g.position.y;
+    vsSmooth.current += (vsRaw - vsSmooth.current) * Math.min(1, dt * 4);
+    planeTelemetry.active = true;
+    planeTelemetry.kts = speed.current * 29;
+    planeTelemetry.altFt = g.position.y * 112;
+    planeTelemetry.aglFt = Math.max(0, (g.position.y - gy) * 112);
+    planeTelemetry.vsFpm = vsSmooth.current;
+    planeTelemetry.heading =
+      (Math.atan2(fwd.x, fwd.z) * (180 / Math.PI) + 360) % 360;
+    planeTelemetry.pitchDeg = pitch.current * (180 / Math.PI);
+    planeTelemetry.rollDeg = -roll.current * (180 / Math.PI);
+    planeTelemetry.throttle = throttle.current;
+
+    engine.current?.update(throttle.current, speed.current);
 
     /* ---- dressing: strobes, exhaust, contrails ---- */
     const phase = t % 1.2;
@@ -760,10 +1034,10 @@ export default function PlaneLayer({
     }
 
     for (const [trail, sx] of [
-      [trailL, -3.6],
-      [trailR, 3.6],
+      [trailL, -3.85],
+      [trailR, 3.85],
     ] as const) {
-      tmp.set(sx, -0.18, -1.3);
+      tmp.set(sx, -0.12, -1.15);
       g.localToWorld(tmp);
       trail.pts.push(tmp.x, tmp.y, tmp.z);
       if (trail.pts.length > TRAIL_N * 3) trail.pts.splice(0, 3);
@@ -778,8 +1052,13 @@ export default function PlaneLayer({
     <group>
       {planeOn && (
         <>
-          <ambientLight intensity={0.55} />
-          <directionalLight position={[30, 60, 20]} intensity={2.6} />
+          <ambientLight intensity={0.3} />
+          <hemisphereLight
+            color="#9db8ff"
+            groundColor="#3a2f22"
+            intensity={0.8}
+          />
+          <directionalLight position={[30, 60, 20]} intensity={2.2} />
         </>
       )}
       <primitive object={airframe.group} />

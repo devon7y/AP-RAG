@@ -53,6 +53,16 @@ export default function CameraRig({
   const chasePos = useMemo(() => new THREE.Vector3(), []);
   const chaseTgt = useMemo(() => new THREE.Vector3(), []);
   const chasing = useRef(false);
+  const shake = useRef(0);
+
+  // the crash rattles the camera
+  useEffect(() => {
+    const onCrash = () => {
+      shake.current = 1;
+    };
+    window.addEventListener("world:plane-crash", onCrash);
+    return () => window.removeEventListener("world:plane-crash", onCrash);
+  }, []);
 
   // the idle orbit stops for good the moment the user moves the camera
   useEffect(() => {
@@ -134,19 +144,28 @@ export default function CameraRig({
       return;
     }
 
-    // 747 chase cam — sit behind and above the jet, look past its nose
+    // post-crash camera rattle (decays over ~1.2 s)
+    if (shake.current > 0.004) {
+      camera.position.x += (Math.random() - 0.5) * 0.5 * shake.current;
+      camera.position.y += (Math.random() - 0.5) * 0.4 * shake.current;
+      camera.position.z += (Math.random() - 0.5) * 0.5 * shake.current;
+      shake.current *= Math.exp(-2.6 * dt);
+    }
+
+    // 747 chase cam — tight on the tail so the jet reads big and the world
+    // reads vast; the user's orbit input is suspended while it flies
     const st = useWorld.getState();
     const plane = getPlanePose();
     if (plane && st.planeOn && st.planeFollow) {
       chaseFwd.set(0, 0, 1).applyQuaternion(plane.quat);
       chasePos
         .copy(plane.pos)
-        .addScaledVector(chaseFwd, -14)
-        .addScaledVector(UP, 5);
-      camera.position.lerp(chasePos, 1 - Math.exp(-3.2 * dt));
-      if (camera.position.y < 1.6) camera.position.y = 1.6;
-      chaseTgt.copy(plane.pos).addScaledVector(chaseFwd, 6);
-      ctl.target.lerp(chaseTgt, 1 - Math.exp(-5 * dt));
+        .addScaledVector(chaseFwd, -4.6)
+        .addScaledVector(UP, 1.35);
+      camera.position.lerp(chasePos, 1 - Math.exp(-4.5 * dt));
+      if (camera.position.y < 0.9) camera.position.y = 0.9;
+      chaseTgt.copy(plane.pos).addScaledVector(chaseFwd, 2.4);
+      ctl.target.lerp(chaseTgt, 1 - Math.exp(-7 * dt));
       if (ctl.enabled) ctl.enabled = false;
       chasing.current = true;
       ctl.update();
