@@ -2,6 +2,7 @@
 
 **Written:** 2026-07-09, mid-ingest of the full Westbury corpus (4,397 / 9,712 papers processed, 45%).
 **Updated:** 2026-07-09 PM — the 4,397-doc store was deployed to the PC and measured end-to-end; see **§7 (measured results)**. §3.7's unknowns are now numbers, §3.10 is fixed in code, and a new issue was found: **§3.11 (Qdrant sidecar sync loss)**.
+**Updated:** 2026-07-09 late PM — **§7.7: the PC now serves from Neo4j (graph) + PostgreSQL (KV), fp32 vectors unchanged** — startup 15 min → 2 min, query-server RAM 33.7 GB → 0.25 GB, retrieval parity verified. The serving side of §3.3/§3.4/§3.7 is closed; RAM no longer scales with corpus size.
 **Purpose:** hand an external reviewer (LLM or human) everything needed to resolve or mitigate the scaling problems we have hit — with real measurements, root causes, current mitigations, and the constraints any fix must respect. The corpus target is 9,712 papers now, but the system **must scale cleanly past 10,000 and potentially far beyond**, and the query side must stay efficient enough to run permanently on a single consumer Windows PC.
 
 Everything below was observed in production runs on Alliance Canada clusters (H100/A100) during 2026-07-06 → 07-09 unless noted.
@@ -55,11 +56,11 @@ That fp32 total is the single scariest number for the PC (§3.7).
 |---|---|---|---|
 | 3.1 | Per-merge entity/relation vector upserts (write amplification) | **Solved** (skip + final reembed) | closed, but creates §3.6 |
 | 3.2 | Unbounded merged entity descriptions → merge wall | **Mitigated** (hub-only summarization @100) | medium — re-summarization churn grows |
-| 3.3 | Monolithic GraphML + in-RAM NetworkX graph | **Open — the big one** | **high** |
-| 3.4 | Monolithic JSON KV stores (7 GB cache file at 45%) | Open | high |
+| 3.3 | Monolithic GraphML + in-RAM NetworkX graph | **Serving side SOLVED** (Neo4j on the PC, §7.7); ingest side still open | medium (ingest flush cost remains) |
+| 3.4 | Monolithic JSON KV stores (7 GB cache file at 45%) | **Serving side SOLVED** (Postgres on the PC, §7.7); ingest side still open | medium (ingest flush cost remains) |
 | 3.5 | Embedder OOM on giant merged descriptions | Mitigated (guards) | low (root cause bounded by §3.2) |
 | 3.6 | Mandatory final reembed pass (~10.7M vectors on 1 GPU) | Open — unquantified cost | medium-high |
-| 3.7 | PC serving footprint (RAM/VRAM/latency at 3.4M+ nodes) | **Open — user-flagged priority** | **high** |
+| 3.7 | PC serving footprint (RAM/VRAM/latency at 3.4M+ nodes) | **Largely SOLVED** (measured §7, fixed §7.7: RAM/startup now corpus-independent); remaining: concurrency ceiling | low-medium (concurrency only) |
 | 3.8 | Retrieval quality at scale (hub domination, top-k dilution) | Open — unmeasured | unknown |
 | 3.9 | Interruption-driven ingest (walltime cycles redo in-flight work) | Partially mitigated | medium (operational) |
 | 3.10 | Observability blackouts (hourly flush hides progress) | **Fixed** (in-memory status source + flush age, 2026-07-09) | closed |
@@ -250,10 +251,36 @@ Coverage on arrival (per §3.11): chunks 22%, entities 18%, relationships 14%. C
 - **Ghost-task hazard (cost two full 15-min loads):** the original `Qdrant`/`WestburyQueryServer` tasks carry `RestartOnFailure` every 1 min and had been crash-looping for days while the stack was "down". The moment dependencies appeared they respawned, bound :8001/:6333 first, and one ghost served the **sample KV/graph against the full Qdrant** — a silently wrong hybrid. Worse, killing the *process* doesn't stop the chain (restart fires even on a disabled task); only `schtasks /end /tn <task>` does. Both original tasks are now **disabled** (`schtasks /change /tn <name> /enable` to restore).
 - The tasks-with-restart pattern also means: never assume "the stack is down" from silence — check `netstat -ano | findstr :8001` and *which storage* the listener answers for (`/health` reports `storage`).
 
-### 7.6 What this changes about the fix priorities
+### 7.6 What this changes about the fix priorities — **implemented same day, see §7.7**
 
 1. **§3.3 (graph backend) is now the gating item for the PC as much as for ingest** — the 33.7 GB commit is mostly graph + chunk-KV dicts, and the 15-min startup is almost entirely GraphML parse. A server-grade graph store (Neo4j/Memgraph/Postgres+AGE — all upstream-supported, config-only) removes both, on both machines.
 2. **§3.4 (KV backend)**: the serving host demonstrates the same point — 5 JSON stores load into RAM whether or not a query ever touches them. Moving KV to Postgres/Redis (upstream-supported) makes PC RAM ∝ hot set, not corpus.
 3. **§3.11 sync verification** should ship before the next multi-cycle ingest run (it is a ~10-line SLURM epilogue check) — otherwise the final reembed inherits an unknown-sized hole again.
 4. **§3.6**: PC ≈ 4.2 embeds/s confirms reembed is HPC-only; add the measured-100K pilot + shard-parallel plan before corpus end.
 5. **§3.8 (retrieval quality)**: with vectors filled, the 4.4K PC deployment is the natural eval bed — build the 20–50-question gold set against it before any tuning.
+
+### 7.7 The §3.3/§3.4/§3.7 fix, SHIPPED on the PC (2026-07-09 late PM) — graph → Neo4j, KV → Postgres
+
+The serving host now runs LightRAG's upstream **Neo4j** (graph) and **PostgreSQL** (KV + doc-status) backends; vectors stay in Qdrant at **full fp32 — no quantization, zero retrieval-quality tradeoffs**. The LightRAG fork remains patch-free: backends are constructor kwargs, now env-selectable in `query_server.py` (`KV_STORAGE` / `GRAPH_STORAGE` / `DOC_STATUS_STORAGE`, defaults unchanged = file backends).
+
+**Measured, same store, same box, same questions (file-based → DB backends):**
+
+| Metric | JsonKV + NetworkX/GraphML | PG + Neo4j |
+|---|---|---|
+| startup to ready | ~15 min (GraphML parse) | **~2 min** |
+| query-server process | **33.7 GB commit** (exceeds RAM, lives on pagefile) | **~0.25 GB RSS** |
+| DB services RAM | — | Postgres ~0.2 GB, Qdrant ~1 GB, Neo4j capped at 3 g heap + 4 g page cache |
+| naive /retrieve (warm) | 2.4–2.5 s | 2.7–3.0 s |
+| local /retrieve | 9.2–9.5 s | 9.9–10.8 s |
+| global /retrieve | 9.0–9.8 s | 8.0–9.0 s |
+| hybrid /retrieve | 8.2–11.2 s | 8.2–11.7 s |
+| result shapes (chunks/entities/refs) | baseline | **identical — retrieval parity** |
+| 4-way concurrency | 28.4 s mean / 50.3 s max | 30.1 s mean / 59.2 s max |
+
+**Reading:** RAM and startup no longer scale with corpus size — at 10K or 25K papers the query server stays ~hundreds of MB and boots in ~2 min; the graph/KV live on NVMe behind bounded caches. Latency parity confirms the graph backend was never the per-query bottleneck (the embedder + fp32 vector search + LightRAG's per-query pipeline are). Concurrency (~30 s at 4-way) is now the top *remaining* §3.7 item and is embedder/event-loop-bound, not memory-bound — it needs its own lever (embedder batching/second instance), not storage work.
+
+**Deployment shape (PC):** native Windows services `PostgreSQL-rag` (PG 17.5 zip install at `C:\rag_server\pgsql`, data `C:\rag_server\pgdata`, `shared_buffers=512MB` — 2 GB caused Windows error-1455 shared-memory reattach failures under memory pressure; keep it small, the OS cache does the rest) and `neo4j` (Community 5.26.9 zip at `C:\rag_server\neo4j`, JDK 21, database `neo4j` — Community has no multi-DB, LightRAG logs a fallback warning, harmless). Launcher: `start_query_server_full_db.bat` / task `WestburyQueryServerFullDB`; `restart_aprag_pc.sh` updated to the new stack. File-based launchers remain as fallback.
+
+**Migration path (repeatable for every future corpus drop):** `scripts/migrate_to_db_backends.py` — drives LightRAG's own storage classes (schema correct by construction, idempotent MERGE/ON-CONFLICT), streams the GraphML with iterparse (**never** `nx.read_graphml` — its ~15 GB peak OOM'd the box on the first attempt; the streaming version runs in ~MBs). Measured: 5.6 M KV records ≈ 5 min (~30 K rec/s), 1.63 M nodes ≈ 100 s, 3.3 M edges ≈ 10.5 min. **Total ≈ 20 min** per corpus refresh, HPC files → serving DBs. The HPC pipeline is untouched — it still produces portable files (§5 constraint 4 intact); the PC ingests them locally.
+
+**At 10K+ (projected on measured rates):** migration ~45 min, Neo4j store ~10–15 GB on NVMe (page cache can stay 4–8 g), PG ~15 GB, Qdrant fp32 vectors ~26 GB for chunks (+~165 GB if entity/relation vectors are ever held at full dim — disk is the constraint there, and the user has confirmed SSD capacity is not an issue). Nothing left in this design scales with corpus size in RAM.

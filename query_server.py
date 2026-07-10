@@ -34,6 +34,7 @@ from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
 
 import apa_citations as apa     # APA7 rewriting of the answer LLM's numeric citations
+import aprag_graph as kg        # knowledge-graph explorer shaping (pure helpers)
 import aprag_search as search   # metadata-filtered semantic search (pure helpers)
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -46,6 +47,14 @@ QDRANT_URL    = os.environ.get("QDRANT_URL", "http://localhost:6333")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 LLM_MODEL     = os.environ.get("LLM_MODEL", "gpt-5.4-mini")
 EMBEDDING_DIM = 4096
+# Storage backends (docs/SCALING_ISSUES.md §3.3/§3.4/§7): defaults are LightRAG's
+# file backends (whole store in process RAM — fine for small corpora). For 10K+
+# papers set KV_STORAGE=PGKVStorage / DOC_STATUS_STORAGE=PGDocStatusStorage /
+# GRAPH_STORAGE=Neo4JStorage (+ POSTGRES_* / NEO4J_* env, populated by
+# scripts/migrate_to_db_backends.py) so RAM scales with the hot set, not the corpus.
+KV_STORAGE         = os.environ.get("KV_STORAGE", "JsonKVStorage")
+DOC_STATUS_STORAGE = os.environ.get("DOC_STATUS_STORAGE", "JsonDocStatusStorage")
+GRAPH_STORAGE      = os.environ.get("GRAPH_STORAGE", "NetworkXStorage")
 HOST          = os.environ.get("HOST", "0.0.0.0")
 PORT          = int(os.environ.get("PORT", 8001))
 
@@ -167,7 +176,9 @@ async def _sample_page_aware() -> bool | None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _rag, _PAGE_AWARE
-    print("Loading LightRAG knowledge graph...", flush=True)
+    print(f"Loading LightRAG knowledge graph... "
+          f"(kv={KV_STORAGE}, graph={GRAPH_STORAGE}, doc_status={DOC_STATUS_STORAGE})",
+          flush=True)
     _rag = LightRAG(
         working_dir=STORAGE_DIR,
         llm_model_func=openai_llm,
@@ -179,6 +190,9 @@ async def lifespan(app: FastAPI):
         ),
         vector_storage="QdrantVectorDBStorage",
         vector_db_storage_cls_kwargs={"cosine_better_than_threshold": 0.2},
+        kv_storage=KV_STORAGE,
+        doc_status_storage=DOC_STATUS_STORAGE,
+        graph_storage=GRAPH_STORAGE,
     )
     await _rag.initialize_storages()
     _PAGE_AWARE = await _sample_page_aware()
@@ -195,6 +209,7 @@ app = FastAPI(title="AP-RAG Query Server", lifespan=lifespan)
 
 class Filters(BaseModel):
     """Metadata filters resolved against the manifest to scope retrieval to a paper set."""
+    papers: list[str] | None = None        # pinned papers by filename (".pdf" optional, exact)
     authors: list[str] | None = None       # surname substrings (any-match)
     year: int | None = None
     years: list[int] | None = None         # discrete years (any-match)
@@ -731,6 +746,241 @@ def paper_detail(filename: str):
             "hades_path": rm["hades_path"]}
 
 
+# ── Papers index / related papers / trends (web exploration features) ──────────
+
+
+# Slim per-paper index for the web client's in-composer paper detection ("Westbury
+# (2019)" → a pinned-paper filter chip). One manifest pass, cached like _FACETS.
+_PAPERS_INDEX: dict = {"data": None}
+
+
+def _compute_papers_index(manifest: dict) -> list[list]:
+    rows: list[list] = []
+    for fn, rec in (manifest or {}).items():
+        if not isinstance(rec, dict):
+            continue
+        authors = rec.get("authors") or []
+        fam = (authors[0].get("family") or "").strip() if authors else ""
+        year = search._record_year(rec)
+        rows.append([fn, (rec.get("title") or "").strip(), fam, year or 0])
+    rows.sort(key=lambda r: r[0].lower())
+    return rows
+
+
+@app.get("/papers_index", dependencies=[Depends(require_api_key)])
+def papers_index():
+    """Every paper as a compact [filename, title, first_author_family, year] row —
+    the corpus-wide lookup the web composer uses to detect paper mentions client-side."""
+    if _PAPERS_INDEX["data"] is None:
+        _PAPERS_INDEX["data"] = _compute_papers_index(apa.load_manifest(APA_MANIFEST))
+    return {"papers": _PAPERS_INDEX["data"]}
+
+
+class SimilarRequest(BaseModel):
+    """Papers most similar to one paper (chunk-centroid nearest neighbours)."""
+    filename: str
+    top_k: int = 12                 # papers returned
+    chunk_top_k: int | None = None  # raw chunks scanned before folding (default top_k*5)
+
+
+@app.post("/similar", dependencies=[Depends(require_api_key)])
+async def similar_papers(req: SimilarRequest):
+    """Rank the corpus against one paper's chunk centroid — "more like this".
+
+    The query vector is the paper's unit-norm mean chunk vector (same computation and
+    cache as /paper_centroid); its own chunks are excluded via a Qdrant must_not filter,
+    then hits fold into ranked papers exactly like /search."""
+    if _rag is None:
+        raise HTTPException(status_code=503, detail="RAG not initialized")
+    from qdrant_client import models
+    manifest = apa.load_manifest(APA_MANIFEST)
+    filename = apa._basename(req.filename)
+    centroid = await _paper_centroid_vec(filename)
+    client, collection, workspace = _chunks_qdrant()
+    flt = models.Filter(
+        must=[models.FieldCondition(key="workspace_id",
+                                    match=models.MatchValue(value=workspace))],
+        must_not=[models.FieldCondition(key="file_path",
+                                        match=models.MatchValue(value=filename))],
+    )
+    limit = max(10, min(req.chunk_top_k or req.top_k * 5, 300))
+    resp = await asyncio.to_thread(
+        client.query_points, collection_name=collection, query=centroid,
+        limit=limit, with_payload=True, query_filter=flt,
+    )
+    chunks = []
+    for p in resp.points:
+        payload = p.payload or {}
+        chunks.append({
+            "content": payload.get("content", ""),
+            "file_path": payload.get("file_path", ""),
+            "chunk_id": payload.get("id") or str(getattr(p, "id", "")),
+            "score": getattr(p, "score", None),
+        })
+    papers = search.rank_papers(chunks, manifest, HADES_PAPERS_BASE,
+                                drive_map=apa.load_drive_map(APRAG_DRIVE_MAP))
+    papers = papers[:max(1, min(req.top_k, 50))]
+    for p in papers:
+        rec = manifest.get(p["filename"])
+        if isinstance(rec, dict):
+            p.update({k: v for k, v in search.slim_paper_row(p["filename"], rec).items()
+                      if k not in p})
+    return {"status": "success", "filename": filename,
+            "papers": papers, "count": len(papers)}
+
+
+# Corpus trends: papers per year + per-term-per-year counts for the big facet
+# dimensions. One manifest pass, cached for the server lifetime (manifest is
+# read-mostly). Terms are aggregated case-insensitively; the first-seen casing is
+# the display name; each dimension is capped to its heaviest terms.
+_TRENDS: dict = {"data": None}
+_TREND_CAPS = {"keywords": 300, "subjects": 200, "journals": 200, "authors": 300}
+
+
+def _compute_trends(manifest: dict) -> dict:
+    years: dict[int, int] = {}
+    dims: dict[str, dict[str, dict]] = {k: {} for k in _TREND_CAPS}
+
+    def bump(dim: str, term: str, year: int):
+        t = term.strip()
+        if not t:
+            return
+        key = t.lower()
+        entry = dims[dim].setdefault(key, {"term": t, "total": 0, "counts": {}})
+        entry["total"] += 1
+        entry["counts"][year] = entry["counts"].get(year, 0) + 1
+
+    for rec in (manifest or {}).values():
+        if not isinstance(rec, dict):
+            continue
+        y = search._record_year(rec)
+        if y is None or not (1800 <= y <= 2100):
+            continue
+        years[y] = years.get(y, 0) + 1
+        for kw in (rec.get("keywords") or []):
+            bump("keywords", str(kw), y)
+        for sub in (rec.get("subjects") or []):
+            bump("subjects", str(sub), y)
+        ct = rec.get("container_title") or ""
+        if ct:
+            bump("journals", str(ct), y)
+        for a in (rec.get("authors") or []):
+            fam = (a.get("family") or "").strip()
+            if fam:
+                bump("authors", fam, y)
+
+    out = {"years": {str(y): n for y, n in sorted(years.items())}}
+    for dim, cap in _TREND_CAPS.items():
+        ranked = sorted(dims[dim].values(), key=lambda e: -e["total"])[:cap]
+        out[dim] = [{"term": e["term"], "total": e["total"],
+                     "counts": {str(y): n for y, n in sorted(e["counts"].items())}}
+                    for e in ranked]
+    return out
+
+
+@app.get("/trends", dependencies=[Depends(require_api_key)])
+def trends():
+    """Corpus-wide publication trends for the web Trends dashboard."""
+    if _TRENDS["data"] is None:
+        _TRENDS["data"] = _compute_trends(apa.load_manifest(APA_MANIFEST))
+    return _TRENDS["data"]
+
+
+# ── Knowledge-graph explorer (web /graph) ───────────────────────────────────
+# Read-only browsing of the LightRAG entity/relation graph already loaded in memory
+# (NetworkXStorage preloads `_graph` at startup; serving never mutates it, so direct
+# reads are safe — same read-only-private-attr pattern as chunks_vdb._client). The
+# degree-sorted entity index and the file→entities reverse map are built once per
+# server lifetime, lazily.
+
+_KG: dict = {"index": None, "by_lower": None, "file_map": None}
+
+
+def _kg_graph():
+    graph = getattr(getattr(_rag, "chunk_entity_relation_graph", None), "_graph", None)
+    if graph is None:
+        raise HTTPException(status_code=501, detail="knowledge graph unavailable")
+    return graph
+
+
+def _kg_index() -> list:
+    if _KG["index"] is None:
+        _t0 = time.perf_counter()
+        idx = kg.build_entity_index(_kg_graph())
+        _KG["index"] = idx
+        _KG["by_lower"] = {r[0]: r[1] for r in idx}
+        print(f"[TIMING] kg index {time.perf_counter()-_t0:.2f}s ({len(idx)} entities)",
+              flush=True)
+    return _KG["index"]
+
+
+@app.get("/graph/overview", dependencies=[Depends(require_api_key)])
+def graph_overview():
+    """Graph sizes + per-entity-type counts with each type's top entities."""
+    if _rag is None:
+        raise HTTPException(status_code=503, detail="RAG not initialized")
+    return kg.overview(_kg_graph(), _kg_index())
+
+
+@app.get("/graph/entities", dependencies=[Depends(require_api_key)])
+def graph_entities(
+    q: str | None = None,
+    entity_type: str | None = Query(default=None, alias="type"),
+    file: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """Search/browse entities, degree-sorted. ``q`` = name substring, ``type`` =
+    exact entity type, ``file`` = only entities extracted from that paper
+    ("concepts in this paper")."""
+    if _rag is None:
+        raise HTTPException(status_code=503, detail="RAG not initialized")
+    graph = _kg_graph()
+    index = _kg_index()
+    names = None
+    if file:
+        if _KG["file_map"] is None:
+            _t0 = time.perf_counter()
+            _KG["file_map"] = kg.build_file_map(index, graph)
+            print(f"[TIMING] kg file map {time.perf_counter()-_t0:.2f}s", flush=True)
+        names = set(_KG["file_map"].get(apa._basename(file).lower(), []))
+    total, page = kg.search_entities(
+        index, q=q, etype=entity_type, names=names, limit=limit, offset=offset)
+    return {
+        "total": total,
+        "entities": [kg.entity_summary(graph, r) for r in page],
+        "offset": offset,
+        "limit": limit,
+    }
+
+
+@app.get("/graph/entity", dependencies=[Depends(require_api_key)])
+def graph_entity(name: str):
+    """One entity's full card: consolidated description, neighbours (strongest
+    edges first), and the papers it was extracted from (slim bib fields)."""
+    if _rag is None:
+        raise HTTPException(status_code=503, detail="RAG not initialized")
+    graph = _kg_graph()
+    _kg_index()  # ensures the case-insensitive name map exists
+    canonical = _KG["by_lower"].get(str(name).strip().lower())
+    detail = kg.entity_detail(graph, canonical) if canonical else None
+    if detail is None:
+        raise HTTPException(status_code=404, detail="unknown entity")
+    manifest = apa.load_manifest(APA_MANIFEST)
+    papers = []
+    for fn in detail.pop("files"):
+        base = apa._basename(fn)
+        rec = manifest.get(base)
+        rec = rec if isinstance(rec, dict) else {}
+        papers.append({
+            "filename": base,
+            "title": (rec.get("title") or "").strip(),
+            "year": str(rec.get("year") or ""),
+        })
+    detail["papers"] = papers
+    return detail
+
+
 # ── Atlas of Mind support (web/app/(atlas) proxies these over the tunnel) ─────
 # Raw vector-space primitives the atlas experiences need beyond /query·/retrieve:
 # embeddings for arbitrary text, direct chunk-vector search, stored-vector fetch,
@@ -822,19 +1072,18 @@ async def vectors(req: VectorsRequest):
 _CENTROID_CACHE: dict[str, list[float]] = {}
 
 
-@app.post("/paper_centroid", dependencies=[Depends(require_api_key)])
-async def paper_centroid(req: PaperCentroidRequest):
-    """Unit-norm mean of all chunk vectors of one paper (cached; corpus is read-only)."""
-    if _rag is None:
-        raise HTTPException(status_code=503, detail="RAG not initialized")
-    cached = _CENTROID_CACHE.get(req.file)
+async def _paper_centroid_vec(file: str) -> list[float]:
+    """Unit-norm mean of all chunk vectors of one paper (cached; corpus is read-only).
+    404s when the file has no chunks in the store. Shared by /paper_centroid (Atlas)
+    and /similar (related papers)."""
+    cached = _CENTROID_CACHE.get(file)
     if cached is not None:
-        return {"centroid": cached, "cached": True}
+        return cached
     from qdrant_client import models
     client, collection, workspace = _chunks_qdrant()
     flt = models.Filter(must=[
         models.FieldCondition(key="workspace_id", match=models.MatchValue(value=workspace)),
-        models.FieldCondition(key="file_path", match=models.MatchValue(value=req.file)),
+        models.FieldCondition(key="file_path", match=models.MatchValue(value=file)),
     ])
     vecs: list[list[float]] = []
     offset = None
@@ -850,8 +1099,18 @@ async def paper_centroid(req: PaperCentroidRequest):
         raise HTTPException(status_code=404, detail="no chunks for that file")
     mean = np.asarray(vecs, dtype=np.float64).mean(axis=0)
     centroid = (mean / (np.linalg.norm(mean) + 1e-9)).tolist()
-    _CENTROID_CACHE[req.file] = centroid
-    return {"centroid": centroid, "n_chunks": len(vecs)}
+    _CENTROID_CACHE[file] = centroid
+    return centroid
+
+
+@app.post("/paper_centroid", dependencies=[Depends(require_api_key)])
+async def paper_centroid(req: PaperCentroidRequest):
+    """Unit-norm mean of all chunk vectors of one paper (cached; corpus is read-only)."""
+    if _rag is None:
+        raise HTTPException(status_code=503, detail="RAG not initialized")
+    was_cached = req.file in _CENTROID_CACHE
+    centroid = await _paper_centroid_vec(req.file)
+    return {"centroid": centroid, "cached": was_cached}
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
