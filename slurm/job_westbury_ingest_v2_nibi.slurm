@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=32G
 #SBATCH --gpus=h100:1
-#SBATCH --signal=B:TERM@600
+#SBATCH --signal=B:TERM@1200
 # ^ deliver SIGTERM to this shell 10 min BEFORE walltime: the trap below stops
 #   the ingest (its in-python handler flushes storages), leaving real time for
 #   the Qdrant stop + rsync-back. Without it, SLURM's ~30s KillWait silently
@@ -75,6 +75,21 @@ QDRANT_LUSTRE="$WORKDIR/$QDRANT_SUBDIR"
 QDRANT_LOCAL="$SLURM_TMPDIR/qdrant_storage"
 QDRANT_PID=""
 
+# §3.11 sync verification: exact per-collection point counts over HTTP.
+# Logged at seed and at shutdown, and recorded to .last_sync_counts on a
+# successful rsync-back, so a lost cycle delta is caught the next seed
+# instead of surfacing months later as silently-missing vectors.
+qdrant_counts() {
+    local out="" c n
+    for c in chunks entities relationships; do
+        n=$(curl -sf -X POST "http://localhost:6333/collections/lightrag_vdb_${c}/points/count" \
+             -H 'Content-Type: application/json' -d '{"exact":true}' 2>/dev/null \
+             | grep -o '"count":[0-9]*' | cut -d: -f2)
+        out="$out ${c}=${n:-na}"
+    done
+    echo "$out"
+}
+
 if [ -f "$QDRANT_SIF" ]; then
     mkdir -p "$QDRANT_LOCAL" "$QDRANT_LUSTRE"
 
@@ -119,6 +134,16 @@ fi
 QDRANT_URL=""
 if [ -n "$QDRANT_PID" ] && kill -0 $QDRANT_PID 2>/dev/null; then
     QDRANT_URL="http://localhost:6333"
+    SEED_COUNTS=$(qdrant_counts)
+    echo "[$(date)] [QDRANT-SEED] points:$SEED_COUNTS"
+    if [ -f "$QDRANT_LUSTRE/.last_sync_counts" ]; then
+        LAST_COUNTS=$(cat "$QDRANT_LUSTRE/.last_sync_counts")
+        if [ "$SEED_COUNTS" != "$LAST_COUNTS" ]; then
+            echo "[$(date)] ERROR: [QDRANT-SEED] seeded counts differ from last recorded sync (§3.11 vector loss):"
+            echo "    last sync:$LAST_COUNTS"
+            echo "    seeded   :$SEED_COUNTS"
+        fi
+    fi
 fi
 
 # ── Early SIGTERM → graceful stop with time to sync (see --signal above) ──────
@@ -206,13 +231,25 @@ echo "[$(date)] Ingestion finished with exit code $EXIT_CODE."
 
 # ── Stop Qdrant and sync data back to persistent scratch ─────────────
 if [ -n "$QDRANT_PID" ]; then
+    FINAL_COUNTS=""
+    if kill -0 $QDRANT_PID 2>/dev/null; then
+        FINAL_COUNTS=$(qdrant_counts)
+        echo "[$(date)] [QDRANT-SYNC] points at shutdown:$FINAL_COUNTS"
+    else
+        echo "[$(date)] WARNING: [QDRANT-SYNC] sidecar already dead — counts unverifiable; this cycle's delta may be lost (§3.11)."
+    fi
     kill $QDRANT_PID 2>/dev/null
     wait $QDRANT_PID 2>/dev/null
     echo "[$(date)] Qdrant sidecar stopped."
 
     echo "[$(date)] Syncing Qdrant data back to persistent scratch..."
-    rsync -a --delete "$QDRANT_LOCAL/" "$QDRANT_LUSTRE/"
-    echo "[$(date)] Qdrant sync complete ($(du -sh "$QDRANT_LUSTRE" | cut -f1))."
+    if rsync -a --delete "$QDRANT_LOCAL/" "$QDRANT_LUSTRE/"; then
+        echo "[$(date)] Qdrant sync complete ($(du -sh "$QDRANT_LUSTRE" | cut -f1))."
+        # Record what a complete store looks like; next cycle's seed verifies against this.
+        [ -n "$FINAL_COUNTS" ] && echo "$FINAL_COUNTS" > "$QDRANT_LUSTRE/.last_sync_counts"
+    else
+        echo "[$(date)] ERROR: [QDRANT-SYNC] rsync-back FAILED — this cycle's vector delta was NOT persisted (§3.11)."
+    fi
 fi
 
 exit $EXIT_CODE

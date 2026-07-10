@@ -1142,11 +1142,14 @@ async def _poll_vllm_metrics(prev: dict) -> None:
 
 # ── Live Status Monitor (1C) ──────────────────────────────────────────────────
 
-async def status_monitor(storage_dir: Path, t_start: float):
+async def status_monitor(storage_dir: Path, t_start: float, rag=None):
     """Background task that prints real extraction status and bottleneck stats every 30s.
 
-    Note: with KV_FLUSH_INTERVAL > 0 the doc-status counts read from disk lag
-    in-memory state by up to one flush interval — expected, not a stall."""
+    Counts come from the in-memory doc-status storage when ``rag`` is provided
+    (``get_status_counts()`` — real-time, no flush lag), falling back to parsing
+    ``kv_store_doc_status.json`` from disk. The disk file lags in-memory state by
+    up to KV_FLUSH_INTERVAL (crash-consistency ordering, see kv_flush_throttle);
+    with the in-memory source that lag no longer blacks out this monitor."""
     status_path = storage_dir / "kv_store_doc_status.json"
     last_processed = 0
     last_llm_calls = 0
@@ -1157,19 +1160,27 @@ async def status_monitor(storage_dir: Path, t_start: float):
     while True:
         await asyncio.sleep(INTERVAL)
         try:
-            if not status_path.exists():
-                continue
             now = time.time()
-            raw = await asyncio.get_event_loop().run_in_executor(
-                _IO_EXECUTOR, status_path.read_text
-            )
-            data = json.loads(raw)
             counts = {}
-            for k, v in data.items():
-                if not k.startswith("doc-"):
+            src = "disk"
+            if rag is not None:
+                try:
+                    counts = await rag.doc_status.get_status_counts()
+                    src = "mem"
+                except Exception:
+                    counts = {}
+            if not counts:
+                if not status_path.exists():
                     continue
-                s = v.get("status", "unknown")
-                counts[s] = counts.get(s, 0) + 1
+                raw = await asyncio.get_event_loop().run_in_executor(
+                    _IO_EXECUTOR, status_path.read_text
+                )
+                data = json.loads(raw)
+                for k, v in data.items():
+                    if not k.startswith("doc-"):
+                        continue
+                    s = v.get("status", "unknown")
+                    counts[s] = counts.get(s, 0) + 1
 
             processed = counts.get("processed", 0)
             processing = counts.get("processing", 0)
@@ -1200,7 +1211,7 @@ async def status_monitor(storage_dir: Path, t_start: float):
             print(
                 f"[STATUS] processed={processed} (+{delta_docs}) | processing={processing} | "
                 f"pending={pending} | failed={failed} | "
-                f"rate={delta_rate:.0f}/hr (overall={overall_rate:.0f}/hr)",
+                f"rate={delta_rate:.0f}/hr (overall={overall_rate:.0f}/hr) [{src}]",
                 flush=True,
             )
             print(
@@ -1224,9 +1235,11 @@ async def status_monitor(storage_dir: Path, t_start: float):
                     flush=True,
                 )
             if _kv_throttle is not None:
+                flush_age = time.monotonic() - _kv_throttle._last_flush
                 print(
                     f"[STATUS] Flush: ticks={_kv_throttle.stats['flush_ticks']} "
                     f"skipped={_kv_throttle.stats['flush_skips']} "
+                    f"last_flush_age={flush_age:.0f}s "
                     f"(interval={KV_FLUSH_INTERVAL}s)",
                     flush=True,
                 )
@@ -1968,7 +1981,7 @@ async def main():
         print(f"\nFound {len(papers)} papers. Native multimodal ingest "
               f"(INGEST_VLM=1, engine={PARSE_ENGINE}, options={PROCESS_OPTIONS})…\n")
         t_start = time.time()
-        monitor_task = asyncio.create_task(status_monitor(STORAGE_DIR, t_start))
+        monitor_task = asyncio.create_task(status_monitor(STORAGE_DIR, t_start, rag=rag))
         try:
             await ingest_native_multimodal(rag, papers)
         finally:
@@ -2051,7 +2064,7 @@ async def main():
     t_start = time.time()
 
     # Start status monitor (1C)
-    monitor_task = asyncio.create_task(status_monitor(STORAGE_DIR, t_start))
+    monitor_task = asyncio.create_task(status_monitor(STORAGE_DIR, t_start, rag=rag))
 
     succeeded = failed = skipped = 0
     counter_lock = asyncio.Lock()

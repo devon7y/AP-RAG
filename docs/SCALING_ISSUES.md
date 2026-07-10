@@ -1,6 +1,7 @@
 # AP-RAG Scaling Issues — Evidence Dossier for Review
 
 **Written:** 2026-07-09, mid-ingest of the full Westbury corpus (4,397 / 9,712 papers processed, 45%).
+**Updated:** 2026-07-09 PM — the 4,397-doc store was deployed to the PC and measured end-to-end; see **§7 (measured results)**. §3.7's unknowns are now numbers, §3.10 is fixed in code, and a new issue was found: **§3.11 (Qdrant sidecar sync loss)**.
 **Purpose:** hand an external reviewer (LLM or human) everything needed to resolve or mitigate the scaling problems we have hit — with real measurements, root causes, current mitigations, and the constraints any fix must respect. The corpus target is 9,712 papers now, but the system **must scale cleanly past 10,000 and potentially far beyond**, and the query side must stay efficient enough to run permanently on a single consumer Windows PC.
 
 Everything below was observed in production runs on Alliance Canada clusters (H100/A100) during 2026-07-06 → 07-09 unless noted.
@@ -61,7 +62,8 @@ That fp32 total is the single scariest number for the PC (§3.7).
 | 3.7 | PC serving footprint (RAM/VRAM/latency at 3.4M+ nodes) | **Open — user-flagged priority** | **high** |
 | 3.8 | Retrieval quality at scale (hub domination, top-k dilution) | Open — unmeasured | unknown |
 | 3.9 | Interruption-driven ingest (walltime cycles redo in-flight work) | Partially mitigated | medium (operational) |
-| 3.10 | Observability blackouts (hourly flush hides progress) | Open — cheap fix available | low but causes ops mistakes |
+| 3.10 | Observability blackouts (hourly flush hides progress) | **Fixed** (in-memory status source + flush age, 2026-07-09) | closed |
+| 3.11 | Qdrant sidecar sync silently loses per-cycle vector deltas | **Open — discovered 2026-07-09** (only 14–22% of vectors survived) | high until sync verification ships |
 
 ---
 
@@ -146,9 +148,29 @@ Unmeasured risk: as the corpus grows, (a) hub entities dominate local-mode retri
 
 Not a code bug, but the operating regime any fix must survive: GPU walltimes are short (4h cycles currently — 12h jobs stopped backfilling during daytime contention), so the pipeline dies and resumes many times per corpus. Each death: in-flight docs (~170–200 at `PARALLEL_DOCS=64`) are self-heal-reset to `pending` and **redone** next cycle (LLM cache makes redo cheap-ish but not free); vLLM cold-start burns ~10 min/cycle/server; the ingest `sys.exit(1)`s if no endpoints appear within 3h (a starving ingest job wastes its slot — happened twice this week); merge batches lost mid-flight lose up to `KV_FLUSH_INTERVAL` of work (§3.3). Mitigations already in: endpoint adoption/eviction (`endpoint_refresh_loop`), resume-skip + self-heal, `MAX_PARALLEL_INSERT` halved 64→32 for finer checkpointing, 1200s grace. **The structural fix is cheaper checkpoints (§3.3/§3.4) — flush cost, not scheduler behavior, is what makes interruptions expensive.**
 
-### 3.10 Observability blackouts (OPEN — cheap fix)
+### 3.10 Observability blackouts (FIXED 2026-07-09)
 
-Because doc-status persists only at the hourly KV flush, `[STATUS] processed=` freezes for up to an hour while work proceeds — this produced repeated **false stall alarms** (and one real stall was initially dismissed as a flush artifact; the inverse error is worse). **Direction:** decouple the tiny doc-status flush (15 MB) from the giant KV/graph flush, or emit a one-line JSON heartbeat (docs done, chunks extracted, merge-stage x/y, last-flush age) every N minutes to a separate file. Trivial, high leverage for unattended operation — every ops mistake this week traced back to guessing pipeline state through a frosted window.
+Because doc-status persists only at the hourly KV flush, `[STATUS] processed=` froze for up to an hour while work proceeded — this produced repeated **false stall alarms** (and one real stall was initially dismissed as a flush artifact; the inverse error is worse).
+
+**Fix shipped** (`pipeline/ingest.py`): `status_monitor` now takes the live `rag` instance and reads counts from the **in-memory** doc-status storage (`rag.doc_status.get_status_counts()` — public, lock-protected API) instead of the on-disk JSON, falling back to disk parsing if unavailable. Status lines are tagged `[mem]`/`[disk]` so logs show which source produced them, and the Flush line now carries `last_flush_age=NNNs`. Note the flush *ordering* is untouched: flushing doc-status more often was NOT an option — the kv_flush_throttle invariant (doc-status on disk never newer than the data stores) is what makes hard kills safe. The monitor now sees real-time truth while disk keeps its crash-consistent lag.
+
+### 3.11 Qdrant sidecar sync silently loses per-cycle vector deltas (OPEN — discovered 2026-07-09)
+
+**Symptom (measured on the PC deployment of the 4,397-doc snapshot).** The synced `qdrant_storage_full` holds only a fraction of the vectors the KV/graph stores say exist:
+
+| Collection | present | expected | coverage |
+|---|---|---|---|
+| chunks | 39,486 | 177,956 | **22%** |
+| entities | 277,441 | ~1.63M | **18%** (partial by design post-§3.1, but pre-SKIP cycles are also missing) |
+| relationships | 443,677 | ~3.30M | **14%** |
+
+**Root cause.** Each ingest cycle seeds node-local Qdrant **from scratch storage**, and syncs back **only at walltime SIGTERM**. Any cycle whose sync was starved (the whole 600 s-grace era — the sync visibly completed only after the grace was raised to 1200 s) permanently lost its delta: the next cycle re-seeded from the stale base, and later successful syncs persisted stale+newer, never recovering the hole. Roughly 4–5 cycles' worth of deltas survived out of the full run. **KV stores and the graph are unaffected** (different flush path), so everything is rebuildable — but nothing ever *verified* the sync, so the loss was invisible until the store was actually queried.
+
+**Directions.**
+
+1. **Verify every sync**: after the rsync-back, count points per collection (cheap HTTP) and compare against counts before the cycle + chunks written this cycle; log a `[QDRANT-SYNC] before=N after=M delta=K` line and **fail loudly** (nonzero exit / marker file) on regression. Trivial to add to the SLURM epilogue.
+2. Consider Qdrant **snapshot API** instead of raw-dir rsync (consistent point-in-time archive, no torn-WAL risk), or syncing mid-run at the hourly flush tick, not only at SIGTERM.
+3. Accept the loss operationally: §3.6's reembed pass rebuilds chunks+entities+relations vectors from the (complete) KV/graph anyway — the plan already treats in-ingest vectors as disposable. But then the chunks collection should ALSO be declared disposable and excluded from the sync entirely, saving the walltime-window risk — half-syncing it is the worst of both worlds.
 
 ---
 
@@ -178,4 +200,60 @@ Because doc-status persists only at the hourly KV flush, `[STATUS] processed=` f
 - `query_server.py`, `scripts/server.py`, `docs/APRAG_ACCESS.md`, `docs/PC_OCTEN_SETUP.md` — PC serving stack (§3.7).
 - `docs/CANONICAL_INGEST_PARAMS.md`, `docs/INGEST_EFFICIENCY_OPEN_PROBLEMS.md` (§9–10 cover the embedder OOM and defer-mode history), `docs/CHUNKER_AND_PIPELINE_NOTES.md`.
 
-**Deliverable requested from the reviewer:** for each OPEN item (§3.3, §3.4, §3.6, §3.7, §3.8, §3.10): a concrete, constraint-respecting design (backend choice/config, migration path from current files, HPC + PC deployment shape, and a validation plan), roughly ordered by leverage: §3.3 and §3.7 first — they share a solution space (real graph + quantized/on-disk vectors), and everything else hangs off them.
+**Deliverable requested from the reviewer:** for each OPEN item (§3.3, §3.4, §3.6, §3.7, §3.8, §3.11): a concrete, constraint-respecting design (backend choice/config, migration path from current files, HPC + PC deployment shape, and a validation plan), roughly ordered by leverage: §3.3 and §3.7 first — they share a solution space (real graph + quantized/on-disk vectors), and everything else hangs off them. §7 below replaces §3.7's guesses with measurements.
+
+---
+
+## 7. Measured results — 4,397-doc store deployed to the PC (2026-07-09 PM)
+
+The 45% snapshot (`rag_storage_full` minus the LLM-response cache, plus `qdrant_storage_full`) was snapshotted on Nibi, moved to the PC (~21 GB raw, ~8.5 GB compressed, Nibi→Mac→PC relay at ~25 MB/s/leg), and stood up next to the 175-paper sample DB. Everything below is measured, not projected.
+
+### 7.1 The PC (the §3.7 "fill in specs" blank)
+
+**AMD Ryzen 7 7700X (8c/16t) · 32 GB RAM · NVIDIA RTX 4070 Ti 12 GB · C: NVMe (77 GB free pre-deploy).** Stack: Qdrant 1.x (native exe), embed server = Qwen3-Embedding-8B **4-bit** (`EMBED_LOAD_IN_4BIT=1`, 5.2–7.3 GB VRAM), query server = lightrag 1.5.3 + gpt-5-mini via OpenAI API.
+
+### 7.2 Startup and memory — the headline
+
+| Metric | measured @4,397 docs | naive linear @9.7K | @25K |
+|---|---|---|---|
+| query-server startup (cold) | **~15 min** (KV loads ≈1 min; GraphML parse of 1.63M nodes / 3.30M edges ≈ 13–14 min) | ~33 min | ~85 min |
+| query-server **commit** (private bytes) | **33.7 GB** — exceeds the 32 GB physical RAM; Windows pages it out (RSS collapses to ~100 MB, pagefile carries the rest) | ~74 GB | ~190 GB |
+| free RAM during load | bottomed at **0.5 GB** | — | — |
+| Qdrant RSS | 33 MB idle → ~1.1 GB after queries (mmap fault-in) | — | — |
+
+**Conclusion: the RAM wall is not at 10K papers — it is already behind us at 4.4K.** The store only serves because the NT pager is willing to back 33.7 GB of commit on a 32 GB box. This converts §3.3/§3.7 from "will become untenable" to "already past the ceiling; serving survives on swap." A real graph backend + out-of-process KV (§3.3/§3.4) is the only path that scales past this point; no amount of vector quantization fixes it (vectors are already out-of-process in Qdrant — the 33.7 GB is **KV JSON dicts + the NetworkX graph**).
+
+Also validated: **do not ship `kv_store_llm_response_cache.json` to the serving host.** The server runs fine with a 0-record cache (it repopulates with query-time entries); shipping the 7.4 GB file would have added roughly 10+ GB of commit and 7 GB of transfer for nothing.
+
+### 7.3 Query latency (degraded-vector caveat: see §7.4)
+
+Single-query `/retrieve` (retrieval only, no answer LLM), warm-ish process (post page-out — first hits include page-in):
+
+| mode | /retrieve (3 runs, s) | /query e2e incl. gpt-5-mini (s) |
+|---|---|---|
+| naive | 5.7 → 2.4 → 2.5 | 7.6 |
+| local | 9.5 / 9.2 / 9.3 | 11.0 |
+| global | 9.0 / 9.8 / 9.1 | 9.8 |
+| hybrid | 11.2 / 8.2 / 11.0 | 13.0 |
+
+**Concurrency is the real problem: 4 simultaneous hybrid `/retrieve` → mean 28.4 s, max 50.3 s** (vs ~10 s solo). One embedder, one Python event loop, and a paged-out working set do not overlap. The §3.7.5 target ("4 concurrent < 10 s p95") fails by 3–5×. Fix order: RAM residency first (stop paging), then embedder batching/queueing, then judge again.
+
+### 7.4 Vector coverage + the §3.6 pilot number
+
+Coverage on arrival (per §3.11): chunks 22%, entities 18%, relationships 14%. Consequence, measured: local/hybrid retrieval returned only **1–4 entities** per query (graph expansion then padded relationships to 40–184) — retrieval *works mechanically* but recall is badly degraded until vectors are rebuilt. A fill job (`scripts/pc_fill_missing_chunks.py`) is re-embedding the 138,470 missing chunks through the PC's own embed server, matching LightRAG's exact Qdrant point schema (validated against live points before writing).
+
+**§3.6 pilot rate: the PC embeds ~4.2 chunks/s** (≈512-tok texts, 4-bit 8B, serial batches of 16) → 138K chunks ≈ 9 h. Extrapolation: the full 10.7M-vector reembed at PC speed = **~29 days** — i.e., the corpus-end reembed pass is HPC-only, and even on an H100 it needs the measured-pilot + sharding treatment §3.6 asks for. (H100 in-ingest logs showed ~16 texts/s at batch 54 while sharing the GPU with ingest — a dedicated reembed job with large batches should do far better; measure before trusting.)
+
+### 7.5 Operational notes from the deployment (PC-side runbook delta)
+
+- **Parallel stacks:** the 175-paper sample DB is untouched. Switch = `schtasks /run` on `Qdrant` + `WestburyQueryServer` (sample) *or* `QdrantFull` + `WestburyQueryServerFull` (4.4K). Both bind :6333/:8001, so exactly one pair runs at a time. New launchers: `start_qdrant_full.bat` (env `QDRANT__STORAGE__STORAGE_PATH=C:/rag_server/qdrant_storage_full`), `start_query_server_full.bat` (`STORAGE_DIR=C:\rag_server\rag_storage_full`), `start_fill_chunks.bat` (fill job; auto-restarts the full query server when done).
+- **Ghost-task hazard (cost two full 15-min loads):** the original `Qdrant`/`WestburyQueryServer` tasks carry `RestartOnFailure` every 1 min and had been crash-looping for days while the stack was "down". The moment dependencies appeared they respawned, bound :8001/:6333 first, and one ghost served the **sample KV/graph against the full Qdrant** — a silently wrong hybrid. Worse, killing the *process* doesn't stop the chain (restart fires even on a disabled task); only `schtasks /end /tn <task>` does. Both original tasks are now **disabled** (`schtasks /change /tn <name> /enable` to restore).
+- The tasks-with-restart pattern also means: never assume "the stack is down" from silence — check `netstat -ano | findstr :8001` and *which storage* the listener answers for (`/health` reports `storage`).
+
+### 7.6 What this changes about the fix priorities
+
+1. **§3.3 (graph backend) is now the gating item for the PC as much as for ingest** — the 33.7 GB commit is mostly graph + chunk-KV dicts, and the 15-min startup is almost entirely GraphML parse. A server-grade graph store (Neo4j/Memgraph/Postgres+AGE — all upstream-supported, config-only) removes both, on both machines.
+2. **§3.4 (KV backend)**: the serving host demonstrates the same point — 5 JSON stores load into RAM whether or not a query ever touches them. Moving KV to Postgres/Redis (upstream-supported) makes PC RAM ∝ hot set, not corpus.
+3. **§3.11 sync verification** should ship before the next multi-cycle ingest run (it is a ~10-line SLURM epilogue check) — otherwise the final reembed inherits an unknown-sized hole again.
+4. **§3.6**: PC ≈ 4.2 embeds/s confirms reembed is HPC-only; add the measured-100K pilot + shard-parallel plan before corpus end.
+5. **§3.8 (retrieval quality)**: with vectors filled, the 4.4K PC deployment is the natural eval bed — build the 20–50-question gold set against it before any tuning.
