@@ -6,7 +6,7 @@ import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import type { WorldData } from "./derive";
-import type { PlanePose } from "./PlaneLayer";
+import { CHASE, type PlanePose } from "./PlaneLayer";
 import { useWorld, warpHome } from "./store";
 import { uMorph } from "./uniforms";
 
@@ -152,21 +152,25 @@ export default function CameraRig({
       shake.current *= Math.exp(-2.6 * dt);
     }
 
-    // 747 chase cam — tight on the tail so the jet reads big and the world
-    // reads vast; the user's orbit input is suspended while it flies
+    // 747 chase cam — right on the tail so the jet reads big and the world
+    // reads vast; the user's orbit input is suspended while it flies. The
+    // orbit constraints (minDistance 3, horizon polar clamp) must be lifted
+    // for the duration — ctl.update() re-applies them to the camera we set.
     const st = useWorld.getState();
     const plane = getPlanePose();
     if (plane && st.planeOn && st.planeFollow) {
       chaseFwd.set(0, 0, 1).applyQuaternion(plane.quat);
       chasePos
         .copy(plane.pos)
-        .addScaledVector(chaseFwd, -4.6)
-        .addScaledVector(UP, 1.35);
-      camera.position.lerp(chasePos, 1 - Math.exp(-4.5 * dt));
-      if (camera.position.y < 0.9) camera.position.y = 0.9;
-      chaseTgt.copy(plane.pos).addScaledVector(chaseFwd, 2.4);
-      ctl.target.lerp(chaseTgt, 1 - Math.exp(-7 * dt));
+        .addScaledVector(chaseFwd, -CHASE.back)
+        .addScaledVector(UP, CHASE.up);
+      camera.position.lerp(chasePos, 1 - Math.exp(-6 * dt));
+      if (camera.position.y < 0.45) camera.position.y = 0.45;
+      chaseTgt.copy(plane.pos).addScaledVector(chaseFwd, CHASE.ahead);
+      ctl.target.lerp(chaseTgt, 1 - Math.exp(-9 * dt));
       if (ctl.enabled) ctl.enabled = false;
+      ctl.minDistance = 0.3;
+      ctl.maxPolarAngle = Math.PI;
       chasing.current = true;
       ctl.update();
       return;
@@ -174,6 +178,7 @@ export default function CameraRig({
     if (chasing.current) {
       chasing.current = false;
       ctl.enabled = true;
+      ctl.minDistance = 3; // restore the resting orbit constraint
     }
 
     // rover follow

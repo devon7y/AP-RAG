@@ -959,8 +959,12 @@ function PlanePanel() {
             <code className="text-ink-2">D / →</code> bank right
           </li>
           <li>
-            <code className="text-ink-2">Shift</code> throttle up ·{" "}
-            <code className="text-ink-2">Ctrl</code> throttle down
+            <code className="text-ink-2">Q</code> yaw left ·{" "}
+            <code className="text-ink-2">E</code> yaw right
+          </li>
+          <li>
+            <code className="text-ink-2">Space</code> throttle up ·{" "}
+            <code className="text-ink-2">Shift</code> throttle down
           </li>
           <li>
             <code className="text-ink-2">Esc</code> eject

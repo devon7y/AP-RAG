@@ -38,9 +38,9 @@ const REAL_747_URL = "/models/boeing747.glb";
 
 /* ---------------- flight constants ---------------- */
 
-const SCALE = 0.24; // model units → world units (≈2.1-unit jet: the world reads huge)
-const SPEED_MIN = 5;
-const SPEED_MAX = 17;
+const SCALE = 0.12; // model units → world units (≈1-unit jet: the world reads vast)
+const SPEED_MIN = 4;
+const SPEED_MAX = 15;
 const TURN_RATE = 0.5; // rad/s at full bank — ponderous, like 390 tonnes
 const PITCH_RATE = 0.5;
 const PITCH_MAX = 0.55;
@@ -50,6 +50,10 @@ const BOUND = 84; // beyond this radius the jet is steered home
 const SPAWN_RADIUS = 92; // the home orbit ring
 const SPAWN_ALT = 34;
 const TRAIL_N = 110;
+
+/** Chase-cam offsets (world units) — right on the tail, so the jet fills the
+ *  frame and the landscape reads enormous. CameraRig shares these. */
+export const CHASE = { back: 1.7, up: 0.5, ahead: 1.15 };
 
 /** Live cockpit readouts for the DOM HUD (written every frame, read by rAF —
  *  deliberately outside React state). Display units: 1 world unit ≈ 34 m,
@@ -397,7 +401,7 @@ function buildExplosion(): Explosion {
   geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   const pMat = new THREE.PointsMaterial({
     map: glowTexture(),
-    size: 0.75,
+    size: 0.55,
     vertexColors: true,
     transparent: true,
     depthWrite: false,
@@ -461,7 +465,7 @@ function buildExplosion(): Explosion {
   const ring = sprite(ringTexture(), "#ffb36b");
 
   // scorched ground where the jet died
-  const scorchGeo = new THREE.CircleGeometry(2.6, 40);
+  const scorchGeo = new THREE.CircleGeometry(1.8, 40);
   const scorchMat = new THREE.MeshBasicMaterial({
     color: 0x050403,
     transparent: true,
@@ -617,7 +621,7 @@ export default function PlaneLayer({
       pitch.current = 0;
       roll.current = 0;
       throttle.current = 0.55;
-      speed.current = 9;
+      speed.current = 8;
       lastY.current = g.position.y;
       vsSmooth.current = 0;
       g.rotation.set(0, yaw.current, 0);
@@ -630,8 +634,8 @@ export default function PlaneLayer({
         fwd.set(Math.sin(yaw.current), 0, Math.cos(yaw.current));
         camera.position
           .copy(g.position)
-          .addScaledVector(fwd, -4.6)
-          .add(new THREE.Vector3(0, 1.35, 0));
+          .addScaledVector(fwd, -CHASE.back)
+          .add(new THREE.Vector3(0, CHASE.up, 0));
       }
     } else if (mode.current === "flying") {
       // ejected mid-air (panel toggle / Esc) — vanish without the fireball
@@ -688,9 +692,9 @@ export default function PlaneLayer({
     if (!planeOn) return;
     const ks = keys.current;
     const RELEVANT = new Set([
-      "w", "a", "s", "d",
+      "w", "a", "s", "d", "q", "e",
       "arrowup", "arrowdown", "arrowleft", "arrowright",
-      "shift", "control",
+      " ", "shift",
     ]);
     const typing = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
@@ -707,7 +711,7 @@ export default function PlaneLayer({
       const k = e.key.toLowerCase();
       if (!RELEVANT.has(k)) return;
       ks.add(k);
-      if (k.startsWith("arrow")) e.preventDefault();
+      if (k.startsWith("arrow") || k === " ") e.preventDefault();
     };
     const onUp = (e: KeyboardEvent) => ks.delete(e.key.toLowerCase());
     const onBlur = () => ks.clear();
@@ -752,7 +756,7 @@ export default function PlaneLayer({
 
     const gy = groundHeightAt(data, g.position.x, g.position.z);
     crashGroundY.current = Math.max(gy, 0);
-    g.position.y = crashGroundY.current + 0.3;
+    g.position.y = crashGroundY.current + 0.2;
     const cp = g.position;
 
     // debris carries the jet's momentum plus a hot radial burst
@@ -764,12 +768,12 @@ export default function PlaneLayer({
     const pa = explosion.posAttr.array as Float32Array;
     for (let i = 0; i < DEBRIS_N; i++) {
       pa[i * 3] = cp.x;
-      pa[i * 3 + 1] = cp.y + 0.25;
+      pa[i * 3 + 1] = cp.y + 0.18;
       pa[i * 3 + 2] = cp.z;
       const u = Math.random() * 2 - 1;
       const th = Math.random() * Math.PI * 2;
       const s2 = Math.sqrt(1 - u * u);
-      const burst = 3 + Math.random() * 8;
+      const burst = 2.5 + Math.random() * 6;
       explosion.vels[i * 3] =
         s2 * Math.cos(th) * burst + fwd.x * speed.current * 0.6;
       explosion.vels[i * 3 + 1] = Math.abs(u) * burst + 2 + Math.random() * 5;
@@ -782,16 +786,16 @@ export default function PlaneLayer({
     for (let i = 0; i < FIRE_N; i++) {
       const s = explosion.fire[i];
       s.position.set(
-        cp.x + (Math.random() - 0.5) * 1.4,
-        cp.y + 0.3 + Math.random() * 0.8,
-        cp.z + (Math.random() - 0.5) * 1.4,
+        cp.x + (Math.random() - 0.5) * 1.0,
+        cp.y + 0.25 + Math.random() * 0.6,
+        cp.z + (Math.random() - 0.5) * 1.0,
       );
-      explosion.fireVel[i * 3] = (Math.random() - 0.5) * 0.6 + fwd.x * 1.2;
-      explosion.fireVel[i * 3 + 1] = 0.6 + Math.random() * 1.1;
-      explosion.fireVel[i * 3 + 2] = (Math.random() - 0.5) * 0.6 + fwd.z * 1.2;
+      explosion.fireVel[i * 3] = (Math.random() - 0.5) * 0.5 + fwd.x * 1.0;
+      explosion.fireVel[i * 3 + 1] = 0.5 + Math.random() * 0.9;
+      explosion.fireVel[i * 3 + 2] = (Math.random() - 0.5) * 0.5 + fwd.z * 1.0;
       explosion.fireAge[i] = -i * 0.035;
       explosion.fireLife[i] = 1.5 + Math.random() * 0.7;
-      explosion.fireScale0[i] = 1.1 + Math.random() * 1.5;
+      explosion.fireScale0[i] = 0.9 + Math.random() * 1.1;
       s.visible = false;
     }
 
@@ -799,21 +803,21 @@ export default function PlaneLayer({
     for (let i = 0; i < SMOKE_N; i++) {
       const s = explosion.smoke[i];
       s.position.set(
-        cp.x + (Math.random() - 0.5) * 1.2,
-        cp.y + 0.4 + Math.random() * 0.5,
-        cp.z + (Math.random() - 0.5) * 1.2,
+        cp.x + (Math.random() - 0.5) * 0.9,
+        cp.y + 0.3 + Math.random() * 0.4,
+        cp.z + (Math.random() - 0.5) * 0.9,
       );
-      explosion.smokeVel[i * 3] = (Math.random() - 0.5) * 0.5;
-      explosion.smokeVel[i * 3 + 1] = 0.55 + Math.random() * 0.85;
-      explosion.smokeVel[i * 3 + 2] = (Math.random() - 0.5) * 0.5;
+      explosion.smokeVel[i * 3] = (Math.random() - 0.5) * 0.4;
+      explosion.smokeVel[i * 3 + 1] = 0.45 + Math.random() * 0.7;
+      explosion.smokeVel[i * 3 + 2] = (Math.random() - 0.5) * 0.4;
       explosion.smokeAge[i] = -i * 0.12; // the column builds, puff by puff
       explosion.smokeLife[i] = 4.5 + Math.random() * 3;
-      explosion.smokeScale0[i] = 1 + Math.random() * 1.1;
+      explosion.smokeScale0[i] = 0.7 + Math.random() * 0.8;
       s.visible = false;
     }
 
-    explosion.flash.position.set(cp.x, cp.y + 0.9, cp.z);
-    explosion.ring.position.set(cp.x, cp.y + 0.35, cp.z);
+    explosion.flash.position.set(cp.x, cp.y + 0.55, cp.z);
+    explosion.ring.position.set(cp.x, cp.y + 0.25, cp.z);
     explosion.scorch.position.set(cp.x, crashGroundY.current + 0.05, cp.z);
     (explosion.scorch.material as THREE.MeshBasicMaterial).opacity = 0;
     explosion.group.visible = true;
@@ -885,7 +889,7 @@ export default function PlaneLayer({
         const shrink = 1 - 0.85 * Math.max(0, age / life - 0.55) / 0.45;
         const flicker = 0.72 + 0.28 * Math.sin(t * 17 + i * 2.4);
         s.scale.setScalar(
-          explosion.fireScale0[i] * (0.5 + 3.2 * grow) * shrink,
+          explosion.fireScale0[i] * (0.4 + 2.6 * grow) * shrink,
         );
         s.material.opacity = (1 - age / life) * flicker * boost;
       }
@@ -904,19 +908,19 @@ export default function PlaneLayer({
         s.position.y += explosion.smokeVel[i * 3 + 1] * dt;
         s.position.z += explosion.smokeVel[i * 3 + 2] * dt;
         s.material.rotation = i * 1.7 + age * 0.35 * (i % 2 ? 1 : -1);
-        s.scale.setScalar(explosion.smokeScale0[i] + age * 1.05);
+        s.scale.setScalar(explosion.smokeScale0[i] + age * 0.8);
         s.material.opacity =
           Math.min(1, age * 2.5) * (1 - age / life) * 0.55;
       }
 
       const bump =
         e > 0.26 && e < 0.44 ? Math.sin((Math.PI * (e - 0.26)) / 0.18) : 0;
-      explosion.flash.scale.setScalar(16);
+      explosion.flash.scale.setScalar(10);
       explosion.flash.material.opacity =
         (Math.max(0, 1 - e / 0.13) + 0.45 * bump) * boost;
 
       const rt = Math.min(1, e / 0.85);
-      explosion.ring.scale.setScalar(1 + 21 * rt);
+      explosion.ring.scale.setScalar(1 + 16 * rt);
       explosion.ring.material.opacity = Math.pow(1 - rt, 1.5) * 0.8 * boost;
 
       (explosion.scorch.material as THREE.MeshBasicMaterial).opacity =
@@ -938,7 +942,8 @@ export default function PlaneLayer({
     const pit =
       (ks.has("w") || ks.has("arrowup") ? 1 : 0) -
       (ks.has("s") || ks.has("arrowdown") ? 1 : 0);
-    const thr = (ks.has("shift") ? 1 : 0) - (ks.has("control") ? 1 : 0);
+    const rudder = (ks.has("q") ? 1 : 0) - (ks.has("e") ? 1 : 0);
+    const thr = (ks.has(" ") ? 1 : 0) - (ks.has("shift") ? 1 : 0);
 
     // 390 tonnes: every response is slow and committed
     throttle.current = THREE.MathUtils.clamp(
@@ -953,19 +958,18 @@ export default function PlaneLayer({
     );
     if (!pit) pitch.current *= Math.max(0, 1 - 0.35 * dt); // lazy auto-trim
     roll.current += (-turn * BANK_MAX - roll.current) * Math.min(1, 2.2 * dt);
+    const agility = 0.5 + 0.5 * Math.min(1, speed.current / 12);
     yaw.current +=
-      (-roll.current / BANK_MAX) *
-      TURN_RATE *
-      dt *
-      (0.5 + 0.5 * Math.min(1, speed.current / 12));
+      (-roll.current / BANK_MAX) * TURN_RATE * dt * agility +
+      rudder * 0.4 * dt * agility; // Q/E — flat rudder yaw
 
     /* ---- fly ---- */
     const target = SPEED_MIN + (SPEED_MAX - SPEED_MIN) * throttle.current;
     speed.current += (target - speed.current) * Math.min(1, 0.22 * dt);
     speed.current = THREE.MathUtils.clamp(
       speed.current - pitch.current * 4.5 * dt, // dives gain speed, climbs bleed it
-      3.5,
-      22,
+      3,
+      20,
     );
     fwd.set(
       Math.sin(yaw.current) * Math.cos(pitch.current),
@@ -1001,7 +1005,7 @@ export default function PlaneLayer({
 
     /* ---- terrain contact (only while the world is a landscape) ---- */
     const gy = Math.max(groundHeightAt(data, g.position.x, g.position.z), 0);
-    if (uMorph.value < 0.5 && g.position.y <= gy + 0.35) {
+    if (uMorph.value < 0.5 && g.position.y <= gy + 0.15) {
       crash();
       return;
     }

@@ -25,7 +25,8 @@ import InspectorPanel from "./InspectorPanel";
 import Labels from "./Labels";
 import LeftPane from "./LeftPane";
 import PaperBeacons from "./PaperBeacons";
-import PlaneLayer, { planeTelemetry, type PlanePose } from "./PlaneLayer";
+import PlaneHud from "./PlaneHud";
+import PlaneLayer, { type PlanePose } from "./PlaneLayer";
 import RoverLayer, { useRover } from "./RoverLayer";
 import SkyLayer from "./SkyLayer";
 import { useWorld, type PlantedGhost } from "./store";
@@ -128,118 +129,6 @@ function HoverTooltip({ corpus }: { corpus: CorpusData }) {
           <p className="mt-1 text-[11px] text-ink-3">{foot}</p>
         </div>
       )}
-    </div>
-  );
-}
-
-/* ---------------- the 747 cockpit HUD ---------------- */
-
-const COMPASS = [
-  "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-  "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
-];
-
-/** Airspeed, altimeter, VSI, compass, artificial horizon — written straight
- *  into the DOM from an rAF loop reading planeTelemetry (no React churn). */
-function PlaneHud() {
-  const spd = useRef<HTMLSpanElement>(null);
-  const thr = useRef<HTMLDivElement>(null);
-  const alt = useRef<HTMLSpanElement>(null);
-  const agl = useRef<HTMLSpanElement>(null);
-  const vs = useRef<HTMLSpanElement>(null);
-  const hdg = useRef<HTMLSpanElement>(null);
-  const card = useRef<HTMLSpanElement>(null);
-  const bank = useRef<HTMLSpanElement>(null);
-  const horizon = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    let raf = 0;
-    const tick = () => {
-      raf = requestAnimationFrame(tick);
-      const t = planeTelemetry;
-      if (!t.active) return;
-      if (spd.current) spd.current.textContent = String(Math.round(t.kts));
-      if (thr.current) thr.current.style.width = `${Math.round(t.throttle * 100)}%`;
-      if (alt.current) alt.current.textContent = Math.round(t.altFt).toLocaleString();
-      if (agl.current) agl.current.textContent = Math.round(t.aglFt).toLocaleString();
-      if (vs.current) {
-        const v = Math.round(t.vsFpm / 50) * 50;
-        vs.current.textContent = `${v > 0 ? "+" : ""}${v.toLocaleString()}`;
-      }
-      if (hdg.current)
-        hdg.current.textContent = String(Math.round(t.heading) % 360).padStart(3, "0");
-      if (card.current)
-        card.current.textContent = COMPASS[Math.round(t.heading / 22.5) % 16];
-      if (bank.current) {
-        const b = Math.round(t.rollDeg);
-        bank.current.textContent =
-          Math.abs(b) < 2 ? "level" : `${Math.abs(b)}° ${b > 0 ? "L" : "R"}`;
-      }
-      if (horizon.current) {
-        horizon.current.style.transform = `rotate(${t.rollDeg.toFixed(1)}deg) translateY(${(
-          t.pitchDeg * 1.1
-        ).toFixed(1)}px)`;
-      }
-    };
-    tick();
-    return () => cancelAnimationFrame(raf);
-  }, []);
-
-  return (
-    <div className="pointer-events-none absolute bottom-4 left-1/2 z-40 flex -translate-x-1/2 flex-col items-center gap-1.5">
-      <div className="hud-panel flex items-baseline gap-2 px-3 py-1">
-        <span className="text-[9px] tracking-[0.25em] text-ink-3 uppercase">hdg</span>
-        <span ref={hdg} className="font-mono text-sm text-ink tabular-nums">000</span>
-        <span ref={card} className="w-9 text-center font-mono text-[10px] text-[#3987e5]">N</span>
-        <span className="text-[9px] tracking-[0.25em] text-ink-3 uppercase">bank</span>
-        <span ref={bank} className="font-mono text-[10px] text-ink-2">level</span>
-      </div>
-
-      <div className="flex items-center gap-1.5">
-        <div className="hud-panel px-3 py-2 text-right">
-          <p className="text-[9px] tracking-[0.25em] text-ink-3 uppercase">spd · kts</p>
-          <p className="font-mono text-xl leading-6 text-ink tabular-nums">
-            <span ref={spd}>0</span>
-          </p>
-          <div className="mt-1.5 h-1 w-24 overflow-hidden rounded-full bg-white/10">
-            <div ref={thr} className="h-full bg-[#3987e5]" style={{ width: "55%" }} />
-          </div>
-          <p className="mt-0.5 text-[9px] text-ink-3">throttle</p>
-        </div>
-
-        {/* artificial horizon */}
-        <div className="hud-panel relative h-24 w-24 overflow-hidden rounded-full">
-          <div
-            ref={horizon}
-            className="absolute -inset-12"
-            style={{
-              background:
-                "linear-gradient(rgb(45,74,99) 0%, rgb(45,74,99) 50%, rgb(88,64,42) 50%, rgb(88,64,42) 100%)",
-            }}
-          >
-            <div className="absolute top-1/2 right-0 left-0 h-px bg-white/70" />
-          </div>
-          <div className="absolute top-1/2 left-1/2 h-[3px] w-11 -translate-x-1/2 -translate-y-1/2 rounded bg-[#ffd27a]" />
-          <div className="absolute top-1/2 left-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-[#ffd27a]" />
-        </div>
-
-        <div className="hud-panel px-3 py-2">
-          <p className="text-[9px] tracking-[0.25em] text-ink-3 uppercase">alt · ft</p>
-          <p className="font-mono text-xl leading-6 text-ink tabular-nums">
-            <span ref={alt}>0</span>
-          </p>
-          <p className="mt-1.5 font-mono text-[10px] text-ink-3 tabular-nums">
-            vs <span ref={vs} className="text-ink-2">0</span> fpm
-          </p>
-          <p className="font-mono text-[10px] text-ink-3 tabular-nums">
-            agl <span ref={agl} className="text-ink-2">0</span> ft
-          </p>
-        </div>
-      </div>
-
-      <p className="hud-panel px-2.5 py-1 text-[10px] text-ink-3">
-        ✈ W/↑ climb · S/↓ dive · A/D bank · Shift/Ctrl throttle · Esc eject
-      </p>
     </div>
   );
 }
