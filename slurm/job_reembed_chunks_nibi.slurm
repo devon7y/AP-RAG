@@ -3,7 +3,7 @@
 #SBATCH --job-name=reembed_chunks
 #SBATCH --output=/scratch/devon7y/westbury_rag/logs/%x_%j.out
 #SBATCH --error=/scratch/devon7y/westbury_rag/logs/%x_%j.err
-#SBATCH --time=02:00:00
+#SBATCH --time=03:30:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64G

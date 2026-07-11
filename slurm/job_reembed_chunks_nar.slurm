@@ -3,7 +3,7 @@
 #SBATCH --job-name=reembed_chunks
 #SBATCH --output=/scratch/devon7y/westbury_rag/logs/%x_%j.out
 #SBATCH --error=/scratch/devon7y/westbury_rag/logs/%x_%j.err
-#SBATCH --time=01:30:00
+#SBATCH --time=05:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64G
@@ -17,7 +17,7 @@
 
 set -u
 WORKDIR=/scratch/devon7y/westbury_rag
-VENV_DIR=$WORKDIR/venv
+VENV_DIR=${VENV_DIR_OVERRIDE:-/scratch/devon7y/reembed_venv}
 
 export HF_HOME=$WORKDIR/hf_cache
 export HF_HUB_OFFLINE=1
@@ -33,7 +33,7 @@ export EMBED_TORCH_DTYPE="${EMBED_TORCH_DTYPE:-bfloat16}"
 export EMBED_BATCH="${EMBED_BATCH:-32}"
 export EMBED_MAX_SEQ="${EMBED_MAX_SEQ:-4096}"
 
-module load python/3.11 gcc/12.3 cuda/12.6
+module load python/3.11 gcc/12.3
 source "$VENV_DIR/bin/activate"
 
 echo "[$(date)] Re-embedding chunks from $STORAGE_DIR -> $OUT_DIR (A100)"

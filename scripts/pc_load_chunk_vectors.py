@@ -49,7 +49,11 @@ def main() -> int:
     in_dir = Path(args.in_dir)
 
     ids = json.loads((in_dir / "chunk_ids.json").read_text())
-    vecs = np.load(in_dir / "vectors_fp16.npy")
+    shards = sorted(in_dir.glob("vectors_fp16_*.npy"))
+    if shards:
+        vecs = np.concatenate([np.load(p) for p in shards], axis=0)
+    else:  # legacy single-file layout
+        vecs = np.load(in_dir / "vectors_fp16.npy")
     assert len(ids) == vecs.shape[0] and vecs.shape[1] == 4096, (
         f"shape mismatch: {len(ids)} ids vs {vecs.shape}")
     payloads: dict[str, dict] = {}
