@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import type { ArithResult, Trace } from "./engineBridge";
 import type { Station } from "./walk";
+import type { AircraftKey } from "./aircraft";
 import type { GhostPaper } from "@/lib/atlas/types";
 
 /**
@@ -184,6 +185,8 @@ interface WorldState {
 
   // the jet (crash-to-read)
   planeOn: boolean;
+  /** which airframe is in the hangar bay */
+  aircraft: AircraftKey;
   planeFollow: boolean;
   planeSound: boolean;
   /** the airframe streams in on first take-off — nothing flies until it lands */
@@ -266,6 +269,7 @@ export const useWorld = create<WorldState>((set) => ({
   radioSentence: null,
 
   planeOn: false,
+  aircraft: "a380",
   planeFollow: true,
   planeSound: true,
   planeStatus: "idle",

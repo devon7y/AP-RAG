@@ -21,6 +21,7 @@ import {
 import { qsearch } from "@/lib/atlas/api";
 import type { AuthorRec, CorpusData, PaperMeta } from "@/lib/atlas/types";
 import { buildStation } from "./walk";
+import { AIRCRAFT_LIST } from "./aircraft";
 import { primePlaneAudio } from "./planeAudio";
 import { primeVoices } from "./tts";
 import {
@@ -59,7 +60,7 @@ const INSTRUMENTS: { key: Instrument; icon: React.ReactNode; label: string }[] =
   { key: "ghosts", icon: <CircleDashed className="size-4" />, label: "Research gaps" },
   { key: "draft", icon: <PenLine className="size-4" />, label: "Drop a draft" },
   { key: "radio", icon: <Radio className="size-4" />, label: "Radio" },
-  { key: "plane", icon: <Plane className="size-4" />, label: "Airbus A380" },
+  { key: "plane", icon: <Plane className="size-4" />, label: "Flight" },
   { key: "game", icon: <Trophy className="size-4" />, label: "Semantle" },
 ];
 
@@ -887,6 +888,7 @@ function RadioPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) {
 
 function PlanePanel() {
   const planeOn = useWorld((s) => s.planeOn);
+  const aircraft = useWorld((s) => s.aircraft);
   const planeFollow = useWorld((s) => s.planeFollow);
   const planeSound = useWorld((s) => s.planeSound);
   const set = useWorld((s) => s.set);
@@ -895,12 +897,39 @@ function PlanePanel() {
   return (
     <div className="space-y-4">
       <div>
-        <H>Airbus A380</H>
+        <H>Flight</H>
         <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-          Spawn a superjumbo over the landscape and fly it yourself. Put it into
+          Spawn an aircraft over the landscape and fly it yourself. Put it into
           a mountainside and the fireball opens the nearest paper&apos;s card —
           literature review by air disaster.
         </p>
+      </div>
+
+      <div>
+        <p className="text-[11px] text-ink-2">Hangar</p>
+        <div className="mt-1.5 grid grid-cols-2 overflow-hidden rounded-lg border hairline text-center">
+          {AIRCRAFT_LIST.map((a) => (
+            <button
+              key={a.key}
+              type="button"
+              disabled={planeOn}
+              onClick={() => set("aircraft", a.key)}
+              className={`px-2 py-2 transition-colors disabled:opacity-40 ${
+                aircraft === a.key
+                  ? "bg-white/10 text-ink"
+                  : "text-ink-3 hover:text-ink-2"
+              }`}
+            >
+              <span className="block text-xs">{a.label}</span>
+              <span className="mt-0.5 block text-[10px] text-ink-3">
+                {a.key === "f117" ? "fast · agile" : "heavy · slow"}
+              </span>
+            </button>
+          ))}
+        </div>
+        {planeOn && (
+          <p className="mt-1 text-[10px] text-ink-3">land or eject to switch</p>
+        )}
       </div>
 
       <button
@@ -923,7 +952,9 @@ function PlanePanel() {
             : "border-[#3987e5]/70 text-[#3987e5]"
         }`}
       >
-        {planeOn ? "◼ eject" : "✈ take off"}
+        {planeOn
+          ? "◼ eject"
+          : `✈ take off · ${AIRCRAFT_LIST.find((a) => a.key === aircraft)?.label ?? ""}`}
       </button>
 
       <div className="flex gap-4 text-xs text-ink-2">
@@ -979,23 +1010,20 @@ function PlanePanel() {
 
       <p className="border-t hairline pt-2 text-[10px] leading-relaxed text-ink-3">
         Aircraft:{" "}
-        <a
-          href="https://sketchfab.com/3d-models/8hWQW1izQKZLYOZD4PKXti0xIjn"
-          target="_blank"
-          rel="noreferrer"
-          className="underline decoration-dotted hover:text-ink-2"
-        >
-          “A380”
-        </a>{" "}
-        by AntoinePemeja,{" "}
-        <a
-          href="https://creativecommons.org/licenses/by/4.0/"
-          target="_blank"
-          rel="noreferrer"
-          className="underline decoration-dotted hover:text-ink-2"
-        >
-          CC BY 4.0
-        </a>{" "}
+        {AIRCRAFT_LIST.map((a, i) => (
+          <span key={a.key}>
+            {i > 0 ? " · " : ""}
+            <a
+              href={a.credit.url}
+              target="_blank"
+              rel="noreferrer"
+              className="underline decoration-dotted hover:text-ink-2"
+            >
+              “{a.credit.title}”
+            </a>{" "}
+            by {a.credit.author}, {a.credit.license}
+          </span>
+        ))}{" "}
         (recompressed).
       </p>
     </div>

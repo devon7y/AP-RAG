@@ -6,7 +6,8 @@ import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import type { WorldData } from "./derive";
-import { CHASE, type PlanePose } from "./PlaneLayer";
+import { AIRCRAFT } from "./aircraft";
+import type { PlanePose } from "./PlaneLayer";
 import { useWorld, warpHome } from "./store";
 import { uMorph } from "./uniforms";
 
@@ -198,6 +199,8 @@ export default function CameraRig({
     const st = useWorld.getState();
     const plane = getPlanePose();
     if (plane && st.planeOn && st.planeFollow) {
+      // each airframe carries its own chase offsets, scaled to its size
+      const CHASE = (AIRCRAFT[st.aircraft] ?? AIRCRAFT.a380).chase;
       chaseFwd.set(0, 0, 1).applyQuaternion(plane.quat);
       const dtc = Math.min(dt, 0.05);
       if (!chasing.current) {

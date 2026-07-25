@@ -14,51 +14,32 @@ import {
   type EngineSound,
   type WarningSound,
 } from "./planeAudio";
+import { AIRCRAFT, type AircraftKey, type AircraftSpec } from "./aircraft";
 import { useWorld } from "./store";
 import { HEIGHT_SCALE, uMorph } from "./uniforms";
 
 /**
- * The Airbus A380 — a pilotable superjumbo over the landscape. It spawns on
- * the home camera ring at a random azimuth, flies heavy (it is a 560-tonne
- * double-decker), and ends every story one of two ways: an eject, or a
- * fireball on a mountainside that opens the nearest paper's card exactly as
- * clicking its beacon would.
+ * The hangar in flight: whichever aircraft is selected spawns on the home
+ * camera ring at a random azimuth and ends its story one of two ways — an
+ * eject, or a fireball on a mountainside that opens the nearest paper's card
+ * exactly as clicking its beacon would.
  *
- * Two airframes share one transform: a tiny procedural jet flies instantly,
- * and the real scan ("A380" by AntoinePemeja, CC BY 4.0) streams in on the
- * first take-off and replaces the procedural hull. That scan carries a proper
- * UV-mapped livery — Airbus house colours, painted titles and window rows —
- * so we keep its own materials, and its lights are pinned to anchors measured
- * off the mesh (see ANCHOR). Note the A380 is WIDER than it is long, so the
- * bake could not assume the longest axis is the fuselage; it picks the axis
- * whose two halves differ most in height, since only the fuselage carries a
- * tail fin. Centred, nose-+Z, rescaled, then meshopt + WebP compressed
- * (20 MB → 2.8 MB). While parked, nothing renders and nothing downloads.
+ * There is no stand-in mesh. The chosen airframe streams in on take-off and
+ * nothing moves, sounds or reads out until it is in the scene; a placeholder
+ * that doesn't match the real jet is worse than a moment of honest waiting.
+ * Each aircraft brings its own handling, light anchors and exhaust style from
+ * the registry in ./aircraft, so this file is one flight model rather than a
+ * pile of special cases. Loaded airframes are cached, so switching back to a
+ * jet you have already flown is instant.
  */
 
-const REAL_JET_URL = "/models/airbus-a380.glb";
+/* ---------------- flight constants (world-level) ---------------- */
 
-/* ---------------- flight constants ---------------- */
-
-const SCALE = 0.03; // model units → world units (≈0.26-unit jet: the world is a planet)
-const SPEED_MIN = 2.5;
-const SPEED_MAX = 9;
-const TURN_RATE = 0.5; // rad/s at full bank — ponderous, like 390 tonnes
-const PITCH_RATE = 0.5;
-const PITCH_MAX = 0.55;
-const BANK_MAX = 0.42;
 const CEILING = 55;
 const BOUND = 84; // beyond this radius the jet is steered home
 const SPAWN_RADIUS = 92; // the home orbit ring
 const SPAWN_ALT = 34;
 const TRAIL_N = 110;
-
-/** Chase-cam offsets (world units) — a behind-the-tail view, nearly level
- *  with the fuselage (not looking down on it). `back`/`up` place the camera;
- *  the look-at is `ahead` of the plane and lifted by `aimUp` so the shot is
- *  level and the horizon reads ahead. At this range CameraRig drops the
- *  camera's near-clip plane so the tail doesn't slice through it. */
-export const CHASE = { back: 0.31, up: 0.05, ahead: 0.32, aimUp: 0.038 };
 
 /** GPWS trigger: below this AGL (display feet) the terrain alarm sounds. */
 const WARN_AGL_FT = 350;
@@ -90,7 +71,10 @@ export interface PlanePose {
 interface Airframe {
   group: THREE.Group;
   disposables: (THREE.BufferGeometry | THREE.Material)[];
+  /** one per engine — the hot core */
   engineGlows: THREE.Sprite[];
+  /** afterburner plumes (burner aircraft only), aligned down −Z */
+  plumes: THREE.Mesh[];
   /** red port light (+X) */
   navPort: THREE.Sprite;
   /** green starboard light (−X) */
@@ -99,13 +83,13 @@ interface Airframe {
 }
 
 /**
- * The airframe rig is lights only — nav lights, tail strobe and four exhaust
- * glows. There is no stand-in mesh: the real scan is the only aircraft, and
- * nothing takes off until it has streamed in (a low-res placeholder that
- * doesn't match the real jet is worse than a moment of honest waiting).
- * Positions here are placeholders; anchorRealJet pins them to the mesh.
+ * The airframe rig is lights only — nav lights, tail strobe and one exhaust
+ * per engine. A "glow" exhaust is a single warm haze (turbofans); a "burner"
+ * adds a stacked blue core and a tapered plume cone pointing aft, so the
+ * fighter visibly rides a flame while the airliner just smoulders.
+ * Positions are placeholders; anchorRealJet pins them to the mesh.
  */
-function buildAirframe(): Airframe {
+function buildAirframe(spec: AircraftSpec): Airframe {
   const group = new THREE.Group();
   const disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
   const glow = glowTexture();
@@ -125,16 +109,50 @@ function buildAirframe(): Airframe {
     return sp;
   };
 
-  // four exhaust glows, warm and small enough to read as engines
-  const engineGlows = [0, 1, 2, 3].map(() => sprite("#ffb36b", 0.26));
+  const burner = spec.exhaust.kind === "burner";
+  const n = spec.anchors.engines.length;
+  const engineGlows = Array.from({ length: n }, () =>
+    sprite(spec.exhaust.core, spec.exhaust.size),
+  );
+  // the burner's outer flame — a wider, cooler halo behind the white core
+  const halos = burner
+    ? Array.from({ length: n }, () =>
+        sprite(spec.exhaust.halo, spec.exhaust.size * 1.9),
+      )
+    : [];
+
+  const plumes: THREE.Mesh[] = [];
+  if (burner) {
+    for (let i = 0; i < n; i++) {
+      // a cone tapering to a point aft; lathe down −Z and fade along its length
+      const geo = new THREE.ConeGeometry(spec.exhaust.size * 0.5, spec.exhaust.plume, 14, 1, true);
+      geo.rotateX(-Math.PI / 2); // tip toward −Z
+      geo.translate(0, 0, -spec.exhaust.plume / 2);
+      const mat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(spec.exhaust.halo),
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+      });
+      disposables.push(geo, mat);
+      const mesh = new THREE.Mesh(geo, mat);
+      group.add(mesh);
+      plumes.push(mesh);
+    }
+  }
+  // halos ride with their cores — parked in the same slot list for updates
+  (group.userData as { halos?: THREE.Sprite[] }).halos = halos;
+
   const navPort = sprite("#ff4d4d", 0.28); // +X — red
   const navStbd = sprite("#4dff7a", 0.28); // −X — green
   const strobe = sprite("#ffffff", 0.28);
 
-  group.scale.setScalar(SCALE);
+  group.scale.setScalar(spec.scale);
   group.rotation.order = "YXZ";
   group.visible = false;
-  return { group, disposables, engineGlows, navPort, navStbd, strobe };
+  return { group, disposables, engineGlows, plumes, navPort, navStbd, strobe };
 }
 
 /* ---------------- the real jet's painted livery ---------------- */
@@ -211,52 +229,26 @@ function adoptLivery(root: THREE.Group, env: THREE.Texture | null): void {
   });
 }
 
-/**
- * Light anchors measured off the baked A380 mesh itself (offline, at bake
- * time) rather than guessed at runtime: the wingtip and fin-tip vertices, and
- * the four engine nacelles found by clustering the geometry that hangs below
- * the wing. Values are in model units — the group's SCALE applies on top.
- *
- * Port/starboard is not arbitrary. With nose +Z and up +Y in a right-handed
- * frame, starboard = forward × up = Z × Y = −X. So the RED port light belongs
- * on +X and the GREEN starboard light on −X (the reverse of the usual
- * intuition, and the reverse of what this file did before).
- */
-const ANCHOR = {
-  navPort: [4.325, -0.4, -1.62] as const, // +X — red
-  navStbd: [-4.325, -0.4, -1.61] as const, // −X — green
-  strobe: [0, 1.26, -3.98] as const, // fin tip, lifted clear
-  // Exhaust points, measured per nacelle: each was located as a DIP below the
-  // wing's underside profile (clustering "everything under the wing" instead
-  // dragged the outboard pair toward the wingtips), then its own bounding box
-  // gives the centre and rear face. The inboard pair really does sit forward
-  // of the outboard pair — that is the wing sweep, not an error.
-  //
-  // Measured rear faces are z = -0.33 (outboard) and z = +0.48 (inboard); the
-  // glow sits ~0.2 forward of those, just INSIDE the nozzle, so it reads as
-  // light coming out of the engine rather than trailing behind it.
-  engines: [
-    [-2.76, -0.95, -0.13],
-    [-1.58, -1.04, 0.68],
-    [1.61, -1.04, 0.64],
-    [2.78, -0.95, -0.15],
-  ] as const,
-};
-
-/** Pin every light onto the real airframe once the scan has loaded. */
+/** Pin every light onto the airframe once the scan has loaded. */
 function anchorRealJet(
   airframe: Airframe,
+  spec: AircraftSpec,
   wing: { port: THREE.Vector3; stbd: THREE.Vector3 },
 ): void {
-  airframe.navPort.position.set(...ANCHOR.navPort);
-  airframe.navStbd.position.set(...ANCHOR.navStbd);
-  airframe.strobe.position.set(...ANCHOR.strobe);
-  ANCHOR.engines.forEach(([x, y, z], i) =>
-    airframe.engineGlows[i]?.position.set(x, y, z),
-  );
+  const A = spec.anchors;
+  airframe.navPort.position.set(...A.navPort);
+  airframe.navStbd.position.set(...A.navStbd);
+  airframe.strobe.position.set(...A.strobe);
+  const halos =
+    (airframe.group.userData as { halos?: THREE.Sprite[] }).halos ?? [];
+  A.engines.forEach(([x, y, z], i) => {
+    airframe.engineGlows[i]?.position.set(x, y, z);
+    halos[i]?.position.set(x, y, z - spec.exhaust.size * 0.35);
+    airframe.plumes[i]?.position.set(x, y, z);
+  });
   // contrails stream from the wingtips, just aft of the nav lights
-  wing.port.set(ANCHOR.navPort[0], ANCHOR.navPort[1], ANCHOR.navPort[2] - 0.1);
-  wing.stbd.set(ANCHOR.navStbd[0], ANCHOR.navStbd[1], ANCHOR.navStbd[2] - 0.1);
+  wing.port.set(A.navPort[0], A.navPort[1], A.navPort[2] - spec.trailAft);
+  wing.stbd.set(A.navStbd[0], A.navStbd[1], A.navStbd[2] - spec.trailAft);
 }
 
 /* ---------------- the crash ---------------- */
@@ -496,7 +488,10 @@ export default function PlaneLayer({
   const renderer = useThree((s) => s.gl);
   const boost = useAtlasStore((s) => s.hdrBoost);
 
-  const airframe = useMemo(buildAirframe, []);
+  const aircraftKey = useWorld((st) => st.aircraft);
+  const spec = AIRCRAFT[aircraftKey] ?? AIRCRAFT.a380;
+  // the rig is rebuilt per aircraft — different engine count, exhaust and scale
+  const airframe = useMemo(() => buildAirframe(spec), [spec]);
   const explosion = useMemo(buildExplosion, []);
   const trailL = useMemo(makeTrail, []);
   const trailR = useMemo(makeTrail, []);
@@ -555,8 +550,8 @@ export default function PlaneLayer({
     yaw.current = az + Math.PI; // toward the center of the world
     pitch.current = 0;
     roll.current = 0;
-    throttle.current = 0.55;
-    speed.current = 5;
+    throttle.current = spec.flight.startThrottle;
+    speed.current = spec.flight.startSpeed;
     lastY.current = g.position.y;
     vsSmooth.current = 0;
     g.rotation.set(0, yaw.current, 0);
@@ -570,8 +565,8 @@ export default function PlaneLayer({
       fwd.set(Math.sin(yaw.current), 0, Math.cos(yaw.current));
       camera.position
         .copy(g.position)
-        .addScaledVector(fwd, -CHASE.back)
-        .add(new THREE.Vector3(0, CHASE.up, 0));
+        .addScaledVector(fwd, -spec.chase.back)
+        .add(new THREE.Vector3(0, spec.chase.up, 0));
     }
   };
   const startFlightRef = useRef(startFlight);
@@ -584,8 +579,9 @@ export default function PlaneLayer({
       st.select(null); // a fresh flight closes whatever card was open
       // the airframe streams in on the first take-off; the loader starts the
       // flight when it lands, so nothing moves (or sounds) before then
-      if (loadState.current === "done") startFlightRef.current();
-      else st.set("planeStatus", "loading");
+      // the loader effect attaches the airframe and hands over; if it is
+      // already cached that happens on the same tick
+      if (!jetCache.current.has(spec.key)) st.set("planeStatus", "loading");
     } else if (mode.current === "flying") {
       // ejected mid-air (panel toggle / Esc) — vanish without the fireball
       airframe.group.visible = false;
@@ -615,12 +611,29 @@ export default function PlaneLayer({
 
   // the real 747 — streamed in once, on the first take-off, so the page's
   // initial load never pays for it; the procedural jet flies until it lands
+  const jetCache = useRef<Map<AircraftKey, THREE.Group>>(new Map());
   const realJet = useRef<THREE.Group | null>(null);
   const envProbe = useRef<THREE.Texture | null>(null);
-  const loadState = useRef<"idle" | "loading" | "done" | "failed">("idle");
+  const loadState = useRef<Map<AircraftKey, "loading" | "done" | "failed">>(
+    new Map(),
+  );
   useEffect(() => {
-    if (!planeOn || loadState.current !== "idle") return;
-    loadState.current = "loading";
+    if (!planeOn) return;
+    const key = spec.key;
+    const state = loadState.current.get(key);
+    if (state === "loading" || state === "failed") return;
+
+    // already flown this airframe — re-attach the cached mesh and go
+    const cached = jetCache.current.get(key);
+    if (cached) {
+      if (cached.parent !== airframe.group) airframe.group.add(cached);
+      realJet.current = cached;
+      anchorRealJet(airframe, spec, wingAnchors);
+      if (useWorld.getState().planeOn) startFlightRef.current();
+      return;
+    }
+
+    loadState.current.set(key, "loading");
     (async () => {
       try {
         const [{ GLTFLoader }, { MeshoptDecoder }] = await Promise.all([
@@ -629,26 +642,31 @@ export default function PlaneLayer({
         ]);
         const loader = new GLTFLoader();
         loader.setMeshoptDecoder(MeshoptDecoder);
-        const gltf = await loader.loadAsync(REAL_JET_URL);
-        envProbe.current = makeEnvProbe(
+        const gltf = await loader.loadAsync(spec.url);
+        envProbe.current ??= makeEnvProbe(
           renderer as unknown as THREE.WebGLRenderer,
         );
         adoptLivery(gltf.scene, envProbe.current);
-        anchorRealJet(airframe, wingAnchors);
-        realJet.current = gltf.scene;
+        jetCache.current.set(key, gltf.scene);
+        loadState.current.set(key, "done");
+        // the pilot may have ejected or switched jets while this was streaming
+        const st = useWorld.getState();
+        if (!st.planeOn || st.aircraft !== key) {
+          if (!st.planeOn) st.set("planeStatus", "idle");
+          return;
+        }
         airframe.group.add(gltf.scene);
-        loadState.current = "done";
-        // hand over the moment it lands, if the pilot is still waiting
-        if (useWorld.getState().planeOn) startFlightRef.current();
-        else useWorld.getState().set("planeStatus", "idle");
+        realJet.current = gltf.scene;
+        anchorRealJet(airframe, spec, wingAnchors);
+        startFlightRef.current();
       } catch {
         // no stand-in to fall back on — say so and cancel the take-off
-        loadState.current = "failed";
+        loadState.current.set(key, "failed");
         useWorld.getState().set("planeStatus", "error");
         useWorld.getState().set("planeOn", false);
       }
     })();
-  }, [planeOn, airframe, renderer]);
+  }, [planeOn, airframe, renderer, spec, wingAnchors]);
 
   // controls — captured only while the jet exists, never while typing
   useEffect(() => {
@@ -689,36 +707,49 @@ export default function PlaneLayer({
     };
   }, [planeOn]);
 
-  // cleanup on unmount
+  // the light rig is rebuilt whenever the aircraft changes — free the old one.
+  // Deliberately NOT the cached airframes or the env probe: those are shared
+  // across switches, and disposing them here would break flying a jet twice.
   useEffect(
     () => () => {
-      for (const id of timeouts.current) window.clearTimeout(id);
       for (const d of airframe.disposables) d.dispose();
+    },
+    [airframe],
+  );
+
+  // teardown on unmount — everything that outlives an aircraft switch
+  useEffect(() => {
+    const cache = jetCache.current;
+    const timers = timeouts.current;
+    return () => {
+      for (const id of timers) window.clearTimeout(id);
       for (const d of explosion.disposables) d.dispose();
       trailL.geo.dispose();
       (trailL.line.material as THREE.Material).dispose();
       trailR.geo.dispose();
       (trailR.line.material as THREE.Material).dispose();
-      // the scan owns its own materials + livery textures — free them all
-      realJet.current?.traverse((o) => {
-        if (!(o instanceof THREE.Mesh)) return;
-        o.geometry.dispose();
-        const mats = Array.isArray(o.material) ? o.material : [o.material];
-        for (const m of mats) {
-          for (const v of Object.values(m)) {
-            if (v instanceof THREE.Texture) v.dispose();
+      // each scan owns its materials + livery textures — free every cached one
+      for (const jet of cache.values()) {
+        jet.traverse((o) => {
+          if (!(o instanceof THREE.Mesh)) return;
+          o.geometry.dispose();
+          const mats = Array.isArray(o.material) ? o.material : [o.material];
+          for (const m of mats) {
+            for (const v of Object.values(m)) {
+              if (v instanceof THREE.Texture) v.dispose();
+            }
+            m.dispose();
           }
-          m.dispose();
-        }
-      });
+        });
+      }
+      cache.clear();
       envProbe.current?.dispose();
       engine.current?.stop();
       warnSound.current?.stop();
       planeTelemetry.active = false;
       planeTelemetry.warning = false;
-    },
-    [airframe, explosion, trailL, trailR],
-  );
+    };
+  }, [explosion, trailL, trailR]);
 
   const crash = () => {
     const st = useWorld.getState();
@@ -961,30 +992,32 @@ export default function PlaneLayer({
     const thr = (ks.has(" ") ? 1 : 0) - (ks.has("shift") ? 1 : 0);
 
     // 390 tonnes: every response is slow and committed
+    const F = spec.flight;
     throttle.current = THREE.MathUtils.clamp(
-      throttle.current + thr * 0.28 * dt,
+      throttle.current + thr * F.throttleRate * dt,
       0,
       1,
     );
     pitch.current = THREE.MathUtils.clamp(
-      pitch.current + pit * PITCH_RATE * dt,
-      -PITCH_MAX,
-      PITCH_MAX,
+      pitch.current + pit * F.pitchRate * dt,
+      -F.pitchMax,
+      F.pitchMax,
     );
-    if (!pit) pitch.current *= Math.max(0, 1 - 0.35 * dt); // lazy auto-trim
-    roll.current += (-turn * BANK_MAX - roll.current) * Math.min(1, 2.2 * dt);
-    const agility = 0.5 + 0.5 * Math.min(1, speed.current / 12);
+    if (!pit) pitch.current *= Math.max(0, 1 - F.pitchDamp * dt); // auto-trim
+    roll.current +=
+      (-turn * F.bankMax - roll.current) * Math.min(1, F.rollLerp * dt);
+    const agility = 0.5 + 0.5 * Math.min(1, speed.current / F.speedMax);
     yaw.current +=
-      (-roll.current / BANK_MAX) * TURN_RATE * dt * agility +
-      rudder * 0.4 * dt * agility; // Q/E — flat rudder yaw
+      (-roll.current / F.bankMax) * F.turnRate * dt * agility +
+      rudder * F.turnRate * 0.8 * dt * agility; // Q/E — flat rudder yaw
 
     /* ---- fly ---- */
-    const target = SPEED_MIN + (SPEED_MAX - SPEED_MIN) * throttle.current;
-    speed.current += (target - speed.current) * Math.min(1, 0.22 * dt);
+    const target = F.speedMin + (F.speedMax - F.speedMin) * throttle.current;
+    speed.current += (target - speed.current) * Math.min(1, F.speedLerp * dt);
     speed.current = THREE.MathUtils.clamp(
-      speed.current - pitch.current * 3 * dt, // dives gain speed, climbs bleed it
-      2,
-      12,
+      speed.current - pitch.current * F.diveGain * dt, // dive gains, climb bleeds
+      F.speedFloor,
+      F.speedCeil,
     );
     fwd.set(
       Math.sin(yaw.current) * Math.cos(pitch.current),
@@ -1030,7 +1063,7 @@ export default function PlaneLayer({
     lastY.current = g.position.y;
     vsSmooth.current += (vsRaw - vsSmooth.current) * Math.min(1, dt * 4);
     planeTelemetry.active = true;
-    planeTelemetry.kts = speed.current * 48;
+    planeTelemetry.kts = speed.current * F.ktsPerUnit;
     planeTelemetry.altFt = g.position.y * 112;
     planeTelemetry.aglFt = Math.max(0, (g.position.y - gy) * 112);
     planeTelemetry.vsFpm = vsSmooth.current;
@@ -1059,8 +1092,34 @@ export default function PlaneLayer({
     airframe.navStbd.material.opacity = (phase < 0.12 ? 0.9 : 0.25) * boost;
     airframe.strobe.material.opacity =
       (phase > 0.55 && phase < 0.63 ? 1 : 0.08) * boost;
+    // exhaust: the airliner smoulders, the fighter rides a blue flame that
+    // stretches and brightens with throttle (and flickers, so it reads hot)
+    const burner = spec.exhaust.kind === "burner";
+    const flick = burner ? 0.88 + 0.12 * Math.sin(t * 41) : 1;
+    const heat = 0.12 + (burner ? 0.95 : 0.6) * throttle.current;
     for (const gs of airframe.engineGlows) {
-      gs.material.opacity = (0.12 + 0.6 * throttle.current) * boost;
+      gs.material.opacity = heat * flick * boost;
+      if (burner) {
+        gs.scale.setScalar(spec.exhaust.size * (0.75 + 0.5 * throttle.current) * flick);
+      }
+    }
+    const halos =
+      (airframe.group.userData as { halos?: THREE.Sprite[] }).halos ?? [];
+    for (const h of halos) {
+      h.material.opacity = (0.06 + 0.5 * throttle.current) * flick * boost;
+      h.scale.setScalar(
+        spec.exhaust.size * 1.9 * (0.7 + 0.6 * throttle.current) * flick,
+      );
+    }
+    for (const pl of airframe.plumes) {
+      const m = pl.material as THREE.MeshBasicMaterial;
+      m.opacity = (0.05 + 0.42 * throttle.current) * flick * boost;
+      // the flame lengthens as the burner lights up
+      pl.scale.set(
+        0.7 + 0.5 * throttle.current,
+        0.7 + 0.5 * throttle.current,
+        0.45 + 1.15 * throttle.current,
+      );
     }
 
     for (const [trail, anchor] of [
