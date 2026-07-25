@@ -1,7 +1,10 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { CorpusData } from "@/lib/atlas/types";
+import { AIRCRAFT } from "./aircraft";
 import { planeTelemetry } from "./PlaneLayer";
+import { useWorld } from "./store";
 
 /**
  * The 747's glass cockpit — styled after Microsoft Flight Simulator's
@@ -46,7 +49,25 @@ const COMPASS16 = [
   "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
 ];
 
-export default function PlaneHud() {
+export default function PlaneHud({ corpus }: { corpus: CorpusData }) {
+  const missionOn = useWorld((s) => s.missionOn);
+  const missionTarget = useWorld((s) => s.missionTarget);
+  const missionHits = useWorld((s) => s.missionHits);
+  const missionShots = useWorld((s) => s.missionShots);
+  const missionFlash = useWorld((s) => s.missionFlash);
+  const aircraft = useWorld((s) => s.aircraft);
+  const W = (AIRCRAFT[aircraft] ?? AIRCRAFT.a380).weapon;
+  const paper = missionTarget !== null ? corpus.papers[missionTarget] : null;
+
+  // the hit/miss banner clears itself
+  const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
+  useEffect(() => {
+    if (!missionFlash) return;
+    setFlash({ text: missionFlash.text, ok: missionFlash.ok });
+    const id = window.setTimeout(() => setFlash(null), 1900);
+    return () => window.clearTimeout(id);
+  }, [missionFlash]);
+
   const spdInner = useRef<HTMLDivElement>(null);
   const spdVal = useRef<HTMLSpanElement>(null);
   const tasVal = useRef<HTMLSpanElement>(null);
@@ -62,6 +83,9 @@ export default function PlaneHud() {
   const n1Val = useRef<HTMLSpanElement>(null);
   const horizon = useRef<HTMLDivElement>(null);
   const warn = useRef<HTMLDivElement>(null);
+  const tgtDist = useRef<HTMLSpanElement>(null);
+  const tgtArrow = useRef<HTMLDivElement>(null);
+  const armed = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
     let raf = 0;
@@ -112,6 +136,17 @@ export default function PlaneHud() {
           t.pitchDeg * 2
         ).toFixed(1)}px)`;
 
+      if (tgtDist.current)
+        tgtDist.current.textContent = t.hasTarget
+          ? Math.round(t.targetFt).toLocaleString()
+          : "—";
+      if (tgtArrow.current)
+        tgtArrow.current.style.transform = `rotate(${t.targetRel.toFixed(1)}deg)`;
+      if (armed.current) {
+        armed.current.textContent = t.armed ? "ARMED" : "RELOAD";
+        armed.current.style.color = t.armed ? "#35c94b" : "#ffb648";
+      }
+
       if (warn.current) {
         // GPWS banner: hard red flash while below the terrain floor
         warn.current.style.visibility = t.warning ? "visible" : "hidden";
@@ -143,6 +178,61 @@ export default function PlaneHud() {
       >
         ⚠ TERRAIN · PULL UP
       </div>
+
+      {/* ---- mission strip (top-centre) ---- */}
+      {missionOn && (
+        <div className="absolute top-16 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1.5">
+          <div className={`${PANEL} flex items-center gap-3 px-3 py-1.5`}>
+            <span className={LABEL} style={{ color: CYAN }}>
+              {W.label}
+            </span>
+            <div className="flex items-center gap-2">
+              {/* the arrow rotates to the target's relative bearing */}
+              <div className="relative h-4 w-4">
+                <div
+                  ref={tgtArrow}
+                  className="absolute inset-0 flex items-start justify-center"
+                >
+                  <span style={{ color: MAGENTA, fontSize: 13, lineHeight: 1 }}>▲</span>
+                </div>
+              </div>
+              <span className="font-mono text-sm text-white tabular-nums">
+                <span ref={tgtDist}>—</span>
+                <span className="ml-1 text-[9px] text-[#c6ccd4]">FT</span>
+              </span>
+            </div>
+            <span ref={armed} className="font-mono text-[10px] tracking-widest">
+              ARMED
+            </span>
+            <span className="font-mono text-[11px] text-[#c6ccd4] tabular-nums">
+              {missionHits}/{missionShots}
+            </span>
+          </div>
+          {paper && (
+            <div className={`${PANEL} max-w-[min(560px,80vw)] px-3 py-1.5`}>
+              <p className="line-clamp-1 text-[11px] text-white">{paper.title}</p>
+              <p className="mt-0.5 font-mono text-[9px] text-[#c6ccd4]">
+                {paper.authors} · {paper.year || "n.d."} — {W.fireLabel.toUpperCase()} WITH F
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ---- hit / miss banner ---- */}
+      {flash && (
+        <div
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-[3px] border-2 px-6 py-2 font-mono text-sm font-bold tracking-[0.2em] uppercase"
+          style={{
+            borderColor: flash.ok ? "#35c94b" : "#7f8f9f",
+            background: flash.ok ? "rgba(6,32,10,0.85)" : "rgba(14,18,22,0.85)",
+            color: flash.ok ? "#6dff86" : "#c6ccd4",
+            textShadow: flash.ok ? "0 0 14px rgba(53,201,75,0.7)" : "none",
+          }}
+        >
+          {flash.text}
+        </div>
+      )}
 
       {/* ---- compass rose (top-left) ---- */}
       <div className="absolute top-20 left-5">

@@ -483,7 +483,7 @@ function World({
         constellations={constellations}
       />
 
-      {planeOn && planeStatus === "ready" && <PlaneHud />}
+      {planeOn && planeStatus === "ready" && <PlaneHud corpus={corpus} />}
 
       {planeOn && planeStatus === "loading" && (
         <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center">

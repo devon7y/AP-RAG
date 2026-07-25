@@ -889,6 +889,10 @@ function RadioPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) {
 function PlanePanel() {
   const planeOn = useWorld((s) => s.planeOn);
   const aircraft = useWorld((s) => s.aircraft);
+  const missionOn = useWorld((s) => s.missionOn);
+  const missionHits = useWorld((s) => s.missionHits);
+  const missionShots = useWorld((s) => s.missionShots);
+  const spec = AIRCRAFT_LIST.find((a) => a.key === aircraft) ?? AIRCRAFT_LIST[0];
   const planeFollow = useWorld((s) => s.planeFollow);
   const planeSound = useWorld((s) => s.planeSound);
   const set = useWorld((s) => s.set);
@@ -957,6 +961,31 @@ function PlanePanel() {
           : `✈ take off · ${AIRCRAFT_LIST.find((a) => a.key === aircraft)?.label ?? ""}`}
       </button>
 
+      <div>
+        <p className="text-[11px] text-ink-2">Mission</p>
+        <p className="mt-1 text-[10px] leading-relaxed text-ink-3">
+          {aircraft === "f117"
+            ? "A paper beacon is marked by a shaft of light. Line the nose up and fire — missiles fly flat and unguided, so you have to aim."
+            : "A paper is marked by a shaft of light. Fly over it and release: the package carries your speed and then falls, so lead the drop."}{" "}
+          Score a hit and that paper&apos;s card opens.
+        </p>
+        <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-ink-2">
+          <input
+            type="checkbox"
+            checked={missionOn}
+            onChange={() => set("missionOn", !missionOn)}
+            className="h-3 w-3 accent-[#ffd27a]"
+          />
+          {aircraft === "f117" ? "strike mission" : "cargo run"}
+        </label>
+        {missionOn && (missionShots > 0 || planeOn) && (
+          <p className="mt-1.5 rounded-md border border-[#ffd27a]/40 px-2 py-1 font-mono text-[11px] text-[#ffd27a]">
+            {missionHits} hit{missionHits === 1 ? "" : "s"} / {missionShots}{" "}
+            {spec.weapon.kind === "missile" ? "fired" : "dropped"}
+          </p>
+        )}
+      </div>
+
       <div className="flex gap-4 text-xs text-ink-2">
         <label className="flex cursor-pointer items-center gap-2">
           <input
@@ -996,6 +1025,10 @@ function PlanePanel() {
           <li>
             <code className="text-ink-2">Space</code> throttle up ·{" "}
             <code className="text-ink-2">Shift</code> throttle down
+          </li>
+          <li>
+            <code className="text-ink-2">F</code>{" "}
+            {aircraft === "f117" ? "fire missile" : "drop package"}
           </li>
           <li>
             <code className="text-ink-2">Esc</code> eject

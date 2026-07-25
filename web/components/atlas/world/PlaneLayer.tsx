@@ -15,6 +15,12 @@ import {
   type WarningSound,
 } from "./planeAudio";
 import { AIRCRAFT, type AircraftKey, type AircraftSpec } from "./aircraft";
+import {
+  createOrdnance,
+  createTargetMarker,
+  type OrdnanceRig,
+  type TargetMarker,
+} from "./planeGame";
 import { useWorld } from "./store";
 import { HEIGHT_SCALE, uMorph } from "./uniforms";
 
@@ -59,6 +65,12 @@ export const planeTelemetry = {
   throttle: 0,
   /** GPWS: true while dangerously close to the terrain */
   warning: false,
+  /** mission targeting — distance to the hunted paper and its relative bearing */
+  hasTarget: false,
+  targetFt: 0,
+  targetRel: 0,
+  /** true while the weapon has reloaded */
+  armed: true,
 };
 
 export interface PlanePose {
@@ -539,6 +551,8 @@ export default function PlaneLayer({
   const spec = AIRCRAFT[aircraftKey] ?? AIRCRAFT.a380;
   // the rig is rebuilt per aircraft — different engine count, exhaust and scale
   const airframe = useMemo(() => buildAirframe(spec), [spec]);
+  const ordnance = useMemo<OrdnanceRig>(() => createOrdnance(spec), [spec]);
+  const marker = useMemo<TargetMarker>(createTargetMarker, []);
   const explosion = useMemo(buildExplosion, []);
   const trailL = useMemo(makeTrail, []);
   const trailR = useMemo(makeTrail, []);
@@ -582,6 +596,20 @@ export default function PlaneLayer({
     trailR.geo.setDrawRange(0, 0);
   };
 
+  /** Assign a fresh paper to hunt — anywhere on the map, so you have to fly. */
+  const pickTarget = () => {
+    const st = useWorld.getState();
+    if (!st.missionOn || data.nPapers === 0) {
+      st.set("missionTarget", null);
+      return;
+    }
+    let idx = Math.floor(Math.random() * data.nPapers);
+    if (idx === st.missionTarget) idx = (idx + 1) % data.nPapers;
+    st.set("missionTarget", idx);
+  };
+  const pickTargetRef = useRef(pickTarget);
+  pickTargetRef.current = pickTarget;
+
   /** Put the jet on the ring and hand it the controls. Only ever called once
    *  the real airframe is in the scene — there is no stand-in to fly. */
   const startFlight = () => {
@@ -606,6 +634,11 @@ export default function PlaneLayer({
     clearTrails();
     mode.current = "flying";
     st.set("planeStatus", "ready");
+    if (st.missionOn) {
+      st.set("missionHits", 0);
+      st.set("missionShots", 0);
+      pickTargetRef.current();
+    }
 
     // put the camera right on its tail so the jet reads big immediately
     if (st.planeFollow) {
@@ -639,10 +672,26 @@ export default function PlaneLayer({
       warnSound.current?.stop();
       warnSound.current = null;
       clearTrails();
+      marker.place(null);
+      st.set("missionTarget", null);
+      planeTelemetry.hasTarget = false;
       if (st.planeStatus !== "error") st.set("planeStatus", "idle");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planeOn, airframe, camera]);
+
+  // arming the mission mid-flight (or between flights) assigns a paper
+  const missionOn = useWorld((st) => st.missionOn);
+  useEffect(() => {
+    const st = useWorld.getState();
+    if (missionOn) {
+      if (mode.current === "flying" && st.missionTarget === null) {
+        pickTargetRef.current();
+      }
+    } else {
+      st.set("missionTarget", null);
+    }
+  }, [missionOn]);
 
   // engine sound — only once the real airframe is flying
   useEffect(() => {
@@ -662,6 +711,9 @@ export default function PlaneLayer({
   const realJet = useRef<THREE.Group | null>(null);
   const envProbe = useRef<THREE.Texture | null>(null);
   const exhaustMats = useRef<THREE.MeshStandardMaterial[]>([]);
+  const targetPos = useMemo(() => new THREE.Vector3(), []);
+  const fireHeld = useRef(false);
+  const flashSeq = useRef(0);
   const loadState = useRef<Map<AircraftKey, "loading" | "done" | "failed">>(
     new Map(),
   );
@@ -731,7 +783,7 @@ export default function PlaneLayer({
     if (!planeOn) return;
     const ks = keys.current;
     const RELEVANT = new Set([
-      "w", "a", "s", "d", "q", "e",
+      "w", "a", "s", "d", "q", "e", "f",
       "arrowup", "arrowdown", "arrowleft", "arrowright",
       " ", "shift",
     ]);
@@ -774,6 +826,8 @@ export default function PlaneLayer({
     },
     [airframe],
   );
+  useEffect(() => () => ordnance.dispose(), [ordnance]);
+  useEffect(() => () => marker.dispose(), [marker]);
 
   // teardown on unmount — everything that outlives an aircraft switch
   useEffect(() => {
@@ -1144,6 +1198,66 @@ export default function PlaneLayer({
 
     engine.current?.update(throttle.current, speed.current);
 
+    /* ---- the mission: hunt a paper, drop or shoot ---- */
+    const st = useWorld.getState();
+    const tIdx = st.missionOn ? st.missionTarget : null;
+    if (tIdx !== null && tIdx >= 0 && tIdx < data.nPapers) {
+      paperWorldPos(data, tIdx, uMorph.value, targetPos);
+      marker.place(targetPos);
+      // bearing relative to the nose, so the HUD can point at it
+      const dx = targetPos.x - g.position.x;
+      const dz = targetPos.z - g.position.z;
+      planeTelemetry.hasTarget = true;
+      planeTelemetry.targetFt = Math.hypot(dx, dz) * 112;
+      planeTelemetry.targetRel =
+        wrapAngle(Math.atan2(dx, dz) - yaw.current) * (180 / Math.PI);
+    } else {
+      marker.place(null);
+      planeTelemetry.hasTarget = false;
+    }
+    marker.step(t, boost);
+
+    ordnance.cool(dt);
+    planeTelemetry.armed = ordnance.ready();
+    if (ks.has("f") && !fireHeld.current && st.missionOn) {
+      fireHeld.current = true;
+      // released from the belly, carrying the aircraft's own velocity
+      tmp
+        .set(0, -0.9 * spec.scale, 0.25 * spec.scale)
+        .applyEuler(g.rotation)
+        .add(g.position);
+      if (ordnance.fire(tmp, fwd, speed.current)) {
+        useWorld.getState().set("missionShots", st.missionShots + 1);
+      }
+    }
+    if (!ks.has("f")) fireHeld.current = false;
+
+    for (const ev of ordnance.step(
+      dt,
+      (x, z) => groundHeightAt(data, x, z),
+      tIdx !== null ? targetPos : null,
+    )) {
+      if (ev.miss < 0) continue; // expired without a verdict
+      const cur = useWorld.getState();
+      const W = spec.weapon;
+      cur.set("missionFlash", {
+        text: ev.ok ? W.hitText : `${W.missText} · ${Math.round(ev.miss * 112)} ft`,
+        ok: ev.ok,
+        seq: ++flashSeq.current,
+      });
+      if (ev.ok) {
+        cur.set("missionHits", cur.missionHits + 1);
+        // the payoff: the paper you just hit opens exactly as a beacon click
+        if (cur.missionTarget !== null) {
+          cur.select({ kind: "paper", idx: cur.missionTarget });
+        }
+        timeouts.current.push(
+          window.setTimeout(() => pickTargetRef.current(), 900),
+        );
+      }
+    }
+
+
     /* ---- dressing: strobes, exhaust, contrails ---- */
     const phase = t % 1.2;
     airframe.navPort.material.opacity = (phase < 0.12 ? 0.9 : 0.25) * boost;
@@ -1214,6 +1328,8 @@ export default function PlaneLayer({
         </>
       )}
       <primitive object={airframe.group} />
+      <primitive object={ordnance.group} />
+      <primitive object={marker.group} />
       <primitive object={trailL.line} />
       <primitive object={trailR.line} />
       <primitive object={explosion.group} />

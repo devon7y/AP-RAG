@@ -191,6 +191,14 @@ interface WorldState {
   planeSound: boolean;
   /** the airframe streams in on first take-off — nothing flies until it lands */
   planeStatus: "idle" | "loading" | "ready" | "error";
+  /** paper-hunting mission: drop cargo on papers, or strike their beacons */
+  missionOn: boolean;
+  /** papers.json index of the paper currently being hunted */
+  missionTarget: number | null;
+  missionHits: number;
+  missionShots: number;
+  /** transient banner after each resolved shot */
+  missionFlash: { text: string; ok: boolean; seq: number } | null;
 
   // semantle (daily passage → first author)
   gamePings: GamePing[];
@@ -273,6 +281,11 @@ export const useWorld = create<WorldState>((set) => ({
   planeFollow: true,
   planeSound: true,
   planeStatus: "idle",
+  missionOn: false,
+  missionTarget: null,
+  missionHits: 0,
+  missionShots: 0,
+  missionFlash: null,
 
   gamePings: [],
   gameChunk: null,

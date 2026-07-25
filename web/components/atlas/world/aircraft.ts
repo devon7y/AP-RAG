@@ -92,6 +92,26 @@ export interface AircraftSpec {
   };
   /** exhaust brightness follows speed for a fighter, throttle for an airliner */
   exhaustFollows: "speed" | "throttle";
+  /** what this aircraft drops or shoots at papers */
+  weapon: {
+    kind: "package" | "missile";
+    /** HUD wording */
+    label: string;
+    fireLabel: string;
+    /** speed added to the aircraft's own velocity at release, world units/s */
+    launchSpeed: number;
+    gravity: number;
+    /** how close to the paper counts as a hit, in world units */
+    hitRadius: number;
+    cooldown: number;
+    /** seconds before an unresolved shot gives up */
+    life: number;
+    color: string;
+    size: number;
+    /** mission wording for the HUD banner */
+    hitText: string;
+    missText: string;
+  };
   /** contrail emitters — offset aft of the wingtips */
   trailAft: number;
   credit: { title: string; author: string; license: string; url: string };
@@ -145,6 +165,22 @@ export const AIRCRAFT: Record<AircraftKey, AircraftSpec> = {
       emissiveMax: 0,
     },
     exhaustFollows: "throttle",
+    // a cargo run: the package inherits the jet's momentum and then falls, so
+    // the drop has to be led. Generous radius — you are bombing from altitude.
+    weapon: {
+      kind: "package",
+      label: "cargo",
+      fireLabel: "drop",
+      launchSpeed: 0,
+      gravity: 9.5,
+      hitRadius: 3.2,
+      cooldown: 1.1,
+      life: 14,
+      color: "#ffe6b0",
+      size: 0.5,
+      hitText: "package delivered",
+      missText: "off target",
+    },
     trailAft: 0.1,
     credit: {
       title: "A380",
@@ -206,6 +242,21 @@ export const AIRCRAFT: Record<AircraftKey, AircraftSpec> = {
       emissiveMax: 3.4,
     },
     exhaustFollows: "speed",
+    // a strike run: flat, fast and unguided — aim with the nose
+    weapon: {
+      kind: "missile",
+      label: "AGM",
+      fireLabel: "fire",
+      launchSpeed: 38,
+      gravity: 1.4,
+      hitRadius: 1.7,
+      cooldown: 0.55,
+      life: 6,
+      color: "#bfe6ff",
+      size: 0.55,
+      hitText: "target neutralised",
+      missText: "miss",
+    },
     trailAft: 0.06,
     credit: {
       title: "Stealth F-117A",
