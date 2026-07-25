@@ -56,7 +56,7 @@ const TRAIL_N = 110;
  *  the look-at is `ahead` of the plane and lifted by `aimUp` so the shot is
  *  level and the horizon reads ahead. At this range CameraRig drops the
  *  camera's near-clip plane so the tail doesn't slice through it. */
-export const CHASE = { back: 0.34, up: 0.05, ahead: 0.32, aimUp: 0.04 };
+export const CHASE = { back: 0.26, up: 0.045, ahead: 0.3, aimUp: 0.035 };
 
 /** GPWS trigger: below this AGL (display feet) the terrain alarm sounds. */
 const WARN_AGL_FT = 350;

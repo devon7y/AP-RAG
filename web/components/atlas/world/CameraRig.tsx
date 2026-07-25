@@ -52,8 +52,7 @@ export default function CameraRig({
   const chaseFwd = useMemo(() => new THREE.Vector3(), []);
   const chasePos = useMemo(() => new THREE.Vector3(), []);
   const chaseTgt = useMemo(() => new THREE.Vector3(), []);
-  // the lagging anchor the chase cam rides (gives the camera its momentum)
-  const smoothPos = useMemo(() => new THREE.Vector3(), []);
+  // lagging chase heading — the swing that gives the camera its momentum
   const smoothFwd = useMemo(() => new THREE.Vector3(), []);
   const chasing = useRef(false);
   const shake = useRef(0);
@@ -185,33 +184,31 @@ export default function CameraRig({
     // a follow-cam; drei only auto-updates when ctl.enabled, so disabling it
     // hands us the camera outright).
     //
-    // Momentum without jitter: the camera is bolted RIGIDLY to a *smoothed
-    // anchor* — a lagging copy of the plane's position and heading — rather
-    // than easing the camera's own world position. It swings wide through a
-    // turn and settles behind on roll-out, while its offset from that anchor
-    // stays exact. Two properties keep it stable: dt is clamped to the same
-    // 0.05 the flight model uses, so a frame spike can't blow the smoothing
-    // factor up into a snap (which is exactly what the old eased follow did),
-    // and the data flow is one-way — plane → anchor → camera — so nothing
-    // feeds back to oscillate. The aim stays on the REAL jet, so it holds
-    // frame while the camera swings around it.
+    // Momentum without drifting away: only the chase HEADING lags, never the
+    // position. A positional lag is speed-dependent (v x time-constant, so
+    // 0.5-1.3 units at cruise) which dwarfs the sub-unit follow distance and
+    // silently pushes the camera back as you accelerate. Anchoring at the
+    // plane's exact position keeps the framing identical at any speed, while
+    // the lagging heading still swings the camera wide through a turn and
+    // settles it behind on roll-out — which is what reads as weight anyway.
+    // Stability: dt is clamped to the same 0.05 the flight model uses, so a
+    // frame spike can't blow the smoothing factor into a snap (exactly what
+    // the old eased follow did), and the flow is one-way — plane → heading →
+    // camera — so nothing feeds back to oscillate.
     const st = useWorld.getState();
     const plane = getPlanePose();
     if (plane && st.planeOn && st.planeFollow) {
       chaseFwd.set(0, 0, 1).applyQuaternion(plane.quat);
       const dtc = Math.min(dt, 0.05);
       if (!chasing.current) {
-        // first frame of a flight — start planted, never swing in from stale
-        smoothPos.copy(plane.pos);
-        smoothFwd.copy(chaseFwd);
+        smoothFwd.copy(chaseFwd); // first frame — planted, no swing-in
       } else {
-        smoothPos.lerp(plane.pos, 1 - Math.exp(-9 * dtc));
         smoothFwd.lerp(chaseFwd, 1 - Math.exp(-3.5 * dtc));
         if (smoothFwd.lengthSq() < 1e-6) smoothFwd.copy(chaseFwd);
         else smoothFwd.normalize();
       }
       chasePos
-        .copy(smoothPos)
+        .copy(plane.pos)
         .addScaledVector(smoothFwd, -CHASE.back)
         .addScaledVector(UP, CHASE.up);
       camera.position.copy(chasePos);
