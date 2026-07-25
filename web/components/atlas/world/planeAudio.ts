@@ -1,10 +1,9 @@
 "use client";
 
 /**
- * Procedural WebAudio for the 747 — no audio assets shipped. The engine is a
- * turbofan, not a prop: a broadband turbine roar (bandpassed noise that opens
- * with throttle), a high exhaust hiss (highpassed noise), and a thin spool
- * whine way up at 2–5 kHz with a harmonic — no low sawtooth drone anywhere.
+ * Procedural WebAudio for the hangar — no audio assets shipped. Every engine is
+ * a jet, never a prop: filtered-noise layers (rumble, body roar, exhaust hiss)
+ * over tonal spool whine, mixed differently per airframe (see EngineVoice).
  * The crash is a lowpass-swept noise boom with a sub thump and crackle tail.
  * Call primePlaneAudio() from a user gesture (the take-off button) so the
  * AudioContext is allowed to start.
@@ -44,14 +43,23 @@ export interface EngineSound {
   stop(): void;
 }
 
-export function startEngine(): EngineSound | null {
+/**
+ * Two engine voices. "turbofan" is the airliner: a deep rumble and sub carry
+ * it, the whine stays a shimmer. "fighter" trades the mass for aggression —
+ * far less sub, a hard mid-range rasp, and a dominant turbine scream that
+ * climbs a full octave with throttle, so it reads as thrust rather than bulk.
+ */
+export type EngineVoice = "turbofan" | "fighter";
+
+export function startEngine(voice: EngineVoice = "turbofan"): EngineSound | null {
   // a suspended context is fine — scheduled nodes sound once resume() lands
   if (!ctx) return null;
   const c = ctx;
+  const fighter = voice === "fighter";
   const master = c.createGain();
   master.gain.value = 0;
   master.connect(c.destination);
-  master.gain.setTargetAtTime(0.9 * MASTER, c.currentTime, 0.6);
+  master.gain.setTargetAtTime(0.9 * MASTER, c.currentTime, fighter ? 0.25 : 0.6);
 
   // deep rumble — the bass foundation of a huge turbofan. Low-passed noise
   // with a resonant cutoff gives throaty body WITHOUT a tonal propeller buzz
@@ -114,9 +122,23 @@ export function startEngine(): EngineSound | null {
   hissGain.gain.value = 0.004;
   hiss.connect(hissHp).connect(hissGain).connect(master);
 
+  // fighter only: a hard band-passed rasp in the upper mid — the crackle that
+  // makes a military engine sound angry rather than merely large
+  const rasp = c.createBufferSource();
+  rasp.buffer = noise();
+  rasp.loop = true;
+  const raspBp = c.createBiquadFilter();
+  raspBp.type = "bandpass";
+  raspBp.frequency.value = 1700;
+  raspBp.Q.value = 0.9;
+  const raspGain = c.createGain();
+  raspGain.gain.value = 0;
+  rasp.connect(raspBp).connect(raspGain).connect(master);
+
   rumble.start();
   sub.start();
   roar.start();
+  rasp.start();
   whineA.start();
   whineB.start();
   hiss.start();
@@ -126,6 +148,28 @@ export function startEngine(): EngineSound | null {
     update(throttle, speed) {
       if (stopped) return;
       const t = c.currentTime;
+      if (fighter) {
+        // thin the bottom end, push the scream: the whine leads the mix and
+        // sweeps 900 Hz -> 2.6 kHz, an octave and a half on the throttle
+        rumbleGain.gain.setTargetAtTime(0.05 + 0.12 * throttle, t, 0.1);
+        rumbleLp.frequency.setTargetAtTime(150 + throttle * 260, t, 0.15);
+        subGain.gain.setTargetAtTime(0.015 + 0.03 * throttle, t, 0.15);
+        sub.frequency.setTargetAtTime(58 + throttle * 34, t, 0.2);
+        roarGain.gain.setTargetAtTime(0.05 + 0.19 * throttle, t, 0.1);
+        roarBp.frequency.setTargetAtTime(420 + throttle * 700 + speed * 12, t, 0.15);
+        raspGain.gain.setTargetAtTime(0.012 + 0.055 * throttle, t, 0.12);
+        raspBp.frequency.setTargetAtTime(1500 + throttle * 1500, t, 0.18);
+        const f = 900 + throttle * 1700;
+        whineA.frequency.setTargetAtTime(f, t, 0.16);
+        whineB.frequency.setTargetAtTime(f * 1.5, t, 0.16);
+        whineGain.gain.setTargetAtTime(0.012 + 0.05 * throttle, t, 0.12);
+        hissGain.gain.setTargetAtTime(
+          0.006 + 0.05 * throttle + speed * 0.0009,
+          t,
+          0.1,
+        );
+        return;
+      }
       // the rumble & sub carry the mass — they grow most with throttle and
       // stay deep (105–225 Hz), so spooling up reads as sheer power
       rumbleGain.gain.setTargetAtTime(0.11 + 0.28 * throttle, t, 0.15);
@@ -153,6 +197,7 @@ export function startEngine(): EngineSound | null {
           rumble.stop();
           sub.stop();
           roar.stop();
+          rasp.stop();
           whineA.stop();
           whineB.stop();
           hiss.stop();

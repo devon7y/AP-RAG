@@ -73,20 +73,20 @@ interface Airframe {
   disposables: (THREE.BufferGeometry | THREE.Material)[];
   /** one per engine — the hot core */
   engineGlows: THREE.Sprite[];
-  /** afterburner plumes (burner aircraft only), aligned down −Z */
-  plumes: THREE.Mesh[];
+
   /** red port light (+X) */
   navPort: THREE.Sprite;
   /** green starboard light (−X) */
   navStbd: THREE.Sprite;
-  strobe: THREE.Sprite;
+  /** one per anti-collision strobe */
+  strobes: THREE.Sprite[];
 }
 
 /**
- * The airframe rig is lights only — nav lights, tail strobe and one exhaust
- * per engine. A "glow" exhaust is a single warm haze (turbofans); a "burner"
- * adds a stacked blue core and a tapered plume cone pointing aft, so the
- * fighter visibly rides a flame while the airliner just smoulders.
+ * The airframe rig is lights only — nav lights, one strobe per tail, and an
+ * exhaust per engine. A "glow" exhaust is a round warm haze over each nacelle;
+ * a "slit" exhaust is stretched wide and flat to sit over a long shallow
+ * trough, and the airframe's own emissive map does the burning underneath it.
  * Positions are placeholders; anchorRealJet pins them to the mesh.
  */
 function buildAirframe(spec: AircraftSpec): Airframe {
@@ -94,7 +94,7 @@ function buildAirframe(spec: AircraftSpec): Airframe {
   const disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
   const glow = glowTexture();
 
-  const sprite = (color: string, scale: number) => {
+  const sprite = (color: string, w: number, h = w) => {
     const m = new THREE.SpriteMaterial({
       map: glow,
       color,
@@ -104,55 +104,36 @@ function buildAirframe(spec: AircraftSpec): Airframe {
     });
     disposables.push(m);
     const sp = new THREE.Sprite(m);
-    sp.scale.setScalar(scale);
+    sp.scale.set(w, h, 1);
     group.add(sp);
     return sp;
   };
 
-  const burner = spec.exhaust.kind === "burner";
+  const slit = spec.exhaust.kind === "slit";
   const n = spec.anchors.engines.length;
+  // A round haze per nacelle for a turbofan; for a slit exhaust the sprite is
+  // stretched WIDE and FLAT to match the trough it sits over — the F-117's
+  // exhaust is a long shallow slot, so a conical plume would be wrong.
   const engineGlows = Array.from({ length: n }, () =>
-    sprite(spec.exhaust.core, spec.exhaust.size),
+    sprite(spec.exhaust.core, slit ? spec.exhaust.width * 0.62 : spec.exhaust.size, spec.exhaust.size),
   );
-  // the burner's outer flame — a wider, cooler halo behind the white core
-  const halos = burner
-    ? Array.from({ length: n }, () =>
-        sprite(spec.exhaust.halo, spec.exhaust.size * 1.9),
-      )
-    : [];
-
-  const plumes: THREE.Mesh[] = [];
-  if (burner) {
-    for (let i = 0; i < n; i++) {
-      // a cone tapering to a point aft; lathe down −Z and fade along its length
-      const geo = new THREE.ConeGeometry(spec.exhaust.size * 0.5, spec.exhaust.plume, 14, 1, true);
-      geo.rotateX(-Math.PI / 2); // tip toward −Z
-      geo.translate(0, 0, -spec.exhaust.plume / 2);
-      const mat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(spec.exhaust.halo),
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-        side: THREE.DoubleSide,
-      });
-      disposables.push(geo, mat);
-      const mesh = new THREE.Mesh(geo, mat);
-      group.add(mesh);
-      plumes.push(mesh);
-    }
-  }
-  // halos ride with their cores — parked in the same slot list for updates
+  const halos = Array.from({ length: n }, () =>
+    sprite(
+      spec.exhaust.halo,
+      slit ? spec.exhaust.width : spec.exhaust.size * 1.9,
+      slit ? spec.exhaust.size * 1.7 : spec.exhaust.size * 1.9,
+    ),
+  );
   (group.userData as { halos?: THREE.Sprite[] }).halos = halos;
 
   const navPort = sprite("#ff4d4d", 0.28); // +X — red
   const navStbd = sprite("#4dff7a", 0.28); // −X — green
-  const strobe = sprite("#ffffff", 0.28);
+  const strobes = spec.anchors.strobes.map(() => sprite("#ffffff", 0.28));
 
   group.scale.setScalar(spec.scale);
   group.rotation.order = "YXZ";
   group.visible = false;
-  return { group, disposables, engineGlows, plumes, navPort, navStbd, strobe };
+  return { group, disposables, engineGlows, navPort, navStbd, strobes };
 }
 
 /* ---------------- the real jet's painted livery ---------------- */
@@ -209,7 +190,12 @@ function makeEnvProbe(renderer: THREE.WebGLRenderer): THREE.Texture | null {
  * and thin single-sided panels are drawn double-sided so the airframe never
  * shows holes from the chase camera.
  */
-function adoptLivery(root: THREE.Group, env: THREE.Texture | null): void {
+function adoptLivery(
+  root: THREE.Group,
+  env: THREE.Texture | null,
+  spec: AircraftSpec,
+): THREE.MeshStandardMaterial[] {
+  const emissives: THREE.MeshStandardMaterial[] = [];
   root.traverse((o) => {
     if (!(o instanceof THREE.Mesh)) return;
     const mats = Array.isArray(o.material) ? o.material : [o.material];
@@ -223,10 +209,20 @@ function adoptLivery(root: THREE.Group, env: THREE.Texture | null): void {
           std.envMapIntensity = 1.15;
         }
       }
+      // the airframe's own emissive map IS its exhaust glow (the F-117 ships
+      // one, painted orange and flattened to a mask at bake time). Tint it to
+      // the aircraft's exhaust colour; the frame loop drives its intensity.
+      if (std.isMeshStandardMaterial && std.emissiveMap && spec.exhaust.emissiveMax > 0) {
+        std.emissive = new THREE.Color(spec.exhaust.emissive);
+        std.emissiveIntensity = 0;
+        std.toneMapped = false; // let the burner blow out past white
+        emissives.push(std);
+      }
       m.side = THREE.DoubleSide;
       m.needsUpdate = true;
     }
   });
+  return emissives;
 }
 
 /** Pin every light onto the airframe once the scan has loaded. */
@@ -238,13 +234,12 @@ function anchorRealJet(
   const A = spec.anchors;
   airframe.navPort.position.set(...A.navPort);
   airframe.navStbd.position.set(...A.navStbd);
-  airframe.strobe.position.set(...A.strobe);
+  A.strobes.forEach((p, i) => airframe.strobes[i]?.position.set(...p));
   const halos =
     (airframe.group.userData as { halos?: THREE.Sprite[] }).halos ?? [];
   A.engines.forEach(([x, y, z], i) => {
     airframe.engineGlows[i]?.position.set(x, y, z);
-    halos[i]?.position.set(x, y, z - spec.exhaust.size * 0.35);
-    airframe.plumes[i]?.position.set(x, y, z);
+    halos[i]?.position.set(x, y, z);
   });
   // contrails stream from the wingtips, just aft of the nav lights
   wing.port.set(A.navPort[0], A.navPort[1], A.navPort[2] - spec.trailAft);
@@ -600,20 +595,21 @@ export default function PlaneLayer({
   // engine sound — only once the real airframe is flying
   useEffect(() => {
     if (planeOn && planeSound && planeStatus === "ready") {
-      engine.current = startEngine();
+      engine.current = startEngine(spec.key === "f117" ? "fighter" : "turbofan");
       return () => {
         engine.current?.stop();
         engine.current = null;
       };
     }
     return undefined;
-  }, [planeOn, planeSound, planeStatus]);
+  }, [planeOn, planeSound, planeStatus, spec]);
 
   // the real 747 — streamed in once, on the first take-off, so the page's
   // initial load never pays for it; the procedural jet flies until it lands
   const jetCache = useRef<Map<AircraftKey, THREE.Group>>(new Map());
   const realJet = useRef<THREE.Group | null>(null);
   const envProbe = useRef<THREE.Texture | null>(null);
+  const exhaustMats = useRef<THREE.MeshStandardMaterial[]>([]);
   const loadState = useRef<Map<AircraftKey, "loading" | "done" | "failed">>(
     new Map(),
   );
@@ -628,6 +624,16 @@ export default function PlaneLayer({
     if (cached) {
       if (cached.parent !== airframe.group) airframe.group.add(cached);
       realJet.current = cached;
+      exhaustMats.current = [];
+      cached.traverse((o) => {
+        if (!(o instanceof THREE.Mesh)) return;
+        for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+          const std = m as THREE.MeshStandardMaterial;
+          if (std.isMeshStandardMaterial && std.emissiveMap && spec.exhaust.emissiveMax > 0) {
+            exhaustMats.current.push(std);
+          }
+        }
+      });
       anchorRealJet(airframe, spec, wingAnchors);
       if (useWorld.getState().planeOn) startFlightRef.current();
       return;
@@ -646,7 +652,7 @@ export default function PlaneLayer({
         envProbe.current ??= makeEnvProbe(
           renderer as unknown as THREE.WebGLRenderer,
         );
-        adoptLivery(gltf.scene, envProbe.current);
+        exhaustMats.current = adoptLivery(gltf.scene, envProbe.current, spec);
         jetCache.current.set(key, gltf.scene);
         loadState.current.set(key, "done");
         // the pilot may have ejected or switched jets while this was streaming
@@ -1090,36 +1096,49 @@ export default function PlaneLayer({
     const phase = t % 1.2;
     airframe.navPort.material.opacity = (phase < 0.12 ? 0.9 : 0.25) * boost;
     airframe.navStbd.material.opacity = (phase < 0.12 ? 0.9 : 0.25) * boost;
-    airframe.strobe.material.opacity =
-      (phase > 0.55 && phase < 0.63 ? 1 : 0.08) * boost;
-    // exhaust: the airliner smoulders, the fighter rides a blue flame that
-    // stretches and brightens with throttle (and flickers, so it reads hot)
-    const burner = spec.exhaust.kind === "burner";
-    const flick = burner ? 0.88 + 0.12 * Math.sin(t * 41) : 1;
-    const heat = 0.12 + (burner ? 0.95 : 0.6) * throttle.current;
+    for (const st of airframe.strobes) {
+      st.material.opacity = (phase > 0.55 && phase < 0.63 ? 1 : 0.08) * boost;
+    }
+
+    // Exhaust: the airliner's haze tracks the throttle; the fighter's exhaust
+    // glow tracks SPEED, so the slits brighten as it actually accelerates.
+    const slit = spec.exhaust.kind === "slit";
+    const drive =
+      spec.exhaustFollows === "speed"
+        ? THREE.MathUtils.clamp(
+            (speed.current - F.speedMin) / (F.speedMax - F.speedMin),
+            0,
+            1,
+          )
+        : throttle.current;
+    const flick = slit ? 0.9 + 0.1 * Math.sin(t * 37) : 1;
     for (const gs of airframe.engineGlows) {
-      gs.material.opacity = heat * flick * boost;
-      if (burner) {
-        gs.scale.setScalar(spec.exhaust.size * (0.75 + 0.5 * throttle.current) * flick);
+      gs.material.opacity =
+        (slit ? 0.1 + 0.85 * drive : 0.12 + 0.6 * drive) * flick * boost;
+      if (slit) {
+        gs.scale.set(
+          spec.exhaust.width * 0.62 * (0.8 + 0.35 * drive),
+          spec.exhaust.size * (0.7 + 0.5 * drive),
+          1,
+        );
       }
     }
     const halos =
       (airframe.group.userData as { halos?: THREE.Sprite[] }).halos ?? [];
     for (const h of halos) {
-      h.material.opacity = (0.06 + 0.5 * throttle.current) * flick * boost;
-      h.scale.setScalar(
-        spec.exhaust.size * 1.9 * (0.7 + 0.6 * throttle.current) * flick,
-      );
+      h.material.opacity =
+        (slit ? 0.05 + 0.4 * drive : 0.06 + 0.5 * drive) * flick * boost;
+      if (slit) {
+        h.scale.set(
+          spec.exhaust.width * (0.85 + 0.45 * drive),
+          spec.exhaust.size * 1.7 * (0.8 + 0.5 * drive),
+          1,
+        );
+      }
     }
-    for (const pl of airframe.plumes) {
-      const m = pl.material as THREE.MeshBasicMaterial;
-      m.opacity = (0.05 + 0.42 * throttle.current) * flick * boost;
-      // the flame lengthens as the burner lights up
-      pl.scale.set(
-        0.7 + 0.5 * throttle.current,
-        0.7 + 0.5 * throttle.current,
-        0.45 + 1.15 * throttle.current,
-      );
+    // the airframe's own emissive slits burn hotter the faster it flies
+    for (const m of exhaustMats.current) {
+      m.emissiveIntensity = spec.exhaust.emissiveMax * (0.12 + 0.88 * drive) * flick;
     }
 
     for (const [trail, anchor] of [

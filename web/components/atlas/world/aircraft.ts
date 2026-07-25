@@ -54,18 +54,30 @@ export interface AircraftSpec {
   anchors: {
     navPort: readonly [number, number, number];
     navStbd: readonly [number, number, number];
-    strobe: readonly [number, number, number];
+    /** one per anti-collision strobe — twin-tailed jets get two */
+    strobes: readonly (readonly [number, number, number])[];
     engines: readonly (readonly [number, number, number])[];
   };
   exhaust: {
-    /** "glow" = warm turbofan haze · "burner" = blue afterburner with a plume */
-    kind: "glow" | "burner";
+    /**
+     * "glow" — round turbofan haze, a soft sprite per nacelle, warm.
+     * "slit" — the airframe's OWN emissive map is the exhaust (flattened to a
+     *   luminance mask at bake time), tinted here and driven by speed, with a
+     *   wide flat halo over each slit. Elongated, never conical.
+     */
+    kind: "glow" | "slit";
     core: string;
     halo: string;
+    /** sprite size — for a slit this is the halo HEIGHT */
     size: number;
-    /** plume length in model units (burner only) */
-    plume: number;
+    /** halo width (slit only) — the slits are far wider than they are tall */
+    width: number;
+    /** emissive tint + how hard it burns at full speed (slit only) */
+    emissive: string;
+    emissiveMax: number;
   };
+  /** exhaust brightness follows speed for a fighter, throttle for an airliner */
+  exhaustFollows: "speed" | "throttle";
   /** contrail emitters — offset aft of the wingtips */
   trailAft: number;
   credit: { title: string; author: string; license: string; url: string };
@@ -100,7 +112,7 @@ export const AIRCRAFT: Record<AircraftKey, AircraftSpec> = {
     anchors: {
       navPort: [4.325, -0.4, -1.62],
       navStbd: [-4.325, -0.4, -1.61],
-      strobe: [0, 1.26, -3.98],
+      strobes: [[0, 1.26, -3.98]],
       // inboard pair sits forward of the outboard pair — that is the wing sweep
       engines: [
         [-2.76, -0.95, -0.13],
@@ -109,7 +121,16 @@ export const AIRCRAFT: Record<AircraftKey, AircraftSpec> = {
         [2.78, -0.95, -0.15],
       ],
     },
-    exhaust: { kind: "glow", core: "#ffb36b", halo: "#ff8a2b", size: 0.26, plume: 0 },
+    exhaust: {
+      kind: "glow",
+      core: "#ffb36b",
+      halo: "#ff8a2b",
+      size: 0.26,
+      width: 0.26,
+      emissive: "#000000",
+      emissiveMax: 0,
+    },
+    exhaustFollows: "throttle",
     trailAft: 0.1,
     credit: {
       title: "A380",
@@ -148,21 +169,29 @@ export const AIRCRAFT: Record<AircraftKey, AircraftSpec> = {
     anchors: {
       navPort: [2.92, -0.22, -3.07],
       navStbd: [-2.92, -0.21, -3.09],
-      // the canted tails trail aft of the exhausts — the strobe rides one tip
-      strobe: [-0.69, 0.9, -4.25],
-      // the platypus exhausts: a narrow aft deck at |x| < 0.14, ending z = -3.43
+      // one strobe per canted tail tip
+      strobes: [
+        [-0.69, 0.9, -4.25],
+        [0.7, 0.9, -4.24],
+      ],
+      // The exhaust troughs, read straight off the airframe's own emissive map:
+      // two slits centred x ±0.60, y -0.24, running z -1.06 .. -2.91. Long and
+      // flat, which is why the glow is elongated rather than a cone.
       engines: [
-        [-0.15, 0.02, -3.5],
-        [0.15, 0.02, -3.5],
+        [-0.606, -0.241, -1.845],
+        [0.597, -0.243, -1.841],
       ],
     },
     exhaust: {
-      kind: "burner",
-      core: "#dceeff",
-      halo: "#2f7dff",
-      size: 0.34,
-      plume: 1.5,
+      kind: "slit",
+      core: "#cfe8ff",
+      halo: "#3d8bff",
+      size: 0.3,
+      width: 1.9,
+      emissive: "#4d9dff",
+      emissiveMax: 3.4,
     },
+    exhaustFollows: "speed",
     trailAft: 0.06,
     credit: {
       title: "Stealth F-117A",
