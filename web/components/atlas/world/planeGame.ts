@@ -7,9 +7,9 @@ import type { AircraftSpec } from "./aircraft";
 /**
  * Ordnance and missions — the paper-themed game layer.
  *
- * The A380 flies cargo runs: crates are released with the aircraft's own
- * momentum and fall ballistically, so you have to lead the target and account
- * for altitude. The F-117 flies strike missions: missiles leave the rails fast
+ * The A380 flies cargo runs: crates fall straight down out of the bay, so the
+ * job is to be directly over the paper when you release. The F-117 flies
+ * strike missions: missiles leave the rails fast
  * and flat, and a hit is judged by closest approach along the flight segment
  * (not by sampling positions, which would tunnel straight through a target at
  * ~64 units/s).
@@ -222,8 +222,14 @@ export function createOrdnance(spec: AircraftSpec): OrdnanceRig {
       s.age = 0;
       s.spin = 0;
       s.pos.copy(from);
-      // released WITH the aircraft's momentum, then the motor (or gravity) acts
-      s.vel.copy(forward).multiplyScalar(planeSpeed + W.launchSpeed);
+      // a missile carries the jet's velocity out of the rails; a crate does
+      // not — it simply falls out of the bay, straight down from the release
+      // point, so the drop is a matter of being over the target
+      if (W.inheritMomentum) {
+        s.vel.copy(forward).multiplyScalar(planeSpeed + W.launchSpeed);
+      } else {
+        s.vel.set(0, 0, 0);
+      }
       s.body.position.copy(s.pos);
       s.body.visible = true;
       s.trail.length = 0;

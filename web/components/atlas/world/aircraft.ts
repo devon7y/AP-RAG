@@ -99,6 +99,12 @@ export interface AircraftSpec {
     label: string;
     fireLabel: string;
     /** body length in WORLD units (the jet itself is only ~0.2) */
+    /**
+     * Does the shot leave with the aircraft's velocity? A missile does (it
+     * flies on from the rails); a crate does NOT — it drops straight down from
+     * the bay, so you line up directly over the target instead of leading it.
+     */
+    inheritMomentum: boolean;
     /** speed added to the aircraft's own velocity at release, world units/s */
     launchSpeed: number;
     gravity: number;
@@ -166,12 +172,13 @@ export const AIRCRAFT: Record<AircraftKey, AircraftSpec> = {
       emissiveMax: 0,
     },
     exhaustFollows: "throttle",
-    // a cargo run: the package inherits the jet's momentum and then falls, so
-    // the drop has to be led. Generous radius — you are bombing from altitude.
+    // a cargo run: the crate falls straight out of the bay, so you line up
+    // directly over the paper. Generous radius — you are dropping from altitude.
     weapon: {
       kind: "package",
       label: "cargo",
       fireLabel: "drop",
+      inheritMomentum: false,
       launchSpeed: 0,
       gravity: 9.5,
       hitRadius: 3.2,
@@ -248,6 +255,7 @@ export const AIRCRAFT: Record<AircraftKey, AircraftSpec> = {
       kind: "missile",
       label: "AGM",
       fireLabel: "fire",
+      inheritMomentum: true,
       launchSpeed: 38,
       gravity: 1.4,
       hitRadius: 1.7,

@@ -966,7 +966,7 @@ function PlanePanel() {
         <p className="mt-1 text-[10px] leading-relaxed text-ink-3">
           {aircraft === "f117"
             ? "A paper beacon is marked by a shaft of light. Line the nose up and fire — missiles fly flat and unguided, so you have to aim."
-            : "A paper is marked by a shaft of light. Fly over it and release: the package carries your speed and then falls, so lead the drop."}{" "}
+            : "A paper is marked by a shaft of light. Line up directly above it and release — the crate drops straight down."}{" "}
           Score a hit and that paper&apos;s card opens.
         </p>
         <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-ink-2">
