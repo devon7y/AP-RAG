@@ -52,6 +52,9 @@ export default function CameraRig({
   const chaseFwd = useMemo(() => new THREE.Vector3(), []);
   const chasePos = useMemo(() => new THREE.Vector3(), []);
   const chaseTgt = useMemo(() => new THREE.Vector3(), []);
+  // the lagging anchor the chase cam rides (gives the camera its momentum)
+  const smoothPos = useMemo(() => new THREE.Vector3(), []);
+  const smoothFwd = useMemo(() => new THREE.Vector3(), []);
   const chasing = useRef(false);
   const shake = useRef(0);
 
@@ -177,23 +180,41 @@ export default function CameraRig({
       shake.current *= Math.exp(-2.6 * dt);
     }
 
-    // 747 chase cam — FULLY manual and RIGID, bypassing OrbitControls. The
-    // camera is an exact offset from the plane's transform with ZERO time-
-    // based smoothing, so it cannot lag or snap on a frame-rate spike (an
-    // eased follow drifted its distance during lag spikes, which read as
-    // jitter). The plane's own motion is smooth, so a camera bolted to it is
-    // rock-steady. We never call ctl.update() (it re-derives the camera from
-    // spherical coords and fights a follow-cam); drei only auto-updates when
-    // ctl.enabled, so disabling it hands us the camera outright.
+    // 747 chase cam — FULLY manual, bypassing OrbitControls (we never call
+    // ctl.update(): it re-derives the camera from spherical coords and fights
+    // a follow-cam; drei only auto-updates when ctl.enabled, so disabling it
+    // hands us the camera outright).
+    //
+    // Momentum without jitter: the camera is bolted RIGIDLY to a *smoothed
+    // anchor* — a lagging copy of the plane's position and heading — rather
+    // than easing the camera's own world position. It swings wide through a
+    // turn and settles behind on roll-out, while its offset from that anchor
+    // stays exact. Two properties keep it stable: dt is clamped to the same
+    // 0.05 the flight model uses, so a frame spike can't blow the smoothing
+    // factor up into a snap (which is exactly what the old eased follow did),
+    // and the data flow is one-way — plane → anchor → camera — so nothing
+    // feeds back to oscillate. The aim stays on the REAL jet, so it holds
+    // frame while the camera swings around it.
     const st = useWorld.getState();
     const plane = getPlanePose();
     if (plane && st.planeOn && st.planeFollow) {
       chaseFwd.set(0, 0, 1).applyQuaternion(plane.quat);
+      const dtc = Math.min(dt, 0.05);
+      if (!chasing.current) {
+        // first frame of a flight — start planted, never swing in from stale
+        smoothPos.copy(plane.pos);
+        smoothFwd.copy(chaseFwd);
+      } else {
+        smoothPos.lerp(plane.pos, 1 - Math.exp(-9 * dtc));
+        smoothFwd.lerp(chaseFwd, 1 - Math.exp(-3.5 * dtc));
+        if (smoothFwd.lengthSq() < 1e-6) smoothFwd.copy(chaseFwd);
+        else smoothFwd.normalize();
+      }
       chasePos
-        .copy(plane.pos)
-        .addScaledVector(chaseFwd, -CHASE.back)
+        .copy(smoothPos)
+        .addScaledVector(smoothFwd, -CHASE.back)
         .addScaledVector(UP, CHASE.up);
-      camera.position.copy(chasePos); // rigid — no lerp, frame-rate independent
+      camera.position.copy(chasePos);
       if (camera.position.y < 0.05) camera.position.y = 0.05;
       // aim ahead of the plane and slightly UP, so the shot sits level behind
       // the fuselage rather than looking down on it
@@ -203,7 +224,7 @@ export default function CameraRig({
         .addScaledVector(UP, CHASE.aimUp);
       ctl.target.copy(chaseTgt); // keep synced so the eject handoff is smooth
       camera.up.set(0, 1, 0);
-      camera.lookAt(chaseTgt); // rigid aim
+      camera.lookAt(chaseTgt);
       ctl.enabled = false;
       // hugging the tail — pull the near-clip plane in so it doesn't slice
       // through the fuselage (restored by the teardown when the chase ends)
