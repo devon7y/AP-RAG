@@ -133,6 +133,7 @@ function HoverTooltip({ corpus }: { corpus: CorpusData }) {
   );
 }
 
+
 /* ---------------- atmosphere ---------------- */
 
 function Atmosphere() {
@@ -513,7 +514,41 @@ function World({
   );
 }
 
+/**
+ * Next's `cachedNavigations` (next.config.ts) does NOT unmount this page when
+ * you route away — it hides it with React Activity, which tears down effects
+ * while keeping state and DOM alive, then re-runs them when you return.
+ * react-three-fiber cannot survive that: on teardown it deactivates its root
+ * and drops it from its internal `_roots` registry, and on the way back it
+ * re-activates the root without re-registering it. Its render loop only ever
+ * walks `_roots`, so the loop has nothing to render and never restarts —
+ * neither invalidate() nor advance() nor setFrameloop() can revive it (all
+ * verified against a live repro). You come back to a world that looks alive
+ * but is frozen: no camera, no panning, no picking.
+ *
+ * So the canvas has to be rebuilt. State survives the hide, so a ref that is
+ * already set on setup means this is a return rather than a first mount; that
+ * bumps a key and remounts the scene, which builds a fresh renderer and a
+ * fresh root. The corpus and the derived world are memoized above this, so
+ * only the GPU-side objects are recreated.
+ */
+function useVisibleGeneration(): { hidden: boolean; generation: number } {
+  const seen = useRef(false);
+  const [state, setState] = useState({ hidden: false, generation: 0 });
+  useEffect(() => {
+    if (seen.current) {
+      // returning: mount a brand-new scene (fresh renderer + fresh r3f root)
+      setState((s) => ({ hidden: false, generation: s.generation + 1 }));
+    }
+    seen.current = true;
+    // hiding: drop the scene entirely rather than leave a dead one to restore
+    return () => setState((s) => ({ ...s, hidden: true }));
+  }, []);
+  return state;
+}
+
 export default function WorldSceneRoot() {
+  const { hidden, generation } = useVisibleGeneration();
   const { corpus, error } = useCorpus();
   const constellations = useConstellations();
   const authors = useAuthors();
@@ -549,8 +584,8 @@ export default function WorldSceneRoot() {
         </div>
       )}
       {!error && !data && <LoadingVeil label="Loading the Papers Atlas…" />}
-      {data && authors && (
-        <World data={data} authors={authors} paperMeta={paperMeta} />
+      {data && authors && !hidden && (
+        <World key={generation} data={data} authors={authors} paperMeta={paperMeta} />
       )}
     </div>
   );

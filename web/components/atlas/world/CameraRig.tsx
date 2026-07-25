@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -44,7 +44,9 @@ export default function CameraRig({
   /** current 747 pose (or null when it isn't flying) */
   getPlanePose: () => PlanePose | null;
 }) {
-  const controls = useRef<OrbitControlsImpl>(null);
+  // `| null` in the generic: this repo's @types/react (18) makes useRef<T>(null) a
+  // readonly RefObject, so bindControls below couldn't assign to .current.
+  const controls = useRef<OrbitControlsImpl | null>(null);
   const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
   const warp = useWorld((s) => s.warp);
   const tween = useRef<Tween | null>(null);
@@ -92,17 +94,22 @@ export default function CameraRig({
   // frame one of a fresh mount, but a previous visit can have left either set
   // — a stale `warping` deadens the picker (no hover, no clicks, so the scene
   // stops responding), and a stale `planeOn` disables the controls outright.
-  useEffect(() => {
-    const ctl = controls.current;
-    if (!ctl) return;
-    // the canvas mounts the camera at the atlas shot; a return visit can be in
-    // galaxy view, whose resting orbit sits further out
-    const shot = homeShot(useWorld.getState().view);
-    camera.position.set(...shot.position);
-    ctl.target.set(...shot.target);
-    ctl.update();
-    useWorld.setState({ warping: false, planeOn: false });
-  }, [camera]);
+  const framed = useRef(false);
+  const bindControls = useCallback(
+    (ctl: OrbitControlsImpl | null) => {
+      controls.current = ctl;
+      if (!ctl || framed.current) return;
+      framed.current = true;
+      // the canvas mounts the camera at the atlas shot; a return visit can be
+      // in galaxy view, whose resting orbit sits further out
+      const shot = homeShot(useWorld.getState().view);
+      camera.position.set(...shot.position);
+      ctl.target.set(...shot.target);
+      ctl.update();
+      useWorld.setState({ warping: false, planeOn: false });
+    },
+    [camera],
+  );
 
   // the idle orbit stops for good the moment the user moves the camera
   useEffect(() => {
@@ -313,7 +320,7 @@ export default function CameraRig({
 
   return (
     <OrbitControls
-      ref={controls}
+      ref={bindControls}
       makeDefault
       enableDamping
       dampingFactor={0.08}
