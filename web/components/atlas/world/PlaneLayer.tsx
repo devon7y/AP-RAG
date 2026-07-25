@@ -9,6 +9,8 @@ import { glowTexture, ringTexture, sampleField, type WorldData } from "./derive"
 import { paperWorldPos } from "./PaperBeacons";
 import {
   playExplosion,
+  playImpact,
+  playLaunch,
   startAltitudeWarning,
   startEngine,
   type EngineSound,
@@ -1228,6 +1230,7 @@ export default function PlaneLayer({
         .add(g.position);
       if (ordnance.fire(tmp, fwd, speed.current)) {
         useWorld.getState().set("missionShots", st.missionShots + 1);
+        if (st.planeSound) playLaunch(spec.weapon.kind === "missile");
       }
     }
     if (!ks.has("f")) fireHeld.current = false;
@@ -1236,9 +1239,11 @@ export default function PlaneLayer({
       dt,
       (x, z) => groundHeightAt(data, x, z),
       tIdx !== null ? targetPos : null,
+      t,
     )) {
       if (ev.miss < 0) continue; // expired without a verdict
       const cur = useWorld.getState();
+      if (cur.planeSound) playImpact(ev.ok);
       const W = spec.weapon;
       cur.set("missionFlash", {
         text: ev.ok ? W.hitText : `${W.missText} · ${Math.round(ev.miss * 112)} ft`,

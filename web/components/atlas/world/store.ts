@@ -281,7 +281,7 @@ export const useWorld = create<WorldState>((set) => ({
   planeFollow: true,
   planeSound: true,
   planeStatus: "idle",
-  missionOn: false,
+  missionOn: true,
   missionTarget: null,
   missionHits: 0,
   missionShots: 0,

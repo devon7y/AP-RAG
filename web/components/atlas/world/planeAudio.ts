@@ -301,3 +301,98 @@ export function playExplosion(): void {
   crack.start(t0 + 0.05);
   crack.stop(t0 + 2.0);
 }
+
+/* ---------------- ordnance ---------------- */
+
+/** Weapon release: a missile rips away on a rising whoosh; a crate just
+ *  clunks off the rails. Both are short — they punctuate, never linger. */
+export function playLaunch(missile: boolean): void {
+  if (!ctx) return;
+  const c = ctx;
+  const t0 = c.currentTime;
+
+  const air = c.createBufferSource();
+  air.buffer = noise();
+  const bp = c.createBiquadFilter();
+  bp.type = missile ? "bandpass" : "lowpass";
+  bp.Q.value = missile ? 0.8 : 1;
+  const g = c.createGain();
+  if (missile) {
+    // the motor lights and the missile runs away from you: the band climbs
+    bp.frequency.setValueAtTime(380, t0);
+    bp.frequency.exponentialRampToValueAtTime(2600, t0 + 0.4);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(0.5 * MASTER, t0 + 0.05);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.7);
+  } else {
+    bp.frequency.setValueAtTime(900, t0);
+    bp.frequency.exponentialRampToValueAtTime(180, t0 + 0.18);
+    g.gain.setValueAtTime(0.34 * MASTER, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.25);
+  }
+  air.connect(bp).connect(g).connect(c.destination);
+  air.start(t0);
+  air.stop(t0 + (missile ? 0.8 : 0.3));
+
+  // the thump of the rail letting go
+  const thump = c.createOscillator();
+  thump.type = "sine";
+  thump.frequency.setValueAtTime(missile ? 150 : 96, t0);
+  thump.frequency.exponentialRampToValueAtTime(missile ? 62 : 44, t0 + 0.16);
+  const tg = c.createGain();
+  tg.gain.setValueAtTime(0.42 * MASTER, t0);
+  tg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+  thump.connect(tg).connect(c.destination);
+  thump.start(t0);
+  thump.stop(t0 + 0.25);
+}
+
+/** Impact. A hit gets a real detonation plus a rising two-tone confirmation
+ *  chime — the "target neutralised" sting; a miss gets a dull thud only. */
+export function playImpact(ok: boolean): void {
+  if (!ctx) return;
+  const c = ctx;
+  const t0 = c.currentTime;
+
+  const blast = c.createBufferSource();
+  blast.buffer = noise();
+  const lp = c.createBiquadFilter();
+  lp.type = "lowpass";
+  lp.frequency.setValueAtTime(ok ? 1800 : 700, t0);
+  lp.frequency.exponentialRampToValueAtTime(ok ? 120 : 90, t0 + (ok ? 1.1 : 0.4));
+  const bg = c.createGain();
+  bg.gain.setValueAtTime((ok ? 0.7 : 0.26) * MASTER, t0);
+  bg.gain.exponentialRampToValueAtTime(0.0001, t0 + (ok ? 1.3 : 0.45));
+  blast.connect(lp).connect(bg).connect(c.destination);
+  blast.start(t0);
+  blast.stop(t0 + (ok ? 1.4 : 0.5));
+
+  const sub = c.createOscillator();
+  sub.type = "sine";
+  sub.frequency.setValueAtTime(ok ? 96 : 70, t0);
+  sub.frequency.exponentialRampToValueAtTime(ok ? 40 : 38, t0 + 0.5);
+  const sg = c.createGain();
+  sg.gain.setValueAtTime((ok ? 0.75 : 0.3) * MASTER, t0);
+  sg.gain.exponentialRampToValueAtTime(0.0001, t0 + (ok ? 0.75 : 0.4));
+  sub.connect(sg).connect(c.destination);
+  sub.start(t0);
+  sub.stop(t0 + 0.8);
+
+  if (!ok) return;
+  // confirmation: two clean tones a fifth apart, the second landing late
+  [
+    { f: 880, at: 0.1 },
+    { f: 1320, at: 0.22 },
+  ].forEach(({ f, at }) => {
+    const o = c.createOscillator();
+    o.type = "triangle";
+    o.frequency.value = f;
+    const og = c.createGain();
+    og.gain.setValueAtTime(0.0001, t0 + at);
+    og.gain.exponentialRampToValueAtTime(0.24 * MASTER, t0 + at + 0.02);
+    og.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.55);
+    o.connect(og).connect(c.destination);
+    o.start(t0 + at);
+    o.stop(t0 + at + 0.6);
+  });
+}

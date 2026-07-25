@@ -98,6 +98,7 @@ export interface AircraftSpec {
     /** HUD wording */
     label: string;
     fireLabel: string;
+    /** body length in WORLD units (the jet itself is only ~0.2) */
     /** speed added to the aircraft's own velocity at release, world units/s */
     launchSpeed: number;
     gravity: number;
@@ -176,8 +177,8 @@ export const AIRCRAFT: Record<AircraftKey, AircraftSpec> = {
       hitRadius: 3.2,
       cooldown: 1.1,
       life: 14,
-      color: "#ffe6b0",
-      size: 0.5,
+      color: "#c8a672",
+      size: 0.028,
       hitText: "package delivered",
       missText: "off target",
     },
@@ -252,8 +253,8 @@ export const AIRCRAFT: Record<AircraftKey, AircraftSpec> = {
       hitRadius: 1.7,
       cooldown: 0.55,
       life: 6,
-      color: "#bfe6ff",
-      size: 0.55,
+      color: "#b9c4d2",
+      size: 0.075,
       hitText: "target neutralised",
       missText: "miss",
     },
