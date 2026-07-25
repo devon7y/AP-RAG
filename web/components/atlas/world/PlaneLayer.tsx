@@ -251,7 +251,7 @@ function build747(): Airframe {
       disposables.push(gm);
       const gs = new THREE.Sprite(gm);
       gs.position.set(sx * ex, -0.52, ez - 0.55);
-      gs.scale.setScalar(0.34);
+      gs.scale.setScalar(0.26); // reads as an exhaust, not a floating orb
       group.add(gs);
       engineGlows.push(gs);
     }
@@ -286,22 +286,70 @@ function build747(): Airframe {
 /* ---------------- the real jet's painted livery ---------------- */
 
 /**
+ * A tiny equirectangular gradient — night sky above, dark ground below, with a
+ * soft highlight where the key light sits — pre-filtered into a reflection
+ * probe. Airliner paint is glossy, and gloss is mostly *reflection*: with only
+ * direct lights the hull can only ever look matte. This is attached to the
+ * jet's own materials rather than to scene.environment, so nothing else in the
+ * world changes. Returns null if the renderer can't build a probe.
+ */
+function makeEnvProbe(renderer: THREE.WebGLRenderer): THREE.Texture | null {
+  try {
+    const W = 64;
+    const H = 32;
+    const data = new Uint8Array(W * H * 4);
+    for (let y = 0; y < H; y++) {
+      const t = y / (H - 1); // 0 = zenith, 1 = nadir
+      const sky = Math.pow(1 - t, 0.7);
+      for (let x = 0; x < W; x++) {
+        // a broad soft "sun" so the fuselage catches a travelling highlight
+        const az = (x / W) * Math.PI * 2;
+        const sun =
+          Math.max(0, Math.cos(az - 1.1)) ** 12 * Math.max(0, 1 - t * 1.8);
+        const i = (y * W + x) * 4;
+        data[i] = Math.min(255, (26 + 150 * sky + 210 * sun) | 0);
+        data[i + 1] = Math.min(255, (30 + 165 * sky + 205 * sun) | 0);
+        data[i + 2] = Math.min(255, (42 + 190 * sky + 190 * sun) | 0);
+        data[i + 3] = 255;
+      }
+    }
+    const src = new THREE.DataTexture(data, W, H, THREE.RGBAFormat);
+    src.mapping = THREE.EquirectangularReflectionMapping;
+    src.colorSpace = THREE.SRGBColorSpace;
+    src.needsUpdate = true;
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const env = pmrem.fromEquirectangular(src).texture;
+    pmrem.dispose();
+    src.dispose();
+    return env;
+  } catch {
+    return null; // no probe — the material tweaks below still apply
+  }
+}
+
+/**
  * The scan ships its own UV-mapped PBR set (base colour with airline titles,
  * window rows and doors, plus normal and metallic-roughness maps), so we KEEP
- * its materials rather than painting over them. Two safety passes only:
- * fully-metallic surfaces would render black with no environment map in the
- * scene, so metalness is capped; and thin single-sided panels are drawn
- * double-sided so the airframe never shows holes from the chase camera.
+ * its materials rather than painting over them, and only push them toward the
+ * gloss of real airline paint: roughness pulled down for a tight highlight,
+ * a little metalness for a specular tint, and the reflection probe attached.
+ * Metalness stays capped — with no probe a fully-metallic surface goes black —
+ * and thin single-sided panels are drawn double-sided so the airframe never
+ * shows holes from the chase camera.
  */
-function adoptLivery(root: THREE.Group): void {
+function adoptLivery(root: THREE.Group, env: THREE.Texture | null): void {
   root.traverse((o) => {
     if (!(o instanceof THREE.Mesh)) return;
     const mats = Array.isArray(o.material) ? o.material : [o.material];
     for (const m of mats) {
       const std = m as THREE.MeshStandardMaterial;
       if (std.isMeshStandardMaterial) {
-        std.metalness = Math.min(std.metalness ?? 1, 0.3);
-        std.roughness = THREE.MathUtils.clamp(std.roughness ?? 1, 0.25, 1);
+        std.metalness = THREE.MathUtils.clamp(std.metalness ?? 0, 0.28, 0.5);
+        std.roughness = THREE.MathUtils.clamp(std.roughness ?? 1, 0.12, 0.32);
+        if (env) {
+          std.envMap = env;
+          std.envMapIntensity = 1.15;
+        }
       }
       m.side = THREE.DoubleSide;
       m.needsUpdate = true;
@@ -324,12 +372,16 @@ const ANCHOR = {
   navPort: [4.325, -0.4, -1.62] as const, // +X — red
   navStbd: [-4.325, -0.4, -1.61] as const, // −X — green
   strobe: [0, 1.26, -3.98] as const, // fin tip, lifted clear
-  // inboard pair sits forward of the outboard pair — the wing is swept
+  // Exhaust points, measured per nacelle: each was located as a DIP below the
+  // wing's underside profile (clustering "everything under the wing" instead
+  // dragged the outboard pair toward the wingtips), then its own bounding box
+  // gives the centre and rear face. The inboard pair really does sit forward
+  // of the outboard pair — that is the wing sweep, not an error.
   engines: [
-    [-3.07, -0.76, -1.4],
-    [-1.52, -0.86, -0.65],
-    [1.56, -0.85, -0.71],
-    [3.1, -0.76, -1.44],
+    [-2.76, -0.95, -0.41],
+    [-1.58, -1.04, 0.4],
+    [1.61, -1.04, 0.36],
+    [2.78, -0.95, -0.43],
   ] as const,
 };
 
@@ -582,6 +634,7 @@ export default function PlaneLayer({
   const planeOn = useWorld((s) => s.planeOn);
   const planeSound = useWorld((s) => s.planeSound);
   const camera = useThree((s) => s.camera);
+  const renderer = useThree((s) => s.gl);
   const boost = useAtlasStore((s) => s.hdrBoost);
 
   const airframe = useMemo(build747, []);
@@ -691,6 +744,7 @@ export default function PlaneLayer({
   // the real 747 — streamed in once, on the first take-off, so the page's
   // initial load never pays for it; the procedural jet flies until it lands
   const realJet = useRef<THREE.Group | null>(null);
+  const envProbe = useRef<THREE.Texture | null>(null);
   const loadState = useRef<"idle" | "loading" | "done" | "failed">("idle");
   useEffect(() => {
     if (!planeOn || loadState.current !== "idle") return;
@@ -704,7 +758,10 @@ export default function PlaneLayer({
         const loader = new GLTFLoader();
         loader.setMeshoptDecoder(MeshoptDecoder);
         const gltf = await loader.loadAsync(REAL_JET_URL);
-        adoptLivery(gltf.scene);
+        envProbe.current = makeEnvProbe(
+          renderer as unknown as THREE.WebGLRenderer,
+        );
+        adoptLivery(gltf.scene, envProbe.current);
         anchorRealJet(airframe, wingAnchors);
         realJet.current = gltf.scene;
         airframe.group.add(gltf.scene);
@@ -714,7 +771,7 @@ export default function PlaneLayer({
         loadState.current = "failed"; // procedural jet keeps flying
       }
     })();
-  }, [planeOn, airframe]);
+  }, [planeOn, airframe, renderer]);
 
   // controls — captured only while the jet exists, never while typing
   useEffect(() => {
@@ -777,6 +834,7 @@ export default function PlaneLayer({
           m.dispose();
         }
       });
+      envProbe.current?.dispose();
       engine.current?.stop();
       warnSound.current?.stop();
       planeTelemetry.active = false;
@@ -1147,13 +1205,16 @@ export default function PlaneLayer({
     <group>
       {planeOn && (
         <>
-          <ambientLight intensity={0.3} />
+          <ambientLight intensity={0.28} />
           <hemisphereLight
             color="#9db8ff"
             groundColor="#3a2f22"
-            intensity={0.8}
+            intensity={0.75}
           />
-          <directionalLight position={[30, 60, 20]} intensity={2.2} />
+          <directionalLight position={[30, 60, 20]} intensity={2.6} />
+          {/* rim light off the opposite shoulder — gives the gloss a second
+              highlight to travel across as the jet rolls */}
+          <directionalLight position={[-40, 25, -30]} intensity={1.1} />
         </>
       )}
       <primitive object={airframe.group} />
