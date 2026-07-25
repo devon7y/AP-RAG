@@ -11,7 +11,12 @@ import { paperWorldPos } from "./PaperBeacons";
 import { shortCite, type WorldData } from "./derive";
 import { solveArithmeticWorld, traceGeodesicWorld } from "./engineBridge";
 import { fitArith, fitAuthorTrail, fitPointsWarp, fitTrace } from "./fit";
-import { findAuthor, parseCommand, slotToEndpoint } from "./parse";
+import {
+  findAuthor,
+  parseCommand,
+  slotToEndpoint,
+  stripDanglingOperator,
+} from "./parse";
 import { useWorld, warpHome, type AskRef, type SearchHit } from "./store";
 import { uMorph } from "./uniforms";
 
@@ -170,12 +175,18 @@ export default function CommandBar({
 
   /** Live preview while typing: plain words drive the keyword lens keystroke
    *  by keystroke, so matching papers light up as you type. Command-shaped
-   *  input (@author, a -> b, year:, …) leaves the lens alone. */
+   *  input (@author, a -> b, year:, …) leaves the lens alone.
+   *
+   *  The preview parses the text WITHOUT its trailing operator: mid-expression
+   *  ("humor +", "humor ->") the operator has no right-hand side yet, so the
+   *  whole string would otherwise fall through to a literal search for
+   *  "humor +" — matching nothing and blinking the glow off until the second
+   *  term is typed. Stripping it holds the first term's matches lit. */
   const onType = (text: string) => {
     setValue(text);
     histIdx.current = -1; // typing exits history browsing
     const st = useWorld.getState();
-    const cmd = parseCommand(text);
+    const cmd = parseCommand(stripDanglingOperator(text));
     if (cmd?.kind === "warp") st.setLens({ keyword: cmd.query });
     else if (cmd?.kind === "interpolate")
       // both endpoints glow while composing "a -> b"

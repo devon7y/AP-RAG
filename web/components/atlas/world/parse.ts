@@ -39,6 +39,17 @@ export type Command =
   | { kind: "radio" }
   | { kind: "clear" };
 
+/** A half-typed operator at the end of an expression: "humor +", "humor ->".
+ *  Longest alternatives first so "->" wins over a bare "-". */
+const DANGLING_OP = /\s*(?:->|→|=>|\+|-|−)\s*$/;
+
+/** Drop a trailing operator so a half-typed expression still previews the
+ *  terms that ARE complete. Submission keeps the raw text — an incomplete
+ *  expression should not run as a search. */
+export function stripDanglingOperator(raw: string): string {
+  return raw.replace(DANGLING_OP, "");
+}
+
 /** Strip one pair of surrounding quotes (straight or smart). */
 export function stripQuotes(s: string): string {
   const m = s.trim().match(/^["“'](.*)["”']$/s);
