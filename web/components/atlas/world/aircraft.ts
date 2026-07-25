@@ -56,7 +56,21 @@ export interface AircraftSpec {
     navStbd: readonly [number, number, number];
     /** one per anti-collision strobe — twin-tailed jets get two */
     strobes: readonly (readonly [number, number, number])[];
+    /** round nacelle exhausts (glow aircraft) */
     engines: readonly (readonly [number, number, number])[];
+    /**
+     * Elongated exhaust troughs (slit aircraft), each with its own pose —
+     * measured by PCA over the faces the airframe's emissive map lights, so
+     * the glow lies IN the slit and is splayed at the real angle rather than
+     * turned to face the camera. Local frame: X = width, Y = aft along the
+     * trough, Z = surface normal.
+     */
+    slits?: readonly {
+      pos: readonly [number, number, number];
+      rot: readonly [number, number, number];
+      len: number;
+      wid: number;
+    }[];
   };
   exhaust: {
     /**
@@ -174,12 +188,12 @@ export const AIRCRAFT: Record<AircraftKey, AircraftSpec> = {
         [-0.69, 0.9, -4.25],
         [0.7, 0.9, -4.24],
       ],
-      // The exhaust troughs, read straight off the airframe's own emissive map:
-      // two slits centred x ±0.60, y -0.24, running z -1.06 .. -2.91. Long and
-      // flat, which is why the glow is elongated rather than a cone.
-      engines: [
-        [-0.606, -0.241, -1.845],
-        [0.597, -0.243, -1.841],
+      engines: [],
+      // Measured off the emissive-lit faces: 1.96 long x 0.71 wide x 0.11
+      // thick, long axis splayed ~35 degrees outboard, normal facing up.
+      slits: [
+        { pos: [-0.61, -0.24, -1.85], rot: [-1.518, -0.069, -2.531], len: 1.96, wid: 0.71 },
+        { pos: [0.6, -0.24, -1.84], rot: [-1.518, 0.072, 2.538], len: 1.96, wid: 0.71 },
       ],
     },
     exhaust: {

@@ -80,6 +80,8 @@ interface Airframe {
   navStbd: THREE.Sprite;
   /** one per anti-collision strobe */
   strobes: THREE.Sprite[];
+  /** oriented exhaust quads (slit aircraft) — parented, so they roll with it */
+  exhaustParts: { mat: THREE.MeshBasicMaterial; base: number }[];
 }
 
 /**
@@ -110,21 +112,63 @@ function buildAirframe(spec: AircraftSpec): Airframe {
   };
 
   const slit = spec.exhaust.kind === "slit";
-  const n = spec.anchors.engines.length;
-  // A round haze per nacelle for a turbofan; for a slit exhaust the sprite is
-  // stretched WIDE and FLAT to match the trough it sits over — the F-117's
-  // exhaust is a long shallow slot, so a conical plume would be wrong.
-  const engineGlows = Array.from({ length: n }, () =>
-    sprite(spec.exhaust.core, slit ? spec.exhaust.width * 0.62 : spec.exhaust.size, spec.exhaust.size),
-  );
-  const halos = Array.from({ length: n }, () =>
-    sprite(
-      spec.exhaust.halo,
-      slit ? spec.exhaust.width : spec.exhaust.size * 1.9,
-      slit ? spec.exhaust.size * 1.7 : spec.exhaust.size * 1.9,
-    ),
-  );
+
+  // Round nacelle haze for a turbofan: camera-facing sprites are fine, since a
+  // circular glow looks the same from every angle.
+  const engineGlows = slit
+    ? []
+    : spec.anchors.engines.map(() => sprite(spec.exhaust.core, spec.exhaust.size));
+  const halos = slit
+    ? []
+    : spec.anchors.engines.map(() =>
+        sprite(spec.exhaust.halo, spec.exhaust.size * 1.9),
+      );
   (group.userData as { halos?: THREE.Sprite[] }).halos = halos;
+
+  // A slit exhaust is a long angled trough, so its glow is built from ORIENTED
+  // quads parented to the airframe — they roll with the jet and sit in the
+  // slit's own plane. A camera-facing sprite could do neither, which is why it
+  // sheared through the fuselage.
+  const exhaustParts: { mat: THREE.MeshBasicMaterial; base: number }[] = [];
+  if (slit) {
+    const quad = (
+      holder: THREE.Group,
+      w: number,
+      h: number,
+      base: number,
+    ) => {
+      const geo = new THREE.PlaneGeometry(w, h);
+      const mat = new THREE.MeshBasicMaterial({
+        map: glowTexture(),
+        color: new THREE.Color(spec.exhaust.halo),
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+        toneMapped: false,
+      });
+      disposables.push(geo, mat);
+      const m = new THREE.Mesh(geo, mat);
+      holder.add(m);
+      exhaustParts.push({ mat, base });
+      return m;
+    };
+    for (const sl of spec.anchors.slits ?? []) {
+      const holder = new THREE.Group();
+      holder.position.set(...sl.pos);
+      holder.rotation.set(...sl.rot);
+      group.add(holder);
+      // the trough itself, lying in the slit plane a hair proud of the skin so
+      // it never z-fights the surface it sits on
+      quad(holder, sl.wid * 1.6, sl.len * 1.06, 1).position.z = 0.04;
+      // the exit, turned to face aft (+Y is aft in the slit's frame) so the
+      // burn still reads from directly behind, where the chase camera lives
+      const exit = quad(holder, sl.wid * 1.5, sl.wid * 1.0, 0.9);
+      exit.rotation.x = -Math.PI / 2;
+      exit.position.set(0, sl.len * 0.52, 0.03);
+    }
+  }
 
   const navPort = sprite("#ff4d4d", 0.28); // +X — red
   const navStbd = sprite("#4dff7a", 0.28); // −X — green
@@ -133,7 +177,15 @@ function buildAirframe(spec: AircraftSpec): Airframe {
   group.scale.setScalar(spec.scale);
   group.rotation.order = "YXZ";
   group.visible = false;
-  return { group, disposables, engineGlows, navPort, navStbd, strobes };
+  return {
+    group,
+    disposables,
+    engineGlows,
+    navPort,
+    navStbd,
+    strobes,
+    exhaustParts,
+  };
 }
 
 /* ---------------- the real jet's painted livery ---------------- */
@@ -1113,28 +1165,17 @@ export default function PlaneLayer({
         : throttle.current;
     const flick = slit ? 0.9 + 0.1 * Math.sin(t * 37) : 1;
     for (const gs of airframe.engineGlows) {
-      gs.material.opacity =
-        (slit ? 0.1 + 0.85 * drive : 0.12 + 0.6 * drive) * flick * boost;
-      if (slit) {
-        gs.scale.set(
-          spec.exhaust.width * 0.62 * (0.8 + 0.35 * drive),
-          spec.exhaust.size * (0.7 + 0.5 * drive),
-          1,
-        );
-      }
+      gs.material.opacity = (0.12 + 0.6 * drive) * boost;
     }
     const halos =
       (airframe.group.userData as { halos?: THREE.Sprite[] }).halos ?? [];
     for (const h of halos) {
-      h.material.opacity =
-        (slit ? 0.05 + 0.4 * drive : 0.06 + 0.5 * drive) * flick * boost;
-      if (slit) {
-        h.scale.set(
-          spec.exhaust.width * (0.85 + 0.45 * drive),
-          spec.exhaust.size * 1.7 * (0.8 + 0.5 * drive),
-          1,
-        );
-      }
+      h.material.opacity = (0.06 + 0.5 * drive) * boost;
+    }
+    // the oriented trough quads brighten with speed; they never resize, since
+    // their shape is the slit's real geometry
+    for (const part of airframe.exhaustParts) {
+      part.mat.opacity = part.base * (0.06 + 0.94 * drive) * flick * boost;
     }
     // the airframe's own emissive slits burn hotter the faster it flies
     for (const m of exhaustMats.current) {
