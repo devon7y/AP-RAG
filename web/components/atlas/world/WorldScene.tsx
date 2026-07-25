@@ -426,6 +426,7 @@ function World({
     [],
   );
   const planeOn = useWorld((s) => s.planeOn);
+  const planeStatus = useWorld((s) => s.planeStatus);
   const ghostSites = useGhostSites(data);
 
   if (!corpus || !constellations) return null;
@@ -482,7 +483,26 @@ function World({
         constellations={constellations}
       />
 
-      {planeOn && <PlaneHud />}
+      {planeOn && planeStatus === "ready" && <PlaneHud />}
+
+      {planeOn && planeStatus === "loading" && (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center">
+          <div className="hud-panel flex items-center gap-3 px-5 py-3">
+            <span className="jet-spinner" aria-hidden="true" />
+            <span className="text-[11px] tracking-[0.25em] text-ink-2 uppercase">
+              loading aircraft…
+            </span>
+          </div>
+        </div>
+      )}
+
+      {planeStatus === "error" && (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center">
+          <div className="hud-panel px-5 py-3 text-[11px] tracking-[0.2em] text-[#ff6b6b] uppercase">
+            aircraft failed to load
+          </div>
+        </div>
+      )}
 
       {!planeOn && (
         <p className="pointer-events-none absolute right-5 bottom-4 z-40 hidden text-[11px] text-ink-3 sm:block">

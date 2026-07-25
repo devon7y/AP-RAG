@@ -595,3 +595,23 @@ body[data-edr="on"] .atlas-app .edr-glow {
 .atlas-app .pulse-soft {
   animation: atlas-pulse-soft 2.4s ease-in-out infinite;
 }
+
+/* the jet's "loading aircraft" spinner — a thin ring with one bright arc */
+.jet-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  border: 2px solid rgb(255 255 255 / 0.16);
+  border-top-color: #3987e5;
+  animation: jet-spin 0.8s linear infinite;
+}
+@keyframes jet-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .jet-spinner {
+    animation-duration: 2.4s;
+  }
+}

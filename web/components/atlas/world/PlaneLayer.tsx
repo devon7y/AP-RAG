@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import { MeshStandardNodeMaterial } from "three/webgpu";
 import { WORLD_SIZE } from "@/lib/atlas/data";
 import { useAtlasStore } from "@/lib/atlas/store";
 import { glowTexture, ringTexture, sampleField, type WorldData } from "./derive";
@@ -86,35 +85,10 @@ export interface PlanePose {
   quat: THREE.Quaternion;
 }
 
-/* ---------------- the procedural stand-in airframe ---------------- */
-
-const BODY = "#dfe5ec";
-const WING = "#c9d0da";
-const NACELLE = "#aab3c0";
-const DARK = "#10151d";
-const ACCENT = "#3987e5";
-
-function airfoil(
-  pts: [number, number][],
-  thickness: number,
-): THREE.ExtrudeGeometry {
-  const shape = new THREE.Shape();
-  shape.moveTo(pts[0][0], pts[0][1]);
-  for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
-  shape.closePath();
-  return new THREE.ExtrudeGeometry(shape, {
-    depth: thickness,
-    bevelEnabled: true,
-    bevelThickness: 0.02,
-    bevelSize: 0.02,
-    bevelSegments: 1,
-  });
-}
+/* ---------------- the airframe rig (lights only) ---------------- */
 
 interface Airframe {
   group: THREE.Group;
-  /** the procedural solid meshes — hidden when the real GLB arrives */
-  hull: THREE.Group;
   disposables: (THREE.BufferGeometry | THREE.Material)[];
   engineGlows: THREE.Sprite[];
   /** red port light (+X) */
@@ -124,141 +98,19 @@ interface Airframe {
   strobe: THREE.Sprite;
 }
 
-function build747(): Airframe {
+/**
+ * The airframe rig is lights only — nav lights, tail strobe and four exhaust
+ * glows. There is no stand-in mesh: the real scan is the only aircraft, and
+ * nothing takes off until it has streamed in (a low-res placeholder that
+ * doesn't match the real jet is worse than a moment of honest waiting).
+ * Positions here are placeholders; anchorRealJet pins them to the mesh.
+ */
+function buildAirframe(): Airframe {
   const group = new THREE.Group();
-  const hull = new THREE.Group();
-  group.add(hull);
   const disposables: (THREE.BufferGeometry | THREE.Material)[] = [];
-
-  const mat = (color: string, metalness = 0.4, roughness = 0.4) => {
-    const m = new MeshStandardNodeMaterial();
-    m.color = new THREE.Color(color);
-    m.metalness = metalness;
-    m.roughness = roughness;
-    m.side = THREE.DoubleSide;
-    disposables.push(m);
-    return m;
-  };
-  const bodyMat = mat(BODY, 0.35, 0.35);
-  const wingMat = mat(WING, 0.45, 0.45);
-  const nacelleMat = mat(NACELLE, 0.6, 0.35);
-  const darkMat = mat(DARK, 0.2, 0.6);
-  const accentMat = mat(ACCENT, 0.3, 0.45);
-
-  const add = (geo: THREE.BufferGeometry, m: THREE.Material) => {
-    disposables.push(geo);
-    const mesh = new THREE.Mesh(geo, m);
-    hull.add(mesh);
-    return mesh;
-  };
-
-  // fuselage — nose toward +Z
-  const fuselage = new THREE.CapsuleGeometry(0.55, 7.4, 8, 24);
-  fuselage.rotateX(Math.PI / 2);
-  add(fuselage, bodyMat);
-
-  // the 747's upper-deck hump
-  const hump = new THREE.CapsuleGeometry(0.34, 2.0, 6, 16);
-  hump.rotateX(Math.PI / 2);
-  add(hump, bodyMat).position.set(0, 0.42, 2.0);
-
-  // cockpit glass under the hump's brow
-  const cockpit = new THREE.SphereGeometry(0.3, 16, 12);
-  const cp = add(cockpit, darkMat);
-  cp.position.set(0, 0.3, 3.45);
-  cp.scale.set(1, 0.6, 0.9);
-
-  // cabin window stripes
-  for (const sx of [-1, 1]) {
-    add(new THREE.BoxGeometry(0.04, 0.1, 6.2), darkMat).position.set(
-      sx * 0.55,
-      0.1,
-      -0.2,
-    );
-  }
-
-  // main wings — swept, tapered, slight dihedral (shape XY → XZ via rotateX)
-  const wingShape: [number, number][] = [
-    [0.5, -0.95],
-    [3.6, 1.0],
-    [3.6, 1.55],
-    [0.5, 0.95],
-  ];
-  const wingR = airfoil(wingShape, 0.07);
-  wingR.rotateX(-Math.PI / 2);
-  const wingL = wingR.clone();
-  wingL.scale(-1, 1, 1);
-  const wr = add(wingR, wingMat);
-  wr.position.set(0, -0.18, 0.4);
-  wr.rotation.z = -0.07;
-  const wl = add(wingL, wingMat);
-  wl.position.set(0, -0.18, 0.4);
-  wl.rotation.z = 0.07;
-
-  // horizontal stabilizers
-  const stabShape: [number, number][] = [
-    [0.2, -0.5],
-    [1.5, 0.35],
-    [1.5, 0.7],
-    [0.2, 0.45],
-  ];
-  const stabR = airfoil(stabShape, 0.05);
-  stabR.rotateX(-Math.PI / 2);
-  const stabL = stabR.clone();
-  stabL.scale(-1, 1, 1);
-  add(stabR, wingMat).position.set(0, 0.15, -3.45);
-  add(stabL, wingMat).position.set(0, 0.15, -3.45);
-
-  // vertical fin — the accent-blue tail
-  const finShape: [number, number][] = [
-    [-0.7, 0],
-    [0.9, 0],
-    [1.35, 1.5],
-    [0.55, 1.5],
-  ];
-  const fin = airfoil(finShape, 0.06);
-  fin.rotateY(Math.PI / 2);
-  add(fin, accentMat).position.set(0, 0.35, -3.55 + 0.7);
-
-  // four engines, hung under the wings on pylons
-  const engineGlows: THREE.Sprite[] = [];
   const glow = glowTexture();
-  const enginePos: [number, number][] = [
-    [1.25, 0.35],
-    [2.35, -0.35],
-  ];
-  for (const sx of [-1, 1]) {
-    for (const [ex, ez] of enginePos) {
-      const nacelle = new THREE.CylinderGeometry(0.21, 0.19, 0.95, 16);
-      nacelle.rotateX(Math.PI / 2);
-      add(nacelle, nacelleMat).position.set(sx * ex, -0.52, ez);
-      const intake = new THREE.CylinderGeometry(0.215, 0.215, 0.08, 16);
-      intake.rotateX(Math.PI / 2);
-      add(intake, darkMat).position.set(sx * ex, -0.52, ez + 0.46);
-      add(new THREE.BoxGeometry(0.06, 0.3, 0.5), wingMat).position.set(
-        sx * ex,
-        -0.32,
-        ez + 0.1,
-      );
-      // exhaust glow, brightening with throttle
-      const gm = new THREE.SpriteMaterial({
-        map: glow,
-        color: "#ffb36b",
-        transparent: true,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-      });
-      disposables.push(gm);
-      const gs = new THREE.Sprite(gm);
-      gs.position.set(sx * ex, -0.52, ez - 0.55);
-      gs.scale.setScalar(0.26); // reads as an exhaust, not a floating orb
-      group.add(gs);
-      engineGlows.push(gs);
-    }
-  }
 
-  // navigation lights: red port, green starboard, white tail strobe
-  const navSprite = (color: string, x: number, y: number, z: number) => {
+  const sprite = (color: string, scale: number) => {
     const m = new THREE.SpriteMaterial({
       map: glow,
       color,
@@ -267,20 +119,22 @@ function build747(): Airframe {
       blending: THREE.AdditiveBlending,
     });
     disposables.push(m);
-    const s = new THREE.Sprite(m);
-    s.position.set(x, y, z);
-    s.scale.setScalar(0.28);
-    group.add(s);
-    return s;
+    const sp = new THREE.Sprite(m);
+    sp.scale.setScalar(scale);
+    group.add(sp);
+    return sp;
   };
-  const navPort = navSprite("#ff4d4d", 3.85, -0.12, -1.05);
-  const navStbd = navSprite("#4dff7a", -3.85, -0.12, -1.05);
-  const strobe = navSprite("#ffffff", 0, 1.9, -2.95);
+
+  // four exhaust glows, warm and small enough to read as engines
+  const engineGlows = [0, 1, 2, 3].map(() => sprite("#ffb36b", 0.26));
+  const navPort = sprite("#ff4d4d", 0.28); // +X — red
+  const navStbd = sprite("#4dff7a", 0.28); // −X — green
+  const strobe = sprite("#ffffff", 0.28);
 
   group.scale.setScalar(SCALE);
   group.rotation.order = "YXZ";
   group.visible = false;
-  return { group, hull, disposables, engineGlows, navPort, navStbd, strobe };
+  return { group, disposables, engineGlows, navPort, navStbd, strobe };
 }
 
 /* ---------------- the real jet's painted livery ---------------- */
@@ -637,11 +491,12 @@ export default function PlaneLayer({
 }) {
   const planeOn = useWorld((s) => s.planeOn);
   const planeSound = useWorld((s) => s.planeSound);
+  const planeStatus = useWorld((s) => s.planeStatus);
   const camera = useThree((s) => s.camera);
   const renderer = useThree((s) => s.gl);
   const boost = useAtlasStore((s) => s.hdrBoost);
 
-  const airframe = useMemo(build747, []);
+  const airframe = useMemo(buildAirframe, []);
   const explosion = useMemo(buildExplosion, []);
   const trailL = useMemo(makeTrail, []);
   const trailR = useMemo(makeTrail, []);
@@ -685,40 +540,52 @@ export default function PlaneLayer({
     trailR.geo.setDrawRange(0, 0);
   };
 
+  /** Put the jet on the ring and hand it the controls. Only ever called once
+   *  the real airframe is in the scene — there is no stand-in to fly. */
+  const startFlight = () => {
+    const st = useWorld.getState();
+    const g = airframe.group;
+    // wheels-up from a random point on the home orbit ring, flying inward
+    const az = Math.random() * Math.PI * 2;
+    g.position.set(
+      Math.sin(az) * SPAWN_RADIUS,
+      SPAWN_ALT,
+      Math.cos(az) * SPAWN_RADIUS,
+    );
+    yaw.current = az + Math.PI; // toward the center of the world
+    pitch.current = 0;
+    roll.current = 0;
+    throttle.current = 0.55;
+    speed.current = 5;
+    lastY.current = g.position.y;
+    vsSmooth.current = 0;
+    g.rotation.set(0, yaw.current, 0);
+    g.visible = true;
+    clearTrails();
+    mode.current = "flying";
+    st.set("planeStatus", "ready");
+
+    // put the camera right on its tail so the jet reads big immediately
+    if (st.planeFollow) {
+      fwd.set(Math.sin(yaw.current), 0, Math.cos(yaw.current));
+      camera.position
+        .copy(g.position)
+        .addScaledVector(fwd, -CHASE.back)
+        .add(new THREE.Vector3(0, CHASE.up, 0));
+    }
+  };
+  const startFlightRef = useRef(startFlight);
+  startFlightRef.current = startFlight;
+
   // spawn / despawn
   useEffect(() => {
+    const st = useWorld.getState();
     if (planeOn) {
-      const st = useWorld.getState();
       st.select(null); // a fresh flight closes whatever card was open
-
-      // wheels-up from a random point on the home orbit ring, flying inward
-      const az = Math.random() * Math.PI * 2;
-      const g = airframe.group;
-      g.position.set(
-        Math.sin(az) * SPAWN_RADIUS,
-        SPAWN_ALT,
-        Math.cos(az) * SPAWN_RADIUS,
-      );
-      yaw.current = az + Math.PI; // toward the center of the world
-      pitch.current = 0;
-      roll.current = 0;
-      throttle.current = 0.55;
-      speed.current = 5;
-      lastY.current = g.position.y;
-      vsSmooth.current = 0;
-      g.rotation.set(0, yaw.current, 0);
-      g.visible = true;
-      clearTrails();
-      mode.current = "flying";
-
-      // put the camera right on its tail so the jet reads big immediately
-      if (st.planeFollow) {
-        fwd.set(Math.sin(yaw.current), 0, Math.cos(yaw.current));
-        camera.position
-          .copy(g.position)
-          .addScaledVector(fwd, -CHASE.back)
-          .add(new THREE.Vector3(0, CHASE.up, 0));
-      }
+      // the airframe streams in on the first take-off; the loader starts the
+      // flight when it lands, so nothing moves (or sounds) before then
+      if (loadState.current === "done") startFlightRef.current();
+      else st.set("planeStatus", "loading");
     } else if (mode.current === "flying") {
       // ejected mid-air (panel toggle / Esc) — vanish without the fireball
       airframe.group.visible = false;
@@ -729,13 +596,14 @@ export default function PlaneLayer({
       warnSound.current?.stop();
       warnSound.current = null;
       clearTrails();
+      if (st.planeStatus !== "error") st.set("planeStatus", "idle");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planeOn, airframe, camera]);
 
-  // engine sound — runs while flying and audible
+  // engine sound — only once the real airframe is flying
   useEffect(() => {
-    if (planeOn && planeSound) {
+    if (planeOn && planeSound && planeStatus === "ready") {
       engine.current = startEngine();
       return () => {
         engine.current?.stop();
@@ -743,7 +611,7 @@ export default function PlaneLayer({
       };
     }
     return undefined;
-  }, [planeOn, planeSound]);
+  }, [planeOn, planeSound, planeStatus]);
 
   // the real 747 — streamed in once, on the first take-off, so the page's
   // initial load never pays for it; the procedural jet flies until it lands
@@ -769,10 +637,15 @@ export default function PlaneLayer({
         anchorRealJet(airframe, wingAnchors);
         realJet.current = gltf.scene;
         airframe.group.add(gltf.scene);
-        airframe.hull.visible = false; // the stand-in retires; lights stay on
         loadState.current = "done";
+        // hand over the moment it lands, if the pilot is still waiting
+        if (useWorld.getState().planeOn) startFlightRef.current();
+        else useWorld.getState().set("planeStatus", "idle");
       } catch {
-        loadState.current = "failed"; // procedural jet keeps flying
+        // no stand-in to fall back on — say so and cancel the take-off
+        loadState.current = "failed";
+        useWorld.getState().set("planeStatus", "error");
+        useWorld.getState().set("planeOn", false);
       }
     })();
   }, [planeOn, airframe, renderer]);

@@ -182,10 +182,12 @@ interface WorldState {
   radioFollow: boolean;
   radioSentence: string | null;
 
-  // the 747 (crash-to-read)
+  // the jet (crash-to-read)
   planeOn: boolean;
   planeFollow: boolean;
   planeSound: boolean;
+  /** the airframe streams in on first take-off — nothing flies until it lands */
+  planeStatus: "idle" | "loading" | "ready" | "error";
 
   // semantle (daily passage → first author)
   gamePings: GamePing[];
@@ -266,6 +268,7 @@ export const useWorld = create<WorldState>((set) => ({
   planeOn: false,
   planeFollow: true,
   planeSound: true,
+  planeStatus: "idle",
 
   gamePings: [],
   gameChunk: null,
