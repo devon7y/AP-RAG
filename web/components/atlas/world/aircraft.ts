@@ -268,7 +268,7 @@ export const AIRCRAFT: Record<AircraftKey, AircraftSpec> = {
       inheritMomentum: true,
       launchSpeed: 38,
       gravity: 1.4,
-      hitRadius: 1.7,
+      hitRadius: 0.85,
       cooldown: 0.55,
       life: 6,
       color: "#b9c4d2",

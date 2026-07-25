@@ -178,14 +178,16 @@ function buildAirframe(spec: AircraftSpec): Airframe {
       holder.position.set(...sl.pos);
       holder.rotation.set(...sl.rot);
       group.add(holder);
-      // the trough itself, lying in the slit plane a hair proud of the skin so
-      // it never z-fights the surface it sits on
-      quad(holder, sl.wid * 1.6, sl.len * 1.06, 1).position.z = 0.04;
+      // The trough glow is kept INSIDE the slit's own footprint. Oversizing it
+      // pushed the quad past the trough edges, and since the fuselage narrows
+      // there the overhang poked out through the skin above and below.
+      quad(holder, sl.wid * 1.0, sl.len * 1.0, 1).position.z = 0.022;
       // the exit, turned to face aft (+Y is aft in the slit's frame) so the
-      // burn still reads from directly behind, where the chase camera lives
-      const exit = quad(holder, sl.wid * 1.5, sl.wid * 1.0, 0.9);
+      // burn still reads from directly behind, where the chase camera lives —
+      // set just clear of the trough's end so it sits in open air
+      const exit = quad(holder, sl.wid * 0.9, sl.wid * 0.55, 0.9);
       exit.rotation.x = -Math.PI / 2;
-      exit.position.set(0, sl.len * 0.52, 0.03);
+      exit.position.set(0, sl.len * 0.56, 0.022);
     }
   }
 
