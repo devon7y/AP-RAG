@@ -59,7 +59,7 @@ const INSTRUMENTS: { key: Instrument; icon: React.ReactNode; label: string }[] =
   { key: "ghosts", icon: <CircleDashed className="size-4" />, label: "Research gaps" },
   { key: "draft", icon: <PenLine className="size-4" />, label: "Drop a draft" },
   { key: "radio", icon: <Radio className="size-4" />, label: "Radio" },
-  { key: "plane", icon: <Plane className="size-4" />, label: "Boeing 747" },
+  { key: "plane", icon: <Plane className="size-4" />, label: "Airbus A380" },
   { key: "game", icon: <Trophy className="size-4" />, label: "Semantle" },
 ];
 
@@ -80,7 +80,7 @@ export default function LeftPane({
   const set = useWorld((s) => s.set);
   const planeOn = useWorld((s) => s.planeOn);
 
-  // cockpit mode: while the 747 flies, the world is the whole interface
+  // cockpit mode: while the jet flies, the world is the whole interface
   if (planeOn) return null;
 
   return (
@@ -895,9 +895,9 @@ function PlanePanel() {
   return (
     <div className="space-y-4">
       <div>
-        <H>Boeing 747</H>
+        <H>Airbus A380</H>
         <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
-          Spawn a jumbo jet over the landscape and fly it yourself. Put it into
+          Spawn a superjumbo over the landscape and fly it yourself. Put it into
           a mountainside and the fireball opens the nearest paper&apos;s card —
           literature review by air disaster.
         </p>
@@ -980,14 +980,14 @@ function PlanePanel() {
       <p className="border-t hairline pt-2 text-[10px] leading-relaxed text-ink-3">
         Aircraft:{" "}
         <a
-          href="https://sketchfab.com/3d-models/d234e311a36f475395ed44d3b9518ff5"
+          href="https://sketchfab.com/3d-models/8hWQW1izQKZLYOZD4PKXti0xIjn"
           target="_blank"
           rel="noreferrer"
           className="underline decoration-dotted hover:text-ink-2"
         >
-          “Boeing 747”
+          “A380”
         </a>{" "}
-        by amanda_98,{" "}
+        by AntoinePemeja,{" "}
         <a
           href="https://creativecommons.org/licenses/by/4.0/"
           target="_blank"

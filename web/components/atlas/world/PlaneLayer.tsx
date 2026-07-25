@@ -19,22 +19,25 @@ import { useWorld } from "./store";
 import { HEIGHT_SCALE, uMorph } from "./uniforms";
 
 /**
- * The Boeing 747 — a pilotable jumbo over the landscape. It spawns on the
- * home camera ring at a random azimuth, flies heavy (it is a 747), and ends
- * every story one of two ways: an eject, or a fireball on a mountainside
- * that opens the nearest paper's card exactly as clicking its beacon would.
+ * The Airbus A380 — a pilotable superjumbo over the landscape. It spawns on
+ * the home camera ring at a random azimuth, flies heavy (it is a 560-tonne
+ * double-decker), and ends every story one of two ways: an eject, or a
+ * fireball on a mountainside that opens the nearest paper's card exactly as
+ * clicking its beacon would.
  *
  * Two airframes share one transform: a tiny procedural jet flies instantly,
- * and the real scan ("Boeing 747" by amanda_98, CC BY 4.0) streams in on the
+ * and the real scan ("A380" by AntoinePemeja, CC BY 4.0) streams in on the
  * first take-off and replaces the procedural hull. That scan carries a proper
- * UV-mapped PBR livery — painted airline titles, window rows, doors, plus
- * normal and metallic-roughness maps — so we keep its own materials. It is
- * PCA-aligned nose-+Z, centred and rescaled at bake time, then meshopt +
- * WebP compressed (13 MB → 1.2 MB; livery maps kept at 1024, support maps at
- * 512). While parked, nothing renders and nothing downloads.
+ * UV-mapped livery — Airbus house colours, painted titles and window rows —
+ * so we keep its own materials, and its lights are pinned to anchors measured
+ * off the mesh (see ANCHOR). Note the A380 is WIDER than it is long, so the
+ * bake could not assume the longest axis is the fuselage; it picks the axis
+ * whose two halves differ most in height, since only the fuselage carries a
+ * tail fin. Centred, nose-+Z, rescaled, then meshopt + WebP compressed
+ * (20 MB → 2.8 MB). While parked, nothing renders and nothing downloads.
  */
 
-const REAL_747_URL = "/models/boeing747.glb";
+const REAL_JET_URL = "/models/airbus-a380.glb";
 
 /* ---------------- flight constants ---------------- */
 
@@ -114,8 +117,10 @@ interface Airframe {
   hull: THREE.Group;
   disposables: (THREE.BufferGeometry | THREE.Material)[];
   engineGlows: THREE.Sprite[];
-  navLeft: THREE.Sprite;
-  navRight: THREE.Sprite;
+  /** red port light (+X) */
+  navPort: THREE.Sprite;
+  /** green starboard light (−X) */
+  navStbd: THREE.Sprite;
   strobe: THREE.Sprite;
 }
 
@@ -268,14 +273,14 @@ function build747(): Airframe {
     group.add(s);
     return s;
   };
-  const navLeft = navSprite("#ff4d4d", -3.85, -0.12, -1.05);
-  const navRight = navSprite("#4dff7a", 3.85, -0.12, -1.05);
+  const navPort = navSprite("#ff4d4d", 3.85, -0.12, -1.05);
+  const navStbd = navSprite("#4dff7a", -3.85, -0.12, -1.05);
   const strobe = navSprite("#ffffff", 0, 1.9, -2.95);
 
   group.scale.setScalar(SCALE);
   group.rotation.order = "YXZ";
   group.visible = false;
-  return { group, hull, disposables, engineGlows, navLeft, navRight, strobe };
+  return { group, hull, disposables, engineGlows, navPort, navStbd, strobe };
 }
 
 /* ---------------- the real jet's painted livery ---------------- */
@@ -305,52 +310,43 @@ function adoptLivery(root: THREE.Group): void {
 }
 
 /**
- * The nav lights, strobe, engine glows and contrail emitters were placed for
- * the procedural stand-in; the real scan's wings are swept and lower, so they
- * float. Measure the loaded jet's actual wingtips and fin (its verts are in
- * the same baked frame as the group), then pin every light onto real geometry.
+ * Light anchors measured off the baked A380 mesh itself (offline, at bake
+ * time) rather than guessed at runtime: the wingtip and fin-tip vertices, and
+ * the four engine nacelles found by clustering the geometry that hangs below
+ * the wing. Values are in model units — the group's SCALE applies on top.
+ *
+ * Port/starboard is not arbitrary. With nose +Z and up +Y in a right-handed
+ * frame, starboard = forward × up = Z × Y = −X. So the RED port light belongs
+ * on +X and the GREEN starboard light on −X (the reverse of the usual
+ * intuition, and the reverse of what this file did before).
  */
+const ANCHOR = {
+  navPort: [4.325, -0.4, -1.62] as const, // +X — red
+  navStbd: [-4.325, -0.4, -1.61] as const, // −X — green
+  strobe: [0, 1.26, -3.98] as const, // fin tip, lifted clear
+  // inboard pair sits forward of the outboard pair — the wing is swept
+  engines: [
+    [-3.07, -0.76, -1.4],
+    [-1.52, -0.86, -0.65],
+    [1.56, -0.85, -0.71],
+    [3.1, -0.76, -1.44],
+  ] as const,
+};
+
+/** Pin every light onto the real airframe once the scan has loaded. */
 function anchorRealJet(
-  scene: THREE.Group,
   airframe: Airframe,
-  wing: { L: THREE.Vector3; R: THREE.Vector3 },
+  wing: { port: THREE.Vector3; stbd: THREE.Vector3 },
 ): void {
-  scene.updateMatrixWorld(true);
-  const v = new THREE.Vector3();
-  const rTip = new THREE.Vector3(-Infinity, 0, 0);
-  const lTip = new THREE.Vector3(Infinity, 0, 0);
-  const finTip = new THREE.Vector3(0, -Infinity, 0);
-  scene.traverse((o) => {
-    if (!(o instanceof THREE.Mesh)) return;
-    const pos = o.geometry.getAttribute("position") as
-      | THREE.BufferAttribute
-      | undefined;
-    if (!pos) return;
-    const m = o.matrixWorld;
-    for (let i = 0; i < pos.count; i += 4) {
-      v.fromBufferAttribute(pos, i).applyMatrix4(m);
-      if (v.x > rTip.x) rTip.copy(v);
-      if (v.x < lTip.x) lTip.copy(v);
-      if (v.y > finTip.y) finTip.copy(v);
-    }
-  });
-  if (!Number.isFinite(rTip.x) || !Number.isFinite(lTip.x)) return;
-
-  airframe.navRight.position.copy(rTip);
-  airframe.navLeft.position.copy(lTip);
-  airframe.strobe.position.set(finTip.x, finTip.y + 0.15, finTip.z);
-  wing.R.copy(rTip);
-  wing.L.copy(lTip);
-
-  // engine glows: spread along each wing (fractions of half-span), slung a
-  // little below and forward of the wing line
-  const span = rTip.x;
-  const gy = (rTip.y + lTip.y) / 2 - 0.4;
-  const gz = 0.15;
-  const frac = [-0.34, -0.62, 0.34, 0.62]; // [-inner, -outer, +inner, +outer]
-  airframe.engineGlows.forEach((glowSprite, i) => {
-    glowSprite.position.set(span * frac[i], gy, gz);
-  });
+  airframe.navPort.position.set(...ANCHOR.navPort);
+  airframe.navStbd.position.set(...ANCHOR.navStbd);
+  airframe.strobe.position.set(...ANCHOR.strobe);
+  ANCHOR.engines.forEach(([x, y, z], i) =>
+    airframe.engineGlows[i]?.position.set(x, y, z),
+  );
+  // contrails stream from the wingtips, just aft of the nav lights
+  wing.port.set(ANCHOR.navPort[0], ANCHOR.navPort[1], ANCHOR.navPort[2] - 0.1);
+  wing.stbd.set(ANCHOR.navStbd[0], ANCHOR.navStbd[1], ANCHOR.navStbd[2] - 0.1);
 }
 
 /* ---------------- the crash ---------------- */
@@ -619,8 +615,8 @@ export default function PlaneLayer({
   // contrail emit points (group-local); re-pinned to the real wingtips on load
   const wingAnchors = useMemo(
     () => ({
-      L: new THREE.Vector3(-3.85, -0.12, -1.15),
-      R: new THREE.Vector3(3.85, -0.12, -1.15),
+      port: new THREE.Vector3(3.85, -0.12, -1.15),
+      stbd: new THREE.Vector3(-3.85, -0.12, -1.15),
     }),
     [],
   );
@@ -707,9 +703,9 @@ export default function PlaneLayer({
         ]);
         const loader = new GLTFLoader();
         loader.setMeshoptDecoder(MeshoptDecoder);
-        const gltf = await loader.loadAsync(REAL_747_URL);
+        const gltf = await loader.loadAsync(REAL_JET_URL);
         adoptLivery(gltf.scene);
-        anchorRealJet(gltf.scene, airframe, wingAnchors);
+        anchorRealJet(airframe, wingAnchors);
         realJet.current = gltf.scene;
         airframe.group.add(gltf.scene);
         airframe.hull.visible = false; // the stand-in retires; lights stay on
@@ -1124,8 +1120,8 @@ export default function PlaneLayer({
 
     /* ---- dressing: strobes, exhaust, contrails ---- */
     const phase = t % 1.2;
-    airframe.navLeft.material.opacity = (phase < 0.12 ? 0.9 : 0.25) * boost;
-    airframe.navRight.material.opacity = (phase < 0.12 ? 0.9 : 0.25) * boost;
+    airframe.navPort.material.opacity = (phase < 0.12 ? 0.9 : 0.25) * boost;
+    airframe.navStbd.material.opacity = (phase < 0.12 ? 0.9 : 0.25) * boost;
     airframe.strobe.material.opacity =
       (phase > 0.55 && phase < 0.63 ? 1 : 0.08) * boost;
     for (const gs of airframe.engineGlows) {
@@ -1133,8 +1129,8 @@ export default function PlaneLayer({
     }
 
     for (const [trail, anchor] of [
-      [trailL, wingAnchors.L],
-      [trailR, wingAnchors.R],
+      [trailL, wingAnchors.port],
+      [trailR, wingAnchors.stbd],
     ] as const) {
       tmp.copy(anchor);
       g.localToWorld(tmp);
