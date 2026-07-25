@@ -18,6 +18,9 @@
 
 export type AircraftKey = "a380" | "f117";
 
+/** Hits needed to complete a run. */
+export const MISSION_GOAL = 5;
+
 export interface AircraftSpec {
   key: AircraftKey;
   label: string;
@@ -118,6 +121,12 @@ export interface AircraftSpec {
     /** mission wording for the HUD banner */
     hitText: string;
     missText: string;
+    /**
+     * Does a miss deserve a banner? Worth it for cargo, where the distance
+     * tells you how to correct the next drop; noise for an unguided missile,
+     * where you already saw where it went.
+     */
+    reportMiss: boolean;
   };
   /** contrail emitters — offset aft of the wingtips */
   trailAft: number;
@@ -188,6 +197,7 @@ export const AIRCRAFT: Record<AircraftKey, AircraftSpec> = {
       size: 0.028,
       hitText: "package delivered",
       missText: "off target",
+      reportMiss: true,
     },
     trailAft: 0.1,
     credit: {
@@ -265,6 +275,7 @@ export const AIRCRAFT: Record<AircraftKey, AircraftSpec> = {
       size: 0.075,
       hitText: "target neutralised",
       missText: "miss",
+      reportMiss: false,
     },
     trailAft: 0.06,
     credit: {

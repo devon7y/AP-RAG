@@ -16,7 +16,12 @@ import {
   type EngineSound,
   type WarningSound,
 } from "./planeAudio";
-import { AIRCRAFT, type AircraftKey, type AircraftSpec } from "./aircraft";
+import {
+  AIRCRAFT,
+  MISSION_GOAL,
+  type AircraftKey,
+  type AircraftSpec,
+} from "./aircraft";
 import {
   createOrdnance,
   createTargetMarker,
@@ -601,7 +606,7 @@ export default function PlaneLayer({
   /** Assign a fresh paper to hunt — anywhere on the map, so you have to fly. */
   const pickTarget = () => {
     const st = useWorld.getState();
-    if (!st.missionOn || data.nPapers === 0) {
+    if (!st.missionOn || st.missionDone || data.nPapers === 0) {
       st.set("missionTarget", null);
       return;
     }
@@ -639,6 +644,7 @@ export default function PlaneLayer({
     if (st.missionOn) {
       st.set("missionHits", 0);
       st.set("missionShots", 0);
+      st.set("missionDone", false);
       pickTargetRef.current();
     }
 
@@ -1245,17 +1251,36 @@ export default function PlaneLayer({
       const cur = useWorld.getState();
       if (cur.planeSound) playImpact(ev.ok);
       const W = spec.weapon;
+
+      if (!ev.ok) {
+        // an unguided missile's miss is self-evident — you watched it go wide.
+        // A cargo miss reports its distance, which tells you how to correct.
+        if (W.reportMiss) {
+          cur.set("missionFlash", {
+            text: `${W.missText} · ${Math.round(ev.miss * 112)} ft`,
+            ok: false,
+            seq: ++flashSeq.current,
+          });
+        }
+        continue;
+      }
+
+      // A beacon scores once. Without this guard a second missile already in
+      // the air lands during the hand-over delay and banks a second point for
+      // the same kill.
+      if (cur.missionTarget === null) continue;
+      const hits = cur.missionHits + 1;
+      const finished = hits >= MISSION_GOAL;
+      cur.set("missionHits", hits);
+      cur.set("missionTarget", null); // retire it immediately
       cur.set("missionFlash", {
-        text: ev.ok ? W.hitText : `${W.missText} · ${Math.round(ev.miss * 112)} ft`,
-        ok: ev.ok,
+        text: finished ? `run complete · ${hits}/${MISSION_GOAL}` : W.hitText,
+        ok: true,
         seq: ++flashSeq.current,
       });
-      if (ev.ok) {
-        cur.set("missionHits", cur.missionHits + 1);
-        // the payoff: the paper you just hit opens exactly as a beacon click
-        if (cur.missionTarget !== null) {
-          cur.select({ kind: "paper", idx: cur.missionTarget });
-        }
+      if (finished) {
+        cur.set("missionDone", true);
+      } else {
         timeouts.current.push(
           window.setTimeout(() => pickTargetRef.current(), 900),
         );

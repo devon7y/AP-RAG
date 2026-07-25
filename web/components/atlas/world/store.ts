@@ -197,6 +197,8 @@ interface WorldState {
   missionTarget: number | null;
   missionHits: number;
   missionShots: number;
+  /** true once the run is finished — no more targets are assigned */
+  missionDone: boolean;
   /** transient banner after each resolved shot */
   missionFlash: { text: string; ok: boolean; seq: number } | null;
 
@@ -285,6 +287,7 @@ export const useWorld = create<WorldState>((set) => ({
   missionTarget: null,
   missionHits: 0,
   missionShots: 0,
+  missionDone: false,
   missionFlash: null,
 
   gamePings: [],

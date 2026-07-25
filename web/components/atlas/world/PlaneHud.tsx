@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { CorpusData } from "@/lib/atlas/types";
-import { AIRCRAFT } from "./aircraft";
+import { AIRCRAFT, MISSION_GOAL } from "./aircraft";
 import { planeTelemetry } from "./PlaneLayer";
 import { useWorld } from "./store";
 
@@ -55,6 +55,7 @@ export default function PlaneHud({ corpus }: { corpus: CorpusData }) {
   const missionHits = useWorld((s) => s.missionHits);
   const missionShots = useWorld((s) => s.missionShots);
   const missionFlash = useWorld((s) => s.missionFlash);
+  const missionDone = useWorld((s) => s.missionDone);
   const aircraft = useWorld((s) => s.aircraft);
   const W = (AIRCRAFT[aircraft] ?? AIRCRAFT.a380).weapon;
   const paper = missionTarget !== null ? corpus.papers[missionTarget] : null;
@@ -166,7 +167,7 @@ export default function PlaneHud({ corpus }: { corpus: CorpusData }) {
       {/* ---- GPWS terrain warning (top-center) ---- */}
       <div
         ref={warn}
-        className="absolute top-6 left-1/2 -translate-x-1/2 rounded-[3px] border-2 px-5 py-1.5 font-mono text-sm font-bold tracking-[0.25em]"
+        className="absolute top-32 left-1/2 -translate-x-1/2 rounded-[3px] border-2 px-5 py-1.5 font-mono text-sm font-bold tracking-[0.25em]"
         style={{
           visibility: "hidden",
           borderColor: "#ff2a2a",
@@ -181,7 +182,7 @@ export default function PlaneHud({ corpus }: { corpus: CorpusData }) {
 
       {/* ---- mission strip (top-centre) ---- */}
       {missionOn && (
-        <div className="absolute top-16 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1.5">
+        <div className="absolute top-3 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1.5">
           <div className={`${PANEL} flex items-center gap-3 px-3 py-1.5`}>
             <span className={LABEL} style={{ color: CYAN }}>
               {W.label}
@@ -204,16 +205,32 @@ export default function PlaneHud({ corpus }: { corpus: CorpusData }) {
             <span ref={armed} className="font-mono text-[10px] tracking-widest">
               ARMED
             </span>
-            <span className="font-mono text-[11px] text-[#c6ccd4] tabular-nums">
-              {missionHits}/{missionShots}
+            <span
+              className="font-mono text-[13px] font-bold tabular-nums"
+              style={{ color: missionDone ? GREEN : "#ffd27a" }}
+            >
+              {missionHits}/{MISSION_GOAL}
+            </span>
+            <span className="font-mono text-[10px] text-[#c6ccd4] tabular-nums">
+              {missionShots} {W.kind === "missile" ? "fired" : "dropped"}
             </span>
           </div>
-          {paper && (
-            <div className={`${PANEL} max-w-[min(560px,80vw)] px-3 py-1.5`}>
-              <p className="line-clamp-1 text-[11px] text-white">{paper.title}</p>
-              <p className="mt-0.5 font-mono text-[9px] text-[#c6ccd4]">
-                {paper.authors} · {paper.year || "n.d."} — {W.fireLabel.toUpperCase()} WITH F
+          {paper && !missionDone && (
+            <div className={`${PANEL} max-w-[min(720px,88vw)] px-4 py-2`}>
+              <p className="line-clamp-2 text-center text-[15px] leading-snug font-medium text-white">
+                {paper.title}
               </p>
+              <p className="mt-1 text-center font-mono text-[11px] text-[#c6ccd4]">
+                {paper.authors} · {paper.year || "n.d."}
+              </p>
+            </div>
+          )}
+          {missionDone && (
+            <div
+              className={`${PANEL} px-4 py-2 font-mono text-[13px] font-bold tracking-[0.18em] uppercase`}
+              style={{ color: GREEN }}
+            >
+              run complete — {missionHits}/{MISSION_GOAL} in {missionShots}
             </div>
           )}
         </div>
@@ -398,7 +415,8 @@ export default function PlaneHud({ corpus }: { corpus: CorpusData }) {
         <p
           className={`${PANEL} px-2.5 py-1 font-mono text-[9px] tracking-wide text-[#c6ccd4]`}
         >
-          W/S PITCH · A/D BANK · Q/E YAW · SPACE/SHIFT THR · ESC EJECT
+          W/S PITCH · A/D BANK · Q/E YAW · SPACE/SHIFT THR ·{" "}
+          {W.fireLabel.toUpperCase()} F · ESC EJECT
         </p>
       </div>
 

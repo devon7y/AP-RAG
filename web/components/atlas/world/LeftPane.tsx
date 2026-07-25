@@ -21,7 +21,7 @@ import {
 import { qsearch } from "@/lib/atlas/api";
 import type { AuthorRec, CorpusData, PaperMeta } from "@/lib/atlas/types";
 import { buildStation } from "./walk";
-import { AIRCRAFT_LIST } from "./aircraft";
+import { AIRCRAFT_LIST, MISSION_GOAL } from "./aircraft";
 import { primePlaneAudio } from "./planeAudio";
 import { primeVoices } from "./tts";
 import {
@@ -967,7 +967,7 @@ function PlanePanel() {
           {aircraft === "f117"
             ? "A paper beacon is marked by a shaft of light. Line the nose up and fire — missiles fly flat and unguided, so you have to aim."
             : "A paper is marked by a shaft of light. Line up directly above it and release — the crate drops straight down."}{" "}
-          Score a hit and that paper&apos;s card opens.
+          The run ends at {MISSION_GOAL} hits.
         </p>
         <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-ink-2">
           <input
@@ -980,7 +980,7 @@ function PlanePanel() {
         </label>
         {missionOn && (missionShots > 0 || planeOn) && (
           <p className="mt-1.5 rounded-md border border-[#ffd27a]/40 px-2 py-1 font-mono text-[11px] text-[#ffd27a]">
-            {missionHits} hit{missionHits === 1 ? "" : "s"} / {missionShots}{" "}
+            {missionHits}/{MISSION_GOAL} hits · {missionShots}{" "}
             {spec.weapon.kind === "missile" ? "fired" : "dropped"}
           </p>
         )}

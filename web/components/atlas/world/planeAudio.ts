@@ -311,40 +311,76 @@ export function playLaunch(missile: boolean): void {
   const c = ctx;
   const t0 = c.currentTime;
 
-  const air = c.createBufferSource();
-  air.buffer = noise();
-  const bp = c.createBiquadFilter();
-  bp.type = missile ? "bandpass" : "lowpass";
-  bp.Q.value = missile ? 0.8 : 1;
-  const g = c.createGain();
-  if (missile) {
-    // the motor lights and the missile runs away from you: the band climbs
-    bp.frequency.setValueAtTime(380, t0);
-    bp.frequency.exponentialRampToValueAtTime(2600, t0 + 0.4);
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(0.5 * MASTER, t0 + 0.05);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.7);
-  } else {
-    bp.frequency.setValueAtTime(900, t0);
-    bp.frequency.exponentialRampToValueAtTime(180, t0 + 0.18);
+  if (!missile) {
+    // a crate just drops off the rails: a short muted clunk
+    const air = c.createBufferSource();
+    air.buffer = noise();
+    const lp = c.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.setValueAtTime(900, t0);
+    lp.frequency.exponentialRampToValueAtTime(180, t0 + 0.18);
+    const g = c.createGain();
     g.gain.setValueAtTime(0.34 * MASTER, t0);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.25);
+    air.connect(lp).connect(g).connect(c.destination);
+    air.start(t0);
+    air.stop(t0 + 0.3);
+    const thump = c.createOscillator();
+    thump.type = "sine";
+    thump.frequency.setValueAtTime(96, t0);
+    thump.frequency.exponentialRampToValueAtTime(44, t0 + 0.16);
+    const tg = c.createGain();
+    tg.gain.setValueAtTime(0.42 * MASTER, t0);
+    tg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+    thump.connect(tg).connect(c.destination);
+    thump.start(t0);
+    thump.stop(t0 + 0.25);
+    return;
   }
-  air.connect(bp).connect(g).connect(c.destination);
-  air.start(t0);
-  air.stop(t0 + (missile ? 0.8 : 0.3));
 
-  // the thump of the rail letting go
+  // A rocket launcher has three parts: the IGNITION crack, the motor ROAR
+  // while it burns, and the roar dropping in pitch as the missile runs away
+  // from you. The old single rising sweep had none of that shape.
+  const crack = c.createBufferSource();
+  crack.buffer = noise();
+  const ch = c.createBiquadFilter();
+  ch.type = "highpass";
+  ch.frequency.value = 1800;
+  const cg = c.createGain();
+  cg.gain.setValueAtTime(0.85 * MASTER, t0);
+  cg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.13);
+  crack.connect(ch).connect(cg).connect(c.destination);
+  crack.start(t0);
+  crack.stop(t0 + 0.15);
+
+  // the motor: broad and loud, its band falling 1.5 kHz -> 260 Hz as it goes
+  const motor = c.createBufferSource();
+  motor.buffer = noise();
+  const mb = c.createBiquadFilter();
+  mb.type = "bandpass";
+  mb.Q.value = 0.5;
+  mb.frequency.setValueAtTime(1500, t0 + 0.02);
+  mb.frequency.exponentialRampToValueAtTime(260, t0 + 1.05);
+  const mg = c.createGain();
+  mg.gain.setValueAtTime(0.0001, t0);
+  mg.gain.exponentialRampToValueAtTime(0.72 * MASTER, t0 + 0.06);
+  mg.gain.setValueAtTime(0.72 * MASTER, t0 + 0.3);
+  mg.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.25);
+  motor.connect(mb).connect(mg).connect(c.destination);
+  motor.start(t0);
+  motor.stop(t0 + 1.3);
+
+  // the low chuff of the launch tube
   const thump = c.createOscillator();
   thump.type = "sine";
-  thump.frequency.setValueAtTime(missile ? 150 : 96, t0);
-  thump.frequency.exponentialRampToValueAtTime(missile ? 62 : 44, t0 + 0.16);
+  thump.frequency.setValueAtTime(190, t0);
+  thump.frequency.exponentialRampToValueAtTime(52, t0 + 0.3);
   const tg = c.createGain();
-  tg.gain.setValueAtTime(0.42 * MASTER, t0);
-  tg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+  tg.gain.setValueAtTime(0.7 * MASTER, t0);
+  tg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.4);
   thump.connect(tg).connect(c.destination);
   thump.start(t0);
-  thump.stop(t0 + 0.25);
+  thump.stop(t0 + 0.45);
 }
 
 /** Impact. A hit gets a real detonation plus a rising two-tone confirmation
