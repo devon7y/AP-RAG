@@ -3,11 +3,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import {
-  MeshPhysicalNodeMaterial,
-  MeshStandardNodeMaterial,
-} from "three/webgpu";
-import { mix, positionLocal, smoothstep, vec3 } from "three/tsl";
+import { MeshStandardNodeMaterial } from "three/webgpu";
 import { WORLD_SIZE } from "@/lib/atlas/data";
 import { useAtlasStore } from "@/lib/atlas/store";
 import { glowTexture, ringTexture, sampleField, type WorldData } from "./derive";
@@ -29,11 +25,13 @@ import { HEIGHT_SCALE, uMorph } from "./uniforms";
  * that opens the nearest paper's card exactly as clicking its beacon would.
  *
  * Two airframes share one transform: a tiny procedural jet flies instantly,
- * and the real scan ("Boeing 747-400" by Jonne Okkonen, CC BY-SA 4.0,
- * meshopt-compressed to 3.4 MB, PCA-aligned nose-+Z and rescaled at bake
- * time) streams in on the first take-off and replaces the procedural hull,
- * wearing a procedural livery (no UVs in the scan — the paint is banded in
- * model space). While parked, nothing renders and nothing downloads.
+ * and the real scan ("Boeing 747" by amanda_98, CC BY 4.0) streams in on the
+ * first take-off and replaces the procedural hull. That scan carries a proper
+ * UV-mapped PBR livery — painted airline titles, window rows, doors, plus
+ * normal and metallic-roughness maps — so we keep its own materials. It is
+ * PCA-aligned nose-+Z, centred and rescaled at bake time, then meshopt +
+ * WebP compressed (13 MB → 1.2 MB; livery maps kept at 1024, support maps at
+ * 512). While parked, nothing renders and nothing downloads.
  */
 
 const REAL_747_URL = "/models/boeing747.glb";
@@ -280,56 +278,29 @@ function build747(): Airframe {
   return { group, hull, disposables, engineGlows, navLeft, navRight, strobe };
 }
 
-/* ---------------- livery for the real jet (the scan has no UVs) ---------- */
+/* ---------------- the real jet's painted livery ---------------- */
 
-function applyLivery(
-  root: THREE.Group,
-  disposables: (THREE.BufferGeometry | THREE.Material)[],
-): void {
-  const body = new MeshPhysicalNodeMaterial();
-  body.metalness = 0.32;
-  body.roughness = 0.3;
-  body.clearcoat = 0.55;
-  body.clearcoatRoughness = 0.3;
-  body.side = THREE.DoubleSide;
-  {
-    // banded paint in baked model space: silver belly, blue cheatline along
-    // the window line, white crown, blue tail fin (all ascending smoothsteps
-    // — WGSL requires low < high)
-    const white = vec3(0.93, 0.94, 0.97);
-    const belly = vec3(0.55, 0.6, 0.68);
-    const blue = vec3(0.12, 0.32, 0.7);
-    const y = positionLocal.y;
-    const z = positionLocal.z;
-    const bellyMask = smoothstep(-0.26, -0.14, y).oneMinus();
-    const cheatMask = smoothstep(-0.3, -0.2, y).mul(
-      smoothstep(-0.04, 0.04, y).oneMinus(),
-    );
-    const finMask = smoothstep(-3.6, -2.8, z)
-      .oneMinus()
-      .mul(smoothstep(0.28, 0.55, y));
-    body.colorNode = mix(
-      mix(mix(white, belly, bellyMask), blue, cheatMask),
-      blue,
-      finMask,
-    );
-  }
-
-  const engines = new MeshStandardNodeMaterial();
-  engines.color = new THREE.Color("#3f454f");
-  engines.metalness = 0.85;
-  engines.roughness = 0.32;
-  engines.side = THREE.DoubleSide;
-
-  disposables.push(body, engines);
-
+/**
+ * The scan ships its own UV-mapped PBR set (base colour with airline titles,
+ * window rows and doors, plus normal and metallic-roughness maps), so we KEEP
+ * its materials rather than painting over them. Two safety passes only:
+ * fully-metallic surfaces would render black with no environment map in the
+ * scene, so metalness is capped; and thin single-sided panels are drawn
+ * double-sided so the airframe never shows holes from the chase camera.
+ */
+function adoptLivery(root: THREE.Group): void {
   root.traverse((o) => {
     if (!(o instanceof THREE.Mesh)) return;
-    const old = o.material as THREE.Material | THREE.Material[];
-    const olds = Array.isArray(old) ? old : [old];
-    const isEngine = olds.some((m) => /engine/i.test(m.name ?? ""));
-    o.material = isEngine ? engines : body;
-    for (const m of olds) m.dispose();
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) {
+      const std = m as THREE.MeshStandardMaterial;
+      if (std.isMeshStandardMaterial) {
+        std.metalness = Math.min(std.metalness ?? 1, 0.3);
+        std.roughness = THREE.MathUtils.clamp(std.roughness ?? 1, 0.25, 1);
+      }
+      m.side = THREE.DoubleSide;
+      m.needsUpdate = true;
+    }
   });
 }
 
@@ -737,7 +708,7 @@ export default function PlaneLayer({
         const loader = new GLTFLoader();
         loader.setMeshoptDecoder(MeshoptDecoder);
         const gltf = await loader.loadAsync(REAL_747_URL);
-        applyLivery(gltf.scene, airframe.disposables);
+        adoptLivery(gltf.scene);
         anchorRealJet(gltf.scene, airframe, wingAnchors);
         realJet.current = gltf.scene;
         airframe.group.add(gltf.scene);
@@ -798,8 +769,17 @@ export default function PlaneLayer({
       (trailL.line.material as THREE.Material).dispose();
       trailR.geo.dispose();
       (trailR.line.material as THREE.Material).dispose();
+      // the scan owns its own materials + livery textures — free them all
       realJet.current?.traverse((o) => {
-        if (o instanceof THREE.Mesh) o.geometry.dispose();
+        if (!(o instanceof THREE.Mesh)) return;
+        o.geometry.dispose();
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of mats) {
+          for (const v of Object.values(m)) {
+            if (v instanceof THREE.Texture) v.dispose();
+          }
+          m.dispose();
+        }
       });
       engine.current?.stop();
       warnSound.current?.stop();

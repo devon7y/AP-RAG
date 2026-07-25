@@ -980,21 +980,21 @@ function PlanePanel() {
       <p className="border-t hairline pt-2 text-[10px] leading-relaxed text-ink-3">
         Aircraft:{" "}
         <a
-          href="https://sketchfab.com/3d-models/boeing-747-400-4c0c7664e4ea4e248311c8ba93fe3b20"
+          href="https://sketchfab.com/3d-models/d234e311a36f475395ed44d3b9518ff5"
           target="_blank"
           rel="noreferrer"
           className="underline decoration-dotted hover:text-ink-2"
         >
-          “Boeing 747-400”
+          “Boeing 747”
         </a>{" "}
-        by Jonne Okkonen,{" "}
+        by amanda_98,{" "}
         <a
-          href="https://creativecommons.org/licenses/by-sa/4.0/"
+          href="https://creativecommons.org/licenses/by/4.0/"
           target="_blank"
           rel="noreferrer"
           className="underline decoration-dotted hover:text-ink-2"
         >
-          CC BY-SA 4.0
+          CC BY 4.0
         </a>{" "}
         (recompressed).
       </p>
