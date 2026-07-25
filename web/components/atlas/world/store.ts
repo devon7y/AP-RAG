@@ -64,18 +64,24 @@ export const HOME = {
   },
 };
 
-/** The shot the world OPENS on: the atlas resting orbit, resolved at the +Z
- *  azimuth — exactly where warpHome would land a fresh camera. The scene is
- *  mounted here directly rather than flown in, so the controls are live on
- *  the first frame instead of after an entry animation. */
-export const OPENING_SHOT = {
-  position: [
-    HOME.atlas.center[0],
-    HOME.atlas.orbit.height,
-    HOME.atlas.center[2] + HOME.atlas.orbit.radius,
-  ] as [number, number, number],
-  target: HOME.atlas.center,
-};
+/** A view's resting orbit resolved at the +Z azimuth — exactly where warpHome
+ *  would land a fresh camera. The scene mounts here directly rather than
+ *  flying in, so the controls are live on the first frame instead of after an
+ *  entry animation. View matters on a return visit: the store outlives
+ *  client-side navigation, so the world can come back up in galaxy view. */
+export function homeShot(view: WorldView): {
+  position: [number, number, number];
+  target: [number, number, number];
+} {
+  const h = view === "space" ? HOME.space : HOME.atlas;
+  return {
+    position: [h.center[0], h.orbit.height, h.center[2] + h.orbit.radius],
+    target: h.center,
+  };
+}
+
+/** The cold-load shot (the store opens in atlas view). */
+export const OPENING_SHOT = homeShot("atlas");
 
 /** Fly to the nearest point on the resting orbit for the current view. */
 export function warpHome(duration = 1.3): void {

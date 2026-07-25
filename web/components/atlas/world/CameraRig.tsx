@@ -8,7 +8,7 @@ import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import type { WorldData } from "./derive";
 import { AIRCRAFT } from "./aircraft";
 import type { PlanePose } from "./PlaneLayer";
-import { OPENING_SHOT, useWorld } from "./store";
+import { homeShot, useWorld } from "./store";
 import { uMorph } from "./uniforms";
 
 /**
@@ -75,16 +75,34 @@ export default function CameraRig({
     if (ctl && planeOn && useWorld.getState().planeFollow) ctl.enabled = false;
   }, [planeOn]);
 
+  // Warps are seq-stamped; ignore any that predates this mount. The world
+  // store is a module singleton that outlives client-side navigation, so on a
+  // return visit the previous visit's warp is still sitting in it and would
+  // re-fire here as a surprise flight.
+  const mountSeq = useRef<number | null>(null);
+  if (mountSeq.current === null) mountSeq.current = useWorld.getState().warp?.seq ?? 0;
+
   // open framed on the resting shot. The camera already mounts at
   // OPENING_SHOT.position, but OrbitControls defaults its target to the
   // origin — without this the world would sit a few units low on the first
   // frame and snap when something first drove the target.
+  //
+  // Same singleton problem as above for the flags that mean "something other
+  // than the user is driving the camera". Nothing is warping or flying on
+  // frame one of a fresh mount, but a previous visit can have left either set
+  // — a stale `warping` deadens the picker (no hover, no clicks, so the scene
+  // stops responding), and a stale `planeOn` disables the controls outright.
   useEffect(() => {
     const ctl = controls.current;
     if (!ctl) return;
-    ctl.target.set(...OPENING_SHOT.target);
+    // the canvas mounts the camera at the atlas shot; a return visit can be in
+    // galaxy view, whose resting orbit sits further out
+    const shot = homeShot(useWorld.getState().view);
+    camera.position.set(...shot.position);
+    ctl.target.set(...shot.target);
     ctl.update();
-  }, []);
+    useWorld.setState({ warping: false, planeOn: false });
+  }, [camera]);
 
   // the idle orbit stops for good the moment the user moves the camera
   useEffect(() => {
@@ -96,7 +114,7 @@ export default function CameraRig({
   }, []);
 
   useEffect(() => {
-    if (!warp || !controls.current) return;
+    if (!warp || warp.seq <= (mountSeq.current ?? 0) || !controls.current) return;
     baseFov.current ??= camera.fov;
     const toTgt = new THREE.Vector3(...warp.center);
     let toPos: THREE.Vector3;
@@ -150,10 +168,10 @@ export default function CameraRig({
     // enabled is only handed back when no tween owns the camera (a warp sets
     // enabled itself and must keep it false until it completes).
     const followState = useWorld.getState();
-    const flyingNow =
-      followState.planeOn &&
-      followState.planeFollow &&
-      getPlanePose() !== null;
+    // the chase claims the camera from the moment flight is armed — before the
+    // pose exists — so OrbitControls never gets a frame to fight it
+    const planeClaims = followState.planeOn && followState.planeFollow;
+    const flyingNow = planeClaims && getPlanePose() !== null;
     if (chasing.current && !flyingNow) {
       chasing.current = false;
       ctl.minDistance = 3;
@@ -161,6 +179,13 @@ export default function CameraRig({
       camera.updateProjectionMatrix();
       if (!tween.current) ctl.enabled = true;
     }
+
+    // Nothing else owns the camera, so the user does. A tween owns it while it
+    // runs and re-enables on completion; the chase disables it every frame
+    // while armed. Outside those two a disabled control can only be a leak
+    // from one of them being interrupted (navigating away mid-flight, mid-warp)
+    // — heal it rather than leaving the world frozen with no way back.
+    if (!planeClaims && !tween.current && !ctl.enabled) ctl.enabled = true;
 
     // warp tween
     const tw = tween.current;
