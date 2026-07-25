@@ -15,7 +15,7 @@ import type {
 } from "@/lib/atlas/types";
 import { LoadingVeil, useConstellations, useCorpus, useKnn } from "@/lib/atlas/useCorpus";
 import ArcLayer from "./ArcLayer";
-import CameraRig, { useIntroWarp } from "./CameraRig";
+import CameraRig from "./CameraRig";
 import ChunkCloud from "./ChunkCloud";
 import CommandBar from "./CommandBar";
 import { deriveWorld, shortCite, type WorldData } from "./derive";
@@ -29,7 +29,7 @@ import PlaneHud from "./PlaneHud";
 import PlaneLayer, { type PlanePose } from "./PlaneLayer";
 import RoverLayer, { useRover } from "./RoverLayer";
 import SkyLayer from "./SkyLayer";
-import { useWorld, type PlantedGhost } from "./store";
+import { OPENING_SHOT, useWorld, type PlantedGhost } from "./store";
 import Terrain from "./Terrain";
 import TrailsLayer from "./TrailsLayer";
 import { uMorph } from "./uniforms";
@@ -340,7 +340,6 @@ function World({
 
   useRover(corpus, knn);
   useGhostPlanting(data, corpus !== null);
-  useIntroWarp(true);
 
   // seed the time machine bounds once
   useEffect(() => {
@@ -434,7 +433,7 @@ function World({
   return (
     <div className="absolute inset-0">
       <HDRCanvas
-        camera={{ position: [0, 190, 260], fov: 55, near: 0.1, far: 1400 }}
+        camera={{ position: OPENING_SHOT.position, fov: 55, near: 0.1, far: 1400 }}
         clearColor={0x06070c}
       >
         <WorldDriver data={data} />

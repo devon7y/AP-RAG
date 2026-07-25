@@ -64,6 +64,19 @@ export const HOME = {
   },
 };
 
+/** The shot the world OPENS on: the atlas resting orbit, resolved at the +Z
+ *  azimuth — exactly where warpHome would land a fresh camera. The scene is
+ *  mounted here directly rather than flown in, so the controls are live on
+ *  the first frame instead of after an entry animation. */
+export const OPENING_SHOT = {
+  position: [
+    HOME.atlas.center[0],
+    HOME.atlas.orbit.height,
+    HOME.atlas.center[2] + HOME.atlas.orbit.radius,
+  ] as [number, number, number],
+  target: HOME.atlas.center,
+};
+
 /** Fly to the nearest point on the resting orbit for the current view. */
 export function warpHome(duration = 1.3): void {
   const st = useWorld.getState();

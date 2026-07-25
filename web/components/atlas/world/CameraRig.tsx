@@ -8,7 +8,7 @@ import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import type { WorldData } from "./derive";
 import { AIRCRAFT } from "./aircraft";
 import type { PlanePose } from "./PlaneLayer";
-import { useWorld, warpHome } from "./store";
+import { OPENING_SHOT, useWorld } from "./store";
 import { uMorph } from "./uniforms";
 
 /**
@@ -74,6 +74,17 @@ export default function CameraRig({
     const ctl = controls.current;
     if (ctl && planeOn && useWorld.getState().planeFollow) ctl.enabled = false;
   }, [planeOn]);
+
+  // open framed on the resting shot. The camera already mounts at
+  // OPENING_SHOT.position, but OrbitControls defaults its target to the
+  // origin — without this the world would sit a few units low on the first
+  // frame and snap when something first drove the target.
+  useEffect(() => {
+    const ctl = controls.current;
+    if (!ctl) return;
+    ctl.target.set(...OPENING_SHOT.target);
+    ctl.update();
+  }, []);
 
   // the idle orbit stops for good the moment the user moves the camera
   useEffect(() => {
@@ -290,15 +301,4 @@ export default function CameraRig({
       zoomToCursor
     />
   );
-}
-
-/** One-time cinematic entry: fall from deep space onto the resting shot. */
-export function useIntroWarp(ready: boolean) {
-  const fired = useRef(false);
-  useEffect(() => {
-    if (!ready || fired.current) return;
-    fired.current = true;
-    const t = setTimeout(() => warpHome(3.4), 250);
-    return () => clearTimeout(t);
-  }, [ready]);
 }
