@@ -377,11 +377,15 @@ const ANCHOR = {
   // dragged the outboard pair toward the wingtips), then its own bounding box
   // gives the centre and rear face. The inboard pair really does sit forward
   // of the outboard pair — that is the wing sweep, not an error.
+  //
+  // Measured rear faces are z = -0.33 (outboard) and z = +0.48 (inboard); the
+  // glow sits ~0.2 forward of those, just INSIDE the nozzle, so it reads as
+  // light coming out of the engine rather than trailing behind it.
   engines: [
-    [-2.76, -0.95, -0.41],
-    [-1.58, -1.04, 0.4],
-    [1.61, -1.04, 0.36],
-    [2.78, -0.95, -0.43],
+    [-2.76, -0.95, -0.13],
+    [-1.58, -1.04, 0.68],
+    [1.61, -1.04, 0.64],
+    [2.78, -0.95, -0.15],
   ] as const,
 };
 
