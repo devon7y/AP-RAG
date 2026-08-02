@@ -29,7 +29,8 @@ import {
   type ReasoningEffort,
   type RetrievalMode,
 } from "@/lib/ai/models";
-import type { RagFilters } from "@/lib/aprag/types";
+import type { RagFilters, RagRetrieval } from "@/lib/aprag/types";
+import { prefetchReferences } from "@/lib/pdf/loader";
 import type { Vote } from "@/lib/db/schema";
 import { ChatbotError } from "@/lib/errors";
 import type { ChatMessage } from "@/lib/types";
@@ -65,6 +66,22 @@ type ActiveChatContextValue = {
   setFilters: Dispatch<SetStateAction<RagFilters | null>>;
   // "Talk to Author": the author this chat is scoped to (null for a normal chat).
   personaAuthor: string | null;
+  // "Research Digest": the topic + date window this chat summarizes (null for a normal chat).
+  digest: DigestChatConfig | null;
+};
+
+// The digest config carried in the URL / persisted on the chat row (bucket is derived
+// server-side). `openEnded` marks a "to present" digest — its window's end tracks "now"
+// and the digest can be refreshed as papers are added (refreshedAt / papersAtRefresh are
+// stamped server-side on each run, for the /digest library's "+N papers" badge).
+export type DigestChatConfig = {
+  topic: string;
+  from: string;
+  to: string;
+  bucket?: "month" | "year";
+  openEnded?: boolean;
+  refreshedAt?: string;
+  papersAtRefresh?: number;
 };
 
 const ActiveChatContext = createContext<ActiveChatContextValue | null>(null);
@@ -134,6 +151,13 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
   // a fresh author chat, or from /api/messages on reload; remembered per chat id so it
   // survives the URL-param strip and chat switches. Sent on the first message so the route
   // can persist it onto the new Chat row (thereafter the row is authoritative).
+  const [digest, setDigest] = useState<DigestChatConfig | null>(null);
+  const digestRef = useRef(digest);
+  useEffect(() => {
+    digestRef.current = digest;
+  }, [digest]);
+  const digestByChat = useRef(new Map<string, DigestChatConfig>());
+
   const [personaAuthor, setPersonaAuthor] = useState<string | null>(null);
   const personaAuthorRef = useRef(personaAuthor);
   useEffect(() => {
@@ -212,6 +236,18 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
             ...(personaAuthorRef.current
               ? { personaAuthor: personaAuthorRef.current }
               : {}),
+            ...(digestRef.current
+              ? {
+                  digest: {
+                    topic: digestRef.current.topic,
+                    from: digestRef.current.from,
+                    to: digestRef.current.to,
+                    ...(digestRef.current.openEnded
+                      ? { openEnded: true }
+                      : {}),
+                  },
+                }
+              : {}),
             ...request.body,
           },
         };
@@ -219,6 +255,16 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
     }),
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
+      // The retrieval payload lands BEFORE the answer finishes streaming, so this is the
+      // earliest possible moment to start warming the PDFs the reader is most likely to
+      // open — by the time they hover a citation, the bytes are already there. References
+      // arrive frequency-ranked, so plain order is the importance signal.
+      if (dataPart.type === "data-retrieval") {
+        const refs = (dataPart.data as RagRetrieval | undefined)?.references ?? [];
+        prefetchReferences(
+          refs.map((r) => ({ filename: r.filename, page: r.pages?.[0] ?? 1 }))
+        );
+      }
       // Note: we deliberately do NOT sync the composer's active-filter chips to the
       // server's appliedFilters here — filters are one-shot per message (cleared on send),
       // so re-populating them would make them "stick" onto the next message.
@@ -267,6 +313,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       setInput("");
       setFilters(null);
       setPersonaAuthor(personaByChat.current.get(chatId) ?? null);
+      setDigest(digestByChat.current.get(chatId) ?? null);
       if (isNewChat) {
         setMessages([]);
       }
@@ -284,6 +331,16 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
     }
   }, [chatId, chatData]);
 
+  // Restore an existing digest chat's config from the messages payload (reload / deep link).
+  useEffect(() => {
+    const d = (chatData as { digest?: DigestChatConfig | null } | undefined)
+      ?.digest;
+    if (d) {
+      digestByChat.current.set(chatId, d);
+      setDigest(d);
+    }
+  }, [chatId, chatData]);
+
   // Capture the author of a freshly-opened Talk-to-Author chat from `?author=`, remember
   // it for this chat id, then strip the param (keeping any other params, e.g. ?query=).
   useEffect(() => {
@@ -296,6 +353,81 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
     setPersonaAuthor(author);
     personaAuthorRef.current = author;
     params.delete("author");
+    const qs = params.toString();
+    window.history.replaceState(
+      {},
+      "",
+      `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/chat/${chatId}${qs ? `?${qs}` : ""}`
+    );
+  }, [chatId]);
+
+  // Capture a freshly-opened Research Digest chat's config from `?digest=` (URL-encoded
+  // JSON), remember it for this chat id, strip the param, and AUTO-SEND the user's prompt as
+  // the first message — so the chat opens straight into the live digest (no empty greeting/
+  // suggestions step). digestRef is set before sendMessage so the config rides that message.
+  const sentDigestChatIds = useRef(new Set<string>());
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get("digest");
+    if (!raw) {
+      return;
+    }
+    let parsed: DigestChatConfig | null = null;
+    try {
+      const o = JSON.parse(raw) as Partial<DigestChatConfig>;
+      if (o && typeof o.topic === "string" && o.from && o.to) {
+        parsed = {
+          topic: o.topic,
+          from: o.from,
+          to: o.to,
+          ...(o.openEnded ? { openEnded: true } : {}),
+        };
+      }
+    } catch {
+      /* malformed param — ignore */
+    }
+    if (!parsed) {
+      return;
+    }
+    digestByChat.current.set(chatId, parsed);
+    setDigest(parsed);
+    digestRef.current = parsed;
+    params.delete("digest");
+    const qs = params.toString();
+    window.history.replaceState(
+      {},
+      "",
+      `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/chat/${chatId}${qs ? `?${qs}` : ""}`
+    );
+    if (!sentDigestChatIds.current.has(chatId)) {
+      sentDigestChatIds.current.add(chatId);
+      sendMessage({
+        role: "user" as const,
+        parts: [{ type: "text", text: parsed.topic }],
+      });
+    }
+  }, [chatId, sendMessage]);
+
+  // Pin papers on a freshly-opened chat from `?papers=` (comma-separated filenames —
+  // "Ask about this paper" and related-papers links use this). The ref is set
+  // synchronously so a same-mount `?query=` auto-send already carries the filter.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get("papers");
+    if (!raw) {
+      return;
+    }
+    const files = raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 8);
+    if (files.length > 0) {
+      const next: RagFilters = { ...(filtersRef.current ?? {}), papers: files };
+      filtersRef.current = next;
+      setFilters(next);
+    }
+    params.delete("papers");
     const qs = params.toString();
     window.history.replaceState(
       {},
@@ -333,6 +465,42 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       });
     }
   }, [sendMessage, chatId]);
+
+  // "Update" from the /digest library: `?digestRefresh=1` on an EXISTING digest chat
+  // re-runs the digest over its window extended to now. Waits until the chat's digest
+  // config (and message history) have loaded, then auto-sends the refresh once.
+  const sentRefreshChatIds = useRef(new Set<string>());
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("digestRefresh") !== "1") {
+      return;
+    }
+    if (!(chatData && digest)) {
+      return; // effect re-runs once the chat + digest config arrive
+    }
+    params.delete("digestRefresh");
+    const qs = params.toString();
+    window.history.replaceState(
+      {},
+      "",
+      `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/chat/${chatId}${qs ? `?${qs}` : ""}`
+    );
+    if (!sentRefreshChatIds.current.has(chatId)) {
+      sentRefreshChatIds.current.add(chatId);
+      sendMessage(
+        {
+          role: "user" as const,
+          parts: [
+            {
+              type: "text",
+              text: "Update this digest with the papers added since the last refresh.",
+            },
+          ],
+        },
+        { body: { digestRefresh: true } }
+      );
+    }
+  }, [chatId, chatData, digest, sendMessage]);
 
   useAutoResume({
     autoResume: !isNewChat && !!chatData,
@@ -380,6 +548,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       filters,
       setFilters,
       personaAuthor,
+      digest,
     }),
     [
       chatId,
@@ -403,6 +572,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       chunkMode,
       filters,
       personaAuthor,
+      digest,
     ]
   );
 

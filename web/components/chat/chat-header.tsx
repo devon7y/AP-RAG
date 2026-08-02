@@ -7,6 +7,7 @@ import { useSidebar } from "@/components/ui/sidebar";
 import { useActiveChat } from "@/hooks/use-active-chat";
 import { AppTitle } from "./app-title";
 import { ConnectDialog } from "./connect-dialog";
+import { DigestIndicator } from "./digest-indicator";
 import { PersonaIndicator } from "./persona-indicator";
 import { VisibilitySelector, type VisibilityType } from "./visibility-selector";
 
@@ -20,8 +21,9 @@ function PureChatHeader({
   isReadonly: boolean;
 }) {
   const { state, toggleSidebar, isMobile } = useSidebar();
-  const { personaAuthor } = useActiveChat();
+  const { personaAuthor, digest } = useActiveChat();
   const isAuthorChat = Boolean(personaAuthor);
+  const isDigestChat = Boolean(digest);
 
   if (state === "collapsed" && !isMobile) {
     return null;
@@ -38,16 +40,17 @@ function PureChatHeader({
         <PanelLeftIcon className="size-4" />
       </Button>
 
-      <AppTitle showBackend={!isAuthorChat} />
+      <AppTitle showBackend={!(isAuthorChat || isDigestChat)} />
 
-      {/* Persona pill sits centered in the space between the title and the right controls. */}
+      {/* Persona / digest pill sits centered between the title and the right controls. */}
       <div className="flex flex-1 justify-center">
         <PersonaIndicator />
+        <DigestIndicator />
       </div>
 
       <div className="flex items-center gap-2">
-        {/* Author chats hide the corpus connect/status badge to spotlight the persona. */}
-        {!isAuthorChat && <ConnectDialog />}
+        {/* Author/digest chats hide the corpus connect/status badge to spotlight the pill. */}
+        {!(isAuthorChat || isDigestChat) && <ConnectDialog />}
         {!isReadonly && (
           <VisibilitySelector
             chatId={chatId}

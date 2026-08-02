@@ -18,7 +18,7 @@
 # (Qwen3.6-35B-A3B + Qwen3-Embedding-8B). This script only builds the venv.
 
 WORKDIR=/scratch/devon7y/westbury_rag
-VENV_DIR=$WORKDIR/venv
+VENV_DIR="${VENV_DIR:-$WORKDIR/venv}"
 HF_SHARED=/scratch/devon7y/huggingface
 
 export HF_HOME=$HF_SHARED
@@ -52,6 +52,7 @@ pip install --quiet "accelerate>=1.1.0" bitsandbytes sentence-transformers
 # LightRAG: install the nested upstream source shipped alongside this repo.
 pip install "$WORKDIR/LightRAG"
 pip install --quiet qdrant-client certifi
+pip install --quiet neo4j   # Fix-graph: GRAPH_STORAGE=Neo4JStorage driver (docs/INGEST_SCALING_BOTTLENECK.md)
 python -c "import lightrag; from lightrag import LightRAG" \
   || { echo "[$(date)] ERROR: LightRAG import failed after install"; exit 1; }
 echo "[$(date)] Packages installed."

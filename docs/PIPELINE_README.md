@@ -40,7 +40,7 @@ A separate LightRAG knowledge graph database for the Westbury lab corpus and rel
 |---|---|
 | `westbury/.env` | Server config (port 9622, separate WORKING_DIR) |
 | `ingest_cml_octen_v2.py` | **Ingestion (HPC/SLURM) — the sole ingest entry point** |
-| `aprag/` (repo root) | `aprag` CLI + `aprag-mcp` MCP server → `aprag_query` / `aprag_retrieve` tools (see [../APRAG_ACCESS.md](../APRAG_ACCESS.md)) |
+| `aprag/` (repo root) | `aprag` CLI + `aprag-mcp` MCP server → `aprag_query` / `aprag_retrieve` tools (see [APRAG_ACCESS.md](APRAG_ACCESS.md)) |
 
 ---
 
@@ -145,7 +145,7 @@ MAX_DOC_TOKENS           = 28_000  # truncation limit (32K context - 4K headroom
 ## MCP Server
 
 Registered as `aprag`. Claude gets the tools `aprag_query` and `aprag_retrieve` (see
-[../APRAG_ACCESS.md](../APRAG_ACCESS.md) for the full setup).
+[APRAG_ACCESS.md](APRAG_ACCESS.md) for the full setup).
 
 ```bash
 # Registration (after `pip install -e .` from the repo root)

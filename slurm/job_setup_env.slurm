@@ -46,6 +46,7 @@ uv pip install git+https://github.com/huggingface/transformers.git
 pip install --quiet pypdf pymupdf tiktoken numpy   # pymupdf: column-aware PDF extraction (fixes pypdf 2-col jumble)
 pip install --quiet "accelerate>=1.1.0" bitsandbytes sentence-transformers
 pip install --quiet "git+https://github.com/devon7y/LightRAG.git"
+pip install --quiet neo4j   # Fix-graph: GRAPH_STORAGE=Neo4JStorage driver (docs/INGEST_SCALING_BOTTLENECK.md)
 echo "[$(date)] Packages installed."
 
 # ── Pre-download model weights ────────────────────────────────────────────────

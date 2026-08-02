@@ -1,6 +1,13 @@
 "use client";
 
-import { ChevronLeftIcon, ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  ExternalLinkIcon,
+  FileTextIcon,
+  SparklesIcon,
+} from "lucide-react";
+import Link from "next/link";
 import {
   createContext,
   type ReactNode,
@@ -10,6 +17,8 @@ import {
   useState,
 } from "react";
 import type { RagChunk, RagReference } from "@/lib/aprag/types";
+import { pdfPageImageUrl, promotePdf } from "@/lib/pdf/loader";
+import { usePdfViewer } from "@/lib/pdf/store";
 import { MessageResponse } from "../ai-elements/message";
 import { Popover, PopoverAnchor, PopoverContent } from "../ui/popover";
 import { splitChunkContent } from "./rag-chunks";
@@ -76,12 +85,17 @@ function CitationCard({
   const [open, setOpen] = useState(false);
   const [idx, setIdx] = useState(0);
   const pinned = useRef(false);
+  // Mirror of `pinned` for rendering: a pinned card (an explicit click, i.e. real intent)
+  // is where the page preview appears — hover stays instant and text-only.
+  const [isPinned, setIsPinned] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selfHandler = useRef<() => void>(() => {});
+  const openPdf = usePdfViewer((s) => s.openPdf);
 
   useEffect(() => {
     const fn = () => {
       pinned.current = false;
+      setIsPinned(false);
       setOpen(false);
     };
     selfHandler.current = fn;
@@ -120,9 +134,11 @@ function CitationCard({
   const togglePin = () => {
     if (pinned.current && open) {
       pinned.current = false;
+      setIsPinned(false);
       setOpen(false);
     } else {
       pinned.current = true;
+      setIsPinned(true);
       cancelClose();
       closeOthers();
       setOpen(true);
@@ -135,6 +151,32 @@ function CitationCard({
   const label = reference?.apa || reference?.filename || chunk.file_path;
   const score = typeof chunk.score === "number" ? chunk.score.toFixed(3) : null;
   const { context, text } = splitChunkContent(chunk.content);
+
+  // The cited page: stamped on the chunk by a page-aware store, else the reference's
+  // first known page, else the front page.
+  const citedPage = chunk.page ?? reference?.pages?.[0] ?? 1;
+  const pdfName = reference?.filename ?? "";
+
+  // Hovering a citation is a strong signal that the reader may open the PDF — start
+  // warming it now so the click renders with no network wait.
+  const warmPdf = () => {
+    if (pdfName) {
+      promotePdf(pdfName, citedPage);
+    }
+  };
+
+  const openInViewer = () => {
+    if (!pdfName) {
+      return;
+    }
+    openPdf({
+      filename: pdfName,
+      page: citedPage,
+      quote: text,
+      label: reference?.intext || reference?.filename,
+      driveUrl: reference?.drive_url,
+    });
+  };
 
   return (
     <Popover
@@ -150,7 +192,11 @@ function CitationCard({
         <button
           className="cursor-pointer whitespace-nowrap rounded-sm font-medium text-primary underline decoration-dotted underline-offset-2 hover:text-primary/80"
           onClick={togglePin}
-          onMouseEnter={openNow}
+          onFocus={warmPdf}
+          onMouseEnter={() => {
+            openNow();
+            warmPdf();
+          }}
           onMouseLeave={scheduleClose}
           type="button"
         >
@@ -204,6 +250,17 @@ function CitationCard({
                   {score}
                 </span>
               )}
+              {pdfName && (
+                <button
+                  className="inline-flex items-center gap-1 text-primary hover:underline"
+                  onClick={openInViewer}
+                  title={`Open the PDF at page ${citedPage} with this passage highlighted`}
+                  type="button"
+                >
+                  <FileTextIcon className="size-3" />
+                  Open PDF
+                </button>
+              )}
               {reference?.drive_url && (
                 <a
                   className="inline-flex items-center gap-1 text-primary hover:underline"
@@ -215,6 +272,16 @@ function CitationCard({
                   PDF
                 </a>
               )}
+              {reference?.filename && (
+                <Link
+                  className="inline-flex items-center gap-1 text-primary hover:underline"
+                  href={`/papers?similar=${encodeURIComponent(reference.filename)}`}
+                  title="Papers most similar to this one"
+                >
+                  <SparklesIcon className="size-3" />
+                  Similar
+                </Link>
+              )}
             </div>
           </div>
           {context && (
@@ -225,6 +292,24 @@ function CitationCard({
           <p className="whitespace-pre-wrap text-[13px] text-foreground/90 leading-[1.6]">
             {text ? `“${text}”` : ""}
           </p>
+          {/* Pinned (clicked) cards show the cited page itself — one cheap image request,
+              already warmed by the hover that preceded the click. */}
+          {isPinned && pdfName && (
+            <button
+              className="mt-2.5 block w-full overflow-hidden rounded-md border border-border/60 bg-white transition-opacity hover:opacity-90"
+              onClick={openInViewer}
+              title={`Open page ${citedPage} in the viewer`}
+              type="button"
+            >
+              {/* biome-ignore lint/performance/noImgElement: rendered pdf page, not a static asset */}
+              <img
+                alt={`Page ${citedPage}`}
+                className="max-h-72 w-full object-contain object-top"
+                loading="lazy"
+                src={pdfPageImageUrl(pdfName, citedPage)}
+              />
+            </button>
+          )}
         </div>
       </PopoverContent>
     </Popover>

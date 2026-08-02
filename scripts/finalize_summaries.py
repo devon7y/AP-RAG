@@ -149,6 +149,13 @@ async def main() -> None:
     )
     if ing.USE_QDRANT:
         rag_kwargs["vector_storage"] = "QdrantVectorDBStorage"
+    # Fix-graph: this pass REWRITES entity/relation descriptions in the graph, so
+    # it must use the same backend that ingest writes (and abort on a mismatch —
+    # summarizing a stale GraphML while the live graph is in Neo4j forks the store).
+    if ing.GRAPH_STORAGE:
+        rag_kwargs["graph_storage"] = ing.GRAPH_STORAGE
+        print(f"[Fix-graph] Using graph_storage={ing.GRAPH_STORAGE}")
+    ing.check_graph_backend(ing.STORAGE_DIR, ing.GRAPH_STORAGE)
     rag = LightRAG(**rag_kwargs)
     await rag.initialize_storages()
 

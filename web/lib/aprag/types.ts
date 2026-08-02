@@ -40,6 +40,7 @@ export type RagRelationship = {
 // Metadata filters (AND across dimensions, OR within a list) resolved against the
 // papers manifest server-side. Snake_case to match the server's Filters model.
 export type RagFilters = {
+  papers?: string[]; // pinned papers by filename (".pdf" optional, exact match)
   authors?: string[];
   year?: number;
   years?: number[]; // discrete years (e.g. "2025 and 2026") — match any

@@ -33,9 +33,9 @@ REPO      = Path(__file__).resolve().parent.parent
 INBOX     = Path("/Users/devon7y/Temp Papers")
 PAPERS    = Path("/Users/devon7y/Papers")
 DRIVE     = Path("/Users/devon7y/Library/CloudStorage/GoogleDrive-dyanitsk@ualberta.ca/Shared drives/CML documents/Papers")
-LEDGER    = REPO / ".new_papers_ledger.json"
-DRIVE_MAP = REPO / "drive_links.json"
-MANIFEST  = REPO / "papers_metadata.json"
+LEDGER    = REPO / "data" / "state" / ".new_papers_ledger.json"
+DRIVE_MAP = REPO / "data" / "drive_links.json"
+MANIFEST  = REPO / "data" / "papers_metadata.json"
 
 CANONICAL_RE = re.compile(r"^[A-Za-z][A-Za-z'-]*(_[A-Za-z][A-Za-z'-]*|_Etal)?_\d{4}[a-z]?(_Supplementary)?\.pdf$")
 STEM_RE      = re.compile(r"^([A-Za-z][A-Za-z'-]*(?:_[A-Za-z][A-Za-z'-]*|_Etal)?_\d{4})[a-z]?(?:_Supplementary)?\.pdf$")

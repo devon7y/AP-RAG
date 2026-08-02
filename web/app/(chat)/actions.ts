@@ -4,6 +4,7 @@ import { generateText, type UIMessage } from "ai";
 import { cookies } from "next/headers";
 import { auth } from "@/app/(auth)/auth";
 import type { VisibilityType } from "@/components/chat/visibility-selector";
+import { openaiOptions } from "@/lib/ai/models";
 import { titlePrompt } from "@/lib/ai/prompts";
 import { getTitleModel } from "@/lib/ai/providers";
 import {
@@ -28,9 +29,8 @@ export async function generateTitleFromUserMessage({
     model: getTitleModel(),
     system: titlePrompt,
     prompt: getTextFromMessage(message),
-    providerOptions: {
-      openai: { reasoningEffort: "none" },
-    },
+    // Mechanical: a 2-5 word title never benefits from reasoning.
+    providerOptions: openaiOptions("none"),
   });
   return text
     .replace(/^[#*"\s]+/, "")

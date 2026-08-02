@@ -49,6 +49,7 @@ pip install --quiet "accelerate>=1.1.0" bitsandbytes sentence-transformers
 # (The devon7y/LightRAG fork URL is private/404 — do not use it here.)
 pip install "$WORKDIR/LightRAG"
 pip install --quiet qdrant-client
+pip install --quiet neo4j   # Fix-graph: GRAPH_STORAGE=Neo4JStorage driver (docs/INGEST_SCALING_BOTTLENECK.md)
 python -c "import lightrag; from lightrag import LightRAG" \
   || { echo "[$(date)] ERROR: LightRAG import failed after install"; exit 1; }
 echo "[$(date)] Packages installed."

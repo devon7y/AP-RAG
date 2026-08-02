@@ -25,7 +25,8 @@ import time
 from contextlib import asynccontextmanager
 
 import numpy as np
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import FileResponse, Response
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
@@ -35,6 +36,7 @@ from lightrag.utils import EmbeddingFunc
 
 import apa_citations as apa     # APA7 rewriting of the answer LLM's numeric citations
 import aprag_graph as kg        # knowledge-graph explorer shaping (pure helpers)
+import aprag_pdf as pdfsrv      # PDF serving: path safety, cache identity, page raster
 import aprag_search as search   # metadata-filtered semantic search (pure helpers)
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -45,7 +47,18 @@ STORAGE_DIR   = os.environ.get("STORAGE_DIR", r"C:\rag_server\rag_storage_westbu
 EMBED_HOST    = os.environ.get("EMBED_HOST", "http://localhost:8000/v1")
 QDRANT_URL    = os.environ.get("QDRANT_URL", "http://localhost:6333")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-LLM_MODEL     = os.environ.get("LLM_MODEL", "gpt-5.4-mini")
+LLM_MODEL     = os.environ.get("LLM_MODEL", "gpt-5.6-luna")
+# OpenAI processing tier for every LLM call. "fast" (formerly "priority") buys ~2.5x
+# faster, more consistent latency for a 2x per-token premium — on Luna that is still
+# ~half the price of gpt-5.4-mini at standard speed. Set LLM_SERVICE_TIER="" (or
+# "default") to fall back to standard processing. The API echoes the tier it actually
+# served as; under a hard traffic ramp it may silently downgrade to "default".
+LLM_SERVICE_TIER = os.environ.get("LLM_SERVICE_TIER", "fast").strip()
+# Output verbosity (low|medium|high). Lower = fewer output tokens, generated faster. The
+# deployment checklist says to choose it per use case: "low" is unambiguously right for
+# the mechanical JSON calls (keyword extraction), and is the default for synthesis too —
+# raise to "medium" here if answers start dropping citations or nuance.
+LLM_VERBOSITY = os.environ.get("LLM_VERBOSITY", "low").strip()
 EMBEDDING_DIM = 4096
 # Storage backends (docs/SCALING_ISSUES.md §3.3/§3.4/§7): defaults are LightRAG's
 # file backends (whole store in process RAM — fine for small corpora). For 10K+
@@ -75,6 +88,17 @@ HADES_PAPERS_BASE = os.environ.get("HADES_PAPERS_BASE", apa.DEFAULT_HADES_BASE)
 # to drop hades entirely once the Drive map covers the corpus.
 APRAG_DRIVE_MAP   = os.environ.get("APRAG_DRIVE_MAP", os.path.join(_HERE, "drive_links.json"))
 
+# The corpus PDFs, served to the web app's in-app viewer (GET /pdf, GET /pdf_page).
+# Kept on the roomy D: drive (C: has little headroom) and synced from the papers library
+# by scripts/sync_papers_to_pc.sh. Rendered pages are cached beside it. Serving is
+# read-only; a missing directory simply disables the two endpoints (the UI falls back to
+# its Google Drive links).
+PAPERS_DIR     = os.environ.get("PAPERS_DIR", r"D:\aprag_papers")
+PAGE_CACHE_DIR = os.environ.get("PAGE_CACHE_DIR", r"D:\aprag_page_cache")
+# Rasterizing a page costs ~240ms of CPU; cap concurrent renders so a burst of hover
+# previews cannot starve the retrieval path on this single box.
+PAGE_RENDER_CONCURRENCY = int(os.environ.get("PAGE_RENDER_CONCURRENCY", 2))
+
 # Set QDRANT_URL for LightRAG's Qdrant backend
 os.environ.setdefault("QDRANT_URL", QDRANT_URL)
 
@@ -100,12 +124,20 @@ async def pc_embed(texts: list[str], context: str = "query") -> np.ndarray:
 
 # ── LLM via OpenAI ────────────────────────────────────────────────────────────
 
-# Reasoning effort for gpt-5.4-mini. Defaults to "none" (gpt-5.4-mini supports a no-
-# reasoning mode — fastest); the answer synthesis level is overridable per request
-# (CLI/MCP/API). Keyword extraction and any other structured/JSON call stay "none" —
-# they are mechanical, so reasoning only adds latency. NOTE: gpt-5.4-mini does NOT accept
-# "minimal" (it 400s); its levels are none/low/medium/high/xhigh. Set per-request via a
-# process global (see below) so it reaches the awaited LightRAG calls in the same task.
+# Reasoning effort for gpt-5.6-luna. Defaults to "none" (no reasoning tokens — fastest);
+# the answer synthesis level is overridable per request (CLI/MCP/API). Keyword extraction
+# and any other structured/JSON call stay "none" — they are mechanical, so reasoning only
+# adds latency. Set per-request via a process global (see below) so it reaches the awaited
+# LightRAG calls in the same task.
+#
+# NOTE on the ladder (probed against the live API, 2026-08-02): GPT-5.6's documented
+# levels are none/low/medium/high/xhigh/max, but "max" is only reachable through the
+# *Responses* API (reasoning.effort). LightRAG calls *Chat Completions*, whose flat
+# reasoning_effort rejects it on every 5.6 variant: "Supported values are: 'none', 'low',
+# 'medium', 'high', and 'xhigh'". "minimal" is likewise rejected. So this path tops out at
+# xhigh; a "max" request is clamped to xhigh below rather than silently falling to "none".
+# (Offering true max here would mean calling /v1/responses from this module instead of
+# LightRAG's chat helper — deliberately not done, to keep LightRAG patch-free.)
 VALID_REASONING = ("none", "low", "medium", "high", "xhigh")
 # Per-request answer-synthesis effort. A process-global holder (not a ContextVar):
 # LightRAG dispatches LLM calls through a worker pool that captures the async context
@@ -117,6 +149,8 @@ _REASONING = {"effort": "none"}
 
 def _valid_reasoning(value) -> str:
     v = (value or "none").strip().lower()
+    if v == "max":            # documented for 5.6 but Responses-API-only; don't drop to "none"
+        return "xhigh"
     return v if v in VALID_REASONING else "none"
 
 
@@ -127,6 +161,12 @@ async def openai_llm(prompt, system_prompt=None, history_messages=None, **kwargs
         kwargs["reasoning_effort"] = (
             "none" if kwargs.get("response_format") is not None else _REASONING["effort"]
         )
+    if LLM_SERVICE_TIER and "service_tier" not in kwargs:
+        kwargs["service_tier"] = LLM_SERVICE_TIER
+    if LLM_VERBOSITY and "verbosity" not in kwargs:
+        # Chat Completions takes a flat `verbosity`; the nested text.verbosity form in
+        # the docs is Responses-API-only and 400s here ("Unknown parameter: 'text'").
+        kwargs["verbosity"] = LLM_VERBOSITY
     _t0 = time.perf_counter()
     _r = await openai_complete_if_cache(
         LLM_MODEL, prompt,
@@ -138,6 +178,7 @@ async def openai_llm(prompt, system_prompt=None, history_messages=None, **kwargs
     )
     _pl = len(prompt) if isinstance(prompt, str) else -1
     print(f"[TIMING] llm {time.perf_counter()-_t0:.2f}s effort={kwargs['reasoning_effort']} "
+          f"tier={kwargs.get('service_tier', 'default')} verb={kwargs.get('verbosity', '-')} "
           f"(prompt {_pl} chars -> out {len(_r or '')} chars)", flush=True)
     return _r
 
@@ -514,6 +555,8 @@ def health():
         "status": "ok",
         "storage": STORAGE_DIR,
         "llm": LLM_MODEL,
+        "llm_service_tier": LLM_SERVICE_TIER or "default",
+        "llm_verbosity": LLM_VERBOSITY or "default",
         # Lets clients/deploys detect an older LightRAG that lacks structured retrieval.
         "lightrag_has_aquery_data": hasattr(LightRAG, "aquery_data"),
         # Whether reference/chunk page locators will appear (True after a page-aware
@@ -527,6 +570,9 @@ def health():
         # Feature/deploy visibility:
         "manifest_papers": len(apa.load_manifest(APA_MANIFEST)),
         "drive_map_loaded": bool(apa.load_drive_map(APRAG_DRIVE_MAP)),
+        # In-app PDF viewer: are the corpus PDFs present on this box?
+        "pdf_serving": os.path.isdir(PAPERS_DIR),
+        "pdf_dir": PAPERS_DIR,
     }
 
 
@@ -884,6 +930,108 @@ def trends():
     if _TRENDS["data"] is None:
         _TRENDS["data"] = _compute_trends(apa.load_manifest(APA_MANIFEST))
     return _TRENDS["data"]
+
+
+# ── PDF serving (the web app's in-app viewer) ────────────────────────────────
+# Two endpoints, both pure filesystem work (no RAG store involved):
+#   GET /pdf      — the PDF itself, with byte-range support so pdf.js fetches only the
+#                   objects it needs for the page being read.
+#   GET /pdf_page — one page rasterized to WebP, disk-cached. Gives the viewer an
+#                   instant first paint and the citation popover a preview without
+#                   loading/parsing a multi-megabyte PDF.
+# Both validate the browser-supplied filename through aprag_pdf.safe_pdf_path (basename
+# only, must resolve inside PAPERS_DIR) and validate with an mtime+size ETag, so a
+# re-OCR'd paper invalidates rather than serving stale bytes forever.
+
+_PAGE_RENDER_SEM: asyncio.Semaphore | None = None
+
+
+def _page_render_sem() -> asyncio.Semaphore:
+    global _PAGE_RENDER_SEM
+    if _PAGE_RENDER_SEM is None:
+        _PAGE_RENDER_SEM = asyncio.Semaphore(max(1, PAGE_RENDER_CONCURRENCY))
+    return _PAGE_RENDER_SEM
+
+
+def _resolved_pdf(filename: str) -> tuple[str, os.stat_result]:
+    """The on-disk PDF for a request, or 404/503. Raises HTTPException."""
+    if not os.path.isdir(PAPERS_DIR):
+        raise HTTPException(status_code=503,
+                            detail="PDF serving is not configured on this server")
+    path = pdfsrv.safe_pdf_path(PAPERS_DIR, apa._basename(filename))
+    if not path:
+        raise HTTPException(status_code=404, detail="unknown PDF")
+    return path, os.stat(path)
+
+
+@app.get("/pdf", dependencies=[Depends(require_api_key)])
+def get_pdf(request: Request, filename: str, download: bool = False):
+    """Stream one corpus PDF. Starlette's FileResponse handles Range/If-Range, so
+    pdf.js can fetch page objects instead of the whole file."""
+    path, st = _resolved_pdf(filename)
+    etag = pdfsrv.file_etag(st)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag,
+                                                 "Cache-Control": "private, max-age=3600"})
+    disposition = "attachment" if download else "inline"
+    name = apa._basename(filename)
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        stat_result=st,
+        headers={
+            # FileResponse uses setdefault for etag, so ours stays authoritative.
+            "ETag": etag,
+            "Cache-Control": "private, max-age=3600",
+            "Content-Disposition": f'{disposition}; filename="{name}"',
+            "Accept-Ranges": "bytes",
+        },
+    )
+
+
+@app.get("/pdf_page", dependencies=[Depends(require_api_key)])
+async def get_pdf_page(
+    request: Request,
+    filename: str,
+    page: int = Query(default=1, ge=1),
+    width: int | None = None,
+    quality: int | None = None,
+):
+    """One page of a corpus PDF as WebP (disk-cached, ~285KB at the default width)."""
+    path, st = _resolved_pdf(filename)
+    w = pdfsrv.clamp_width(width if width is not None else pdfsrv.DEFAULT_WIDTH)
+    q = pdfsrv.clamp_quality(quality if quality is not None else pdfsrv.DEFAULT_QUALITY)
+    signature = pdfsrv.file_signature(st)
+    etag = f'"{signature}-p{page}-w{w}-q{q}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag,
+                                                 "Cache-Control": "private, max-age=3600"})
+
+    cache_path = pdfsrv.page_cache_path(PAGE_CACHE_DIR, apa._basename(filename),
+                                        page, w, q, signature)
+    headers = {"ETag": etag, "Cache-Control": "private, max-age=3600"}
+
+    if not os.path.isfile(cache_path):
+        async with _page_render_sem():
+            # Re-check: a concurrent request for the same page may have just rendered it.
+            if not os.path.isfile(cache_path):
+                _t0 = time.perf_counter()
+                try:
+                    data, count, rendered = await asyncio.to_thread(
+                        pdfsrv.render_page_image, path, page, w, q)
+                except RuntimeError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc))
+                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                tmp = f"{cache_path}.{os.getpid()}.tmp"
+                with open(tmp, "wb") as fh:
+                    fh.write(data)
+                os.replace(tmp, cache_path)  # atomic: readers never see a partial file
+                print(f"[TIMING] pdf_page {time.perf_counter()-_t0:.2f}s "
+                      f"{apa._basename(filename)} p{rendered}/{count} "
+                      f"{len(data)//1024}KB", flush=True)
+                headers["X-Page-Count"] = str(count)
+                headers["X-Page-Rendered"] = str(rendered)
+    return FileResponse(cache_path, media_type="image/webp", headers=headers)
 
 
 # ── Knowledge-graph explorer (web /graph) ───────────────────────────────────

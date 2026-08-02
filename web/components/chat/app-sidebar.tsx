@@ -1,12 +1,15 @@
 "use client";
 
 import {
+  CalendarClockIcon,
   CompassIcon,
   DatabaseIcon,
   MessageSquareIcon,
   PanelLeftIcon,
   PenSquareIcon,
+  TrendingUpIcon,
   UserRoundIcon,
+  WaypointsIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -123,6 +126,30 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                 </SidebarMenuItem>
                 <SidebarMenuItem>
                   <SidebarMenuButton
+                    asChild
+                    className="h-8 rounded-lg text-[13px] text-sidebar-foreground/70 transition-colors duration-150 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                    tooltip="Research Digest — saved chronological summaries that update as papers are added"
+                  >
+                    <Link href="/digest" onClick={() => setOpenMobile(false)}>
+                      <CalendarClockIcon className="size-4" />
+                      <span className="font-medium">Research Digest</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    asChild
+                    className="h-8 rounded-lg text-[13px] text-sidebar-foreground/70 transition-colors duration-150 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                    tooltip="Research Trends — output per year, topic trajectories, rising threads"
+                  >
+                    <Link href="/trends" onClick={() => setOpenMobile(false)}>
+                      <TrendingUpIcon className="size-4" />
+                      <span className="font-medium">Research Trends</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
                     className="h-8 rounded-lg text-[13px] text-sidebar-foreground/70 transition-colors duration-150 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
                     onClick={() => {
                       setOpenMobile(false);
@@ -132,6 +159,18 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                   >
                     <UserRoundIcon className="size-4" />
                     <span className="font-medium">Talk to Author</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    asChild
+                    className="h-8 rounded-lg text-[13px] text-sidebar-foreground/70 transition-colors duration-150 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                    tooltip="Knowledge Graph — the corpus's concepts, methods, and theories, and how they connect"
+                  >
+                    <Link href="/graph" onClick={() => setOpenMobile(false)}>
+                      <WaypointsIcon className="size-4" />
+                      <span className="font-medium">Knowledge Graph</span>
+                    </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
                 <SidebarMenuItem>

@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { Toaster } from "sonner";
 import { AppSidebar } from "@/components/chat/app-sidebar";
+import { PdfViewerHost } from "@/components/pdf/pdf-viewer";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { auth } from "../(auth)/auth";
 
@@ -41,6 +42,8 @@ async function SidebarShell({ children }: { children: React.ReactNode }) {
           }}
         />
         {children}
+        {/* The paper drawer's "Read PDF" and the graph/author pages open the same viewer. */}
+        <PdfViewerHost />
       </SidebarInset>
     </SidebarProvider>
   );

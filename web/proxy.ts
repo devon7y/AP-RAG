@@ -15,6 +15,15 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // The pdf.js worker (an unmodified public npm artifact carrying no corpus data) must
+  // always be served as JavaScript: if the login redirect ever caught it — an expired
+  // session, a stale tab — the browser would try to execute the login page's HTML as a
+  // module and the PDF viewer would break with no useful error. Corpus PDFs themselves
+  // stay behind auth via /api/pdf.
+  if (pathname.startsWith("/pdfjs/")) {
+    return NextResponse.next();
+  }
+
   // Local visual smoke-testing of the atlas only (never set in production).
   if (
     isDevelopmentEnvironment &&

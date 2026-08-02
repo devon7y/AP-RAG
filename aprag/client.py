@@ -42,6 +42,13 @@ class APRAGError(Exception):
     """A user-facing error from the client (already formatted for display)."""
 
 
+def _auth_headers() -> dict | None:
+    """Shared-secret header for a server behind a gated tunnel. Sent only when
+    $APRAG_API_KEY is set; the server enforces it only when it has the same key set."""
+    key = os.environ.get("APRAG_API_KEY")
+    return {"X-API-Key": key} if key else None
+
+
 def read_config_url() -> str | None:
     """Read the persisted `APRAG_QUERY_URL` from the config file, if present."""
     try:
@@ -156,6 +163,7 @@ async def query_full(
     top_k: int | None = None,
     chunk_top_k: int | None = None,
     user_prompt: str | None = None,
+    reasoning: str | None = None,
     filters: dict | None = None,
 ) -> dict:
     """Return the full POST /query payload: {"answer", "references", "mode"}.
@@ -164,16 +172,19 @@ async def query_full(
     ({"n", "apa", "intext", "filename", "hades_path", "pages"}) the frontends use to
     swap in clickable local file links; it is [] from an older server. ``filters``
     scopes the answer to papers matching the metadata (authors/year/journal/...).
+    ``reasoning`` sets the answer LLM's effort (minimal|low|medium|high; default minimal).
     """
     base_url = base_url or resolve_base_url()
     body = _query_param_body(question, mode, top_k, chunk_top_k)
     if user_prompt is not None:
         body["user_prompt"] = user_prompt
+    if reasoning is not None:
+        body["reasoning"] = reasoning
     if filters:
         body["filters"] = filters
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            resp = await client.post(f"{base_url}/query", json=body)
+            resp = await client.post(f"{base_url}/query", json=body, headers=_auth_headers())
             resp.raise_for_status()
             return resp.json()
     except Exception as exc:  # noqa: BLE001 — re-raised as a friendly APRAGError
@@ -220,7 +231,7 @@ async def retrieve(
         body["filters"] = filters
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            resp = await client.post(f"{base_url}/retrieve", json=body)
+            resp = await client.post(f"{base_url}/retrieve", json=body, headers=_auth_headers())
             resp.raise_for_status()
             return resp.json()
     except Exception as exc:  # noqa: BLE001 — re-raised as a friendly APRAGError
@@ -248,7 +259,7 @@ async def search(
         body["filters"] = filters
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            resp = await client.post(f"{base_url}/search", json=body)
+            resp = await client.post(f"{base_url}/search", json=body, headers=_auth_headers())
             resp.raise_for_status()
             return resp.json()
     except Exception as exc:  # noqa: BLE001 — re-raised as a friendly APRAGError
@@ -260,7 +271,7 @@ async def health(*, base_url: str | None = None) -> dict:
     base_url = base_url or resolve_base_url()
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            resp = await client.get(f"{base_url}/health")
+            resp = await client.get(f"{base_url}/health", headers=_auth_headers())
             resp.raise_for_status()
             return resp.json()
     except Exception as exc:  # noqa: BLE001 — re-raised as a friendly APRAGError

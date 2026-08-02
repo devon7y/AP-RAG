@@ -4,6 +4,7 @@ import { generateText } from "ai";
 import {
   CONCRETE_RETRIEVAL_MODES,
   type ConcreteRetrievalMode,
+  openaiOptions,
 } from "@/lib/ai/models";
 import { getLanguageModel } from "@/lib/ai/providers";
 import { getFacetsCached } from "./client";
@@ -99,7 +100,9 @@ export async function condenseAndExtract(
       model: getLanguageModel(),
       system: EXTRACT_SYSTEM,
       prompt: `${convo ? `Conversation so far:\n${convo}\n\n` : ""}Latest user message: ${question}\n\nJSON:`,
-      providerOptions: { openai: { reasoningEffort: "none" } },
+      // Mechanical JSON extraction — reasoning would only add latency in front of
+      // retrieval, which the user is already waiting on.
+      providerOptions: openaiOptions("none"),
       abortSignal: AbortSignal.timeout(20_000),
     });
     const obj = safeParse(text);

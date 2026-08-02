@@ -26,7 +26,7 @@ import re
 import apa_citations as apa
 
 #: Recognised filter dimensions (all optional; AND across dimensions, OR within a list).
-FILTER_KEYS = ("authors", "year", "years", "year_from", "year_to",
+FILTER_KEYS = ("papers", "authors", "year", "years", "year_from", "year_to",
                "date_from", "date_to",
                "journals", "subjects", "keywords", "affiliations", "types")
 
@@ -100,8 +100,22 @@ def _passes_date_window(record: dict, date_from, date_to) -> bool:
     return True
 
 
-def record_matches(record: dict, filters: dict) -> bool:
-    """True if a manifest record satisfies every specified filter dimension."""
+def _paper_stem(name: str) -> str:
+    n = str(name or "").strip().lower()
+    return n[:-4] if n.endswith(".pdf") else n
+
+
+def record_matches(record: dict, filters: dict, filename: str = "") -> bool:
+    """True if a manifest record satisfies every specified filter dimension.
+
+    ``filename`` is the record's manifest key — needed only by the ``papers`` filter
+    (specific papers pinned by filename, ".pdf" optional, case-insensitive exact match).
+    """
+    papers = _lc_list(filters.get("papers"))
+    if papers:
+        if _paper_stem(filename) not in {_paper_stem(p) for p in papers}:
+            return False
+
     authors = _lc_list(filters.get("authors"))
     if authors:
         fams = [(a.get("family") or "").lower()
@@ -159,7 +173,7 @@ def resolve_filter(filters: dict | None, manifest: dict) -> set[str] | None:
         return None
     return {
         fn for fn, rec in (manifest or {}).items()
-        if isinstance(rec, dict) and record_matches(rec, filters)
+        if isinstance(rec, dict) and record_matches(rec, filters, filename=fn)
     }
 
 
@@ -309,7 +323,7 @@ def list_papers(manifest: dict, filters: dict | None = None, q: str | None = Non
     for fn, rec in (manifest or {}).items():
         if not isinstance(rec, dict):
             continue
-        if active_filters and not record_matches(rec, active_filters):
+        if active_filters and not record_matches(rec, active_filters, filename=fn):
             continue
         if needle and not quick_match(fn, rec, needle):
             continue

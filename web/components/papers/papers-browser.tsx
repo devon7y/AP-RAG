@@ -64,9 +64,10 @@ export function PapersBrowser() {
     navigate({ ...query, page: 0, ...patch });
 
   // Browse tier: server-paginated listing.
-  const browseKey = query.deep
-    ? null
-    : `${BASE}/api/papers?${apiListQueryString(query)}`;
+  const browseKey =
+    query.deep || query.similar
+      ? null
+      : `${BASE}/api/papers?${apiListQueryString(query)}`;
   const {
     data: list,
     error: listError,
@@ -94,6 +95,19 @@ export function PapersBrowser() {
       postJson<DeepResult>(url, { question, filters: query.filters }),
     { keepPreviousData: true, revalidateOnFocus: false }
   );
+
+  // Similar tier: papers ranked against one paper's chunk centroid ("more like this").
+  const similarKey = query.similar
+    ? `${BASE}/api/papers/similar?filename=${encodeURIComponent(query.similar)}&top_k=40`
+    : null;
+  const {
+    data: similar,
+    error: similarError,
+    isLoading: similarLoading,
+  } = useSWR<{ papers: RankedPaper[] }>(similarKey, paperFetcher, {
+    keepPreviousData: true,
+    revalidateOnFocus: false,
+  });
 
   const [storedColumns, setStoredColumns] = useLocalStorage<
     Partial<Record<ColumnId, boolean>>
@@ -138,7 +152,9 @@ export function PapersBrowser() {
     try {
       const rows: PaperRow[] = query.deep
         ? (deep?.papers ?? [])
-        : await fetchAllRows(query);
+        : query.similar
+          ? (similar?.papers ?? [])
+          : await fetchAllRows(query);
       if (rows.length === 0) {
         toast.error("Nothing to export");
         return;
@@ -163,13 +179,21 @@ export function PapersBrowser() {
   };
 
   const deepMode = Boolean(query.deep);
+  const similarMode = Boolean(query.similar);
+  const rankedMode = deepMode || similarMode; // score-ordered result sets (no pagination)
   const rows: (PaperRow | RankedPaper)[] = deepMode
     ? (deep?.papers ?? [])
-    : (list?.papers ?? []);
+    : similarMode
+      ? (similar?.papers ?? [])
+      : (list?.papers ?? []);
   const total = list?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / query.per));
-  const error = deepMode ? deepError : listError;
-  const isLoading = deepMode ? deepLoading : listLoading;
+  const error = deepMode ? deepError : similarMode ? similarError : listError;
+  const isLoading = deepMode
+    ? deepLoading
+    : similarMode
+      ? similarLoading
+      : listLoading;
 
   return (
     <div className="flex h-dvh min-w-0 flex-col bg-background">
@@ -189,8 +213,13 @@ export function PapersBrowser() {
         deepLoading={deepLoading}
         exporting={exporting}
         filters={query.filters}
+        onClearSimilar={() => update({ similar: "" })}
         onDeepSearch={(deepQuery) =>
-          update(deepQuery ? { deep: deepQuery, q: "" } : { deep: "", q: "" })
+          update(
+            deepQuery
+              ? { deep: deepQuery, q: "", similar: "" }
+              : { deep: "", q: "" }
+          )
         }
         onExport={onExport}
         onFiltersChange={(filters) => update({ filters })}
@@ -199,6 +228,7 @@ export function PapersBrowser() {
           setStoredColumns((prev) => ({ ...prev, [id]: !visible[id] }))
         }
         q={query.q}
+        similar={query.similar}
         visible={visible}
       />
 
@@ -210,7 +240,7 @@ export function PapersBrowser() {
       )}
 
       <PapersTable
-        deepMode={deepMode}
+        deepMode={rankedMode}
         isLoading={isLoading}
         onAddFilter={onAddFilter}
         onOpen={setOpenFilename}
@@ -226,12 +256,15 @@ export function PapersBrowser() {
       />
 
       <footer className="flex flex-wrap items-center justify-between gap-2 border-border/60 border-t px-3 py-2 md:px-4">
-        {deepMode ? (
+        {rankedMode ? (
           <span className="text-muted-foreground text-xs">
-            {deepLoading
+            {isLoading
               ? "Searching the corpus…"
-              : `${rows.length} paper${rows.length === 1 ? "" : "s"} ranked by relevance`}
-            {deep?.matched_files != null &&
+              : similarMode
+                ? `${rows.length} paper${rows.length === 1 ? "" : "s"} ranked by similarity to ${query.similar.replace(/\.pdf$/i, "")}`
+                : `${rows.length} paper${rows.length === 1 ? "" : "s"} ranked by relevance`}
+            {deepMode &&
+              deep?.matched_files != null &&
               ` · within ${deep.matched_files.toLocaleString()} filtered paper${deep.matched_files === 1 ? "" : "s"}`}
           </span>
         ) : (
@@ -245,13 +278,13 @@ export function PapersBrowser() {
           </span>
         )}
 
-        {!deepMode && (
+        {!rankedMode && (
           <div className="flex items-center gap-2">
             <Select
               onValueChange={(v) => update({ per: Number(v) })}
               value={String(query.per)}
             >
-              <SelectTrigger className="h-8 w-28 text-xs">
+              <SelectTrigger className="h-8 w-36 text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -291,6 +324,7 @@ export function PapersBrowser() {
         filename={openFilename}
         onAddFilter={onAddFilter}
         onClose={() => setOpenFilename(null)}
+        onOpenPaper={setOpenFilename}
       />
     </div>
   );

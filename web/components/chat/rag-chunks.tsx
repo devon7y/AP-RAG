@@ -1,6 +1,7 @@
 "use client";
 
-import { ExternalLinkIcon } from "lucide-react";
+import { ExternalLinkIcon, FileTextIcon } from "lucide-react";
+import Link from "next/link";
 import type {
   RagChunk,
   RagEntity,
@@ -8,12 +9,27 @@ import type {
   RagRelationship,
   RagRetrieval,
 } from "@/lib/aprag/types";
+import { promotePdf } from "@/lib/pdf/loader";
+import { usePdfViewer } from "@/lib/pdf/store";
 import { MessageResponse } from "../ai-elements/message";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "../ui/collapsible";
+
+// Entity names link into the Knowledge Graph explorer (entity card by name).
+function EntityLink({ name }: { name: string }) {
+  return (
+    <Link
+      className="font-medium hover:text-primary hover:underline"
+      href={`/graph/entity?name=${encodeURIComponent(name)}`}
+      title={`Open "${name}" in the Knowledge Graph`}
+    >
+      {name}
+    </Link>
+  );
+}
 
 // PDF text extraction sometimes leaves a newline after every word/line; collapse all
 // whitespace to single spaces so chunks read as flowing text instead of one word per line.
@@ -83,9 +99,12 @@ export function ChunkCard({
   index: number;
   reference?: RagReference;
 }) {
+  const openPdf = usePdfViewer((s) => s.openPdf);
   const label = reference?.apa || reference?.filename || chunk.file_path;
   const score =
     typeof chunk.score === "number" ? chunk.score.toFixed(3) : null;
+  const pdfName = reference?.filename ?? "";
+  const citedPage = chunk.page ?? reference?.pages?.[0] ?? 1;
   return (
     <article className="rounded-xl border border-border/60 bg-card/40 px-3.5 py-3">
       <header className="mb-1.5 flex items-start justify-between gap-3">
@@ -98,6 +117,25 @@ export function ChunkCard({
         <div className="flex shrink-0 items-center gap-2 text-muted-foreground text-xs">
           {chunk.page != null && <span>p. {chunk.page}</span>}
           {score && <span className="tabular-nums">{score}</span>}
+          {pdfName && (
+            <button
+              className="inline-flex items-center gap-1 text-primary hover:underline"
+              onClick={() =>
+                openPdf({
+                  filename: pdfName,
+                  page: citedPage,
+                  quote: splitChunkContent(chunk.content).text,
+                  label: reference?.intext || pdfName,
+                  driveUrl: reference?.drive_url,
+                })
+              }
+              onMouseEnter={() => promotePdf(pdfName, citedPage)}
+              type="button"
+            >
+              <FileTextIcon className="size-3" />
+              Open PDF
+            </button>
+          )}
           {reference?.drive_url && (
             <a
               className="inline-flex items-center gap-1 text-primary hover:underline"
@@ -143,7 +181,7 @@ function GraphSection({
           <ul className="space-y-1">
             {entities.map((e) => (
               <li key={`${e.entity_name}-${e.entity_type}`}>
-                <span className="font-medium">{e.entity_name}</span>{" "}
+                <EntityLink name={e.entity_name} />{" "}
                 <span className="text-muted-foreground">[{e.entity_type}]</span>
                 {e.description ? `: ${e.description}` : ""}
               </li>
@@ -155,7 +193,8 @@ function GraphSection({
             {relationships.map((r) => (
               <li key={`${r.src_id}-${r.tgt_id}`}>
                 <span className="font-medium">
-                  {r.src_id} → {r.tgt_id}
+                  <EntityLink name={r.src_id} /> →{" "}
+                  <EntityLink name={r.tgt_id} />
                 </span>
                 {r.description ? `: ${r.description}` : ""}
               </li>

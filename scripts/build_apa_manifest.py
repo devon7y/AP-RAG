@@ -543,11 +543,11 @@ def _save(path: str, obj) -> None:
 
 
 def _state_path(tag: str | None) -> Path:
-    return Path(f".apa_manifest_batch{('_' + tag) if tag else ''}.json")
+    return Path(f"data/state/.apa_manifest_batch{('_' + tag) if tag else ''}.json")
 
 
 def _chunk_path(tag: str | None, idx: int) -> str:
-    return f".apa_batch{('_' + tag) if tag else ''}_chunk_{idx:03d}.jsonl"
+    return f"data/state/.apa_batch{('_' + tag) if tag else ''}_chunk_{idx:03d}.jsonl"
 
 
 # ── Batch HTTP helpers ─────────────────────────────────────────────────────────
@@ -855,14 +855,14 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["submit", "status", "collect", "drive"])
     ap.add_argument("directory", nargs="?", default="/Users/devon7y/Papers")
-    ap.add_argument("--out", default="papers_metadata.json")
+    ap.add_argument("--out", default="data/papers_metadata.json")
     ap.add_argument("--files", nargs="*", help="only these basenames")
     ap.add_argument("--jobs", type=int, default=12)
     ap.add_argument("--limit", type=int, default=0, help="cap number of papers processed")
     ap.add_argument("--refresh", action="store_true",
                     help="rebuild even papers already present in the output manifest")
     ap.add_argument("--mailto", default=os.environ.get("CROSSREF_MAILTO", "devon7y@gmail.com"))
-    ap.add_argument("--crossref-cache", default=".crossref_full_cache.json")
+    ap.add_argument("--crossref-cache", default="data/cache/.crossref_full_cache.json")
     ap.add_argument("--tag", help="namespace for the batch state file (for a 2nd pass)")
     ap.add_argument("--poll", type=int, default=90,
                     help="seconds between drive poll rounds")

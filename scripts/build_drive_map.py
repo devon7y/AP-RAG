@@ -146,7 +146,7 @@ def main() -> int:
     pa.add_argument("folder_id")
     pa.add_argument("--creds", required=True, help="service-account / OAuth creds JSON")
     for p in (pm, pr, pa):
-        p.add_argument("--out", default="drive_links.json")
+        p.add_argument("--out", default="data/drive_links.json")
     args = ap.parse_args()
 
     if args.mode == "mount":

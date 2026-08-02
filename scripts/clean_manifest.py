@@ -118,7 +118,7 @@ def expand_journals(manifest: dict, api_key: str) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("manifest", nargs="?", default="papers_metadata.json")
+    ap.add_argument("manifest", nargs="?", default="data/papers_metadata.json")
     ap.add_argument("--no-journals", action="store_true", help="skip the LLM journal expansion")
     args = ap.parse_args()
 

@@ -6,6 +6,7 @@ import { Toaster } from "sonner";
 import { AppSidebar } from "@/components/chat/app-sidebar";
 import { DataStreamProvider } from "@/components/chat/data-stream-provider";
 import { ChatShell } from "@/components/chat/shell";
+import { PdfViewerHost } from "@/components/pdf/pdf-viewer";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { ActiveChatProvider } from "@/hooks/use-active-chat";
 import { auth } from "../(auth)/auth";
@@ -55,6 +56,9 @@ async function SidebarShell({ children }: { children: React.ReactNode }) {
           </ActiveChatProvider>
         </Suspense>
         {children}
+        {/* Mounted once here: the in-app PDF viewer is opened from deep inside message
+            rendering (citation popovers, reference rows, chunk cards) via a store. */}
+        <PdfViewerHost />
       </SidebarInset>
     </SidebarProvider>
   );

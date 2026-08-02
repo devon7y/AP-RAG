@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import useSWR from "swr";
-import type { Facets } from "@/lib/aprag/client";
+import type { Facets, PapersIndexRow } from "@/lib/aprag/client";
+import type { PaperIndexEntry } from "@/lib/aprag/detect";
 import { cn, fetcher } from "@/lib/utils";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
@@ -24,6 +25,32 @@ export function useFacets(enabled = true): Facets {
       keywords: [],
       affiliations: [],
     }
+  );
+}
+
+const EMPTY_PAPERS_INDEX: PaperIndexEntry[] = [];
+
+// The slim corpus paper index for in-composer paper-mention detection. Lazy like
+// useFacets (the payload covers every paper); rows arrive compact and are widened once.
+export function usePapersIndex(enabled = true): PaperIndexEntry[] {
+  const { data } = useSWR<{ papers: PapersIndexRow[] }>(
+    enabled
+      ? `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/papers/index`
+      : null,
+    fetcher,
+    { revalidateOnFocus: false, dedupingInterval: 3_600_000 }
+  );
+  return useMemo(
+    () =>
+      data?.papers
+        ? data.papers.map(([filename, title, firstAuthor, year]) => ({
+            filename,
+            title,
+            firstAuthor,
+            year,
+          }))
+        : EMPTY_PAPERS_INDEX,
+    [data]
   );
 }
 

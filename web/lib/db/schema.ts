@@ -38,6 +38,19 @@ export const chat = pgTable("Chat", {
   // "Talk to Author": when set, this chat is scoped to one author — retrieval is
   // pinned to their papers and the answer speaks in their first-person persona.
   personaAuthor: text("personaAuthor"),
+  // "Research Digest": when set, this chat summarizes a topic over a date range. The first
+  // message runs the multi-bucket chronological path; follow-ups apply the range as a
+  // filter. `openEnded` digests track "now" and can be re-run ("Update") as papers are
+  // added; refreshedAt/papersAtRefresh record the last run for the /digest library.
+  digest: json("digest").$type<{
+    topic: string;
+    from: string;
+    to: string;
+    bucket: "month" | "year";
+    openEnded?: boolean;
+    refreshedAt?: string;
+    papersAtRefresh?: number;
+  }>(),
 });
 
 export type Chat = InferSelectModel<typeof chat>;

@@ -81,7 +81,7 @@ Note the model asymmetry: **Qwen3-32B at ingest time, gpt-5-mini at query time**
 | `LightRAG/` | **Upstream LightRAG, git-ignored.** Its own repo; pinned to v1.5.3; never edited. |
 | `lightrag-explainer/` | Unrelated Next.js slideshow app (git-ignored). Not part of the pipeline. |
 | `CLAUDE.md` | In-depth internal guide to the codebase. |
-| `APRAG_ACCESS.md` | How to give a new user access (Tailscale + `aprag`). |
+| `docs/APRAG_ACCESS.md` | How to give a new user access (Tailscale + `aprag`). |
 | `docs/CANONICAL_INGEST_PARAMS.md` | Proven ingest parameters and the standard SLURM submission pattern. |
 
 ---
@@ -146,7 +146,7 @@ Register the MCP server so an agent (Claude Code, Claude Desktop, …) can query
 claude mcp add --scope user aprag --env APRAG_QUERY_URL=http://<host>:8001 -- aprag-mcp
 ```
 
-It exposes two tools: `aprag_query(question, mode)` → synthesized answer, and `aprag_retrieve(question, mode, …)` → raw chunks. Full setup (Tailscale, etc.): see [APRAG_ACCESS.md](APRAG_ACCESS.md) and [aprag/README.md](aprag/README.md).
+It exposes two tools: `aprag_query(question, mode)` → synthesized answer, and `aprag_retrieve(question, mode, …)` → raw chunks. Full setup (Tailscale, etc.): see [docs/APRAG_ACCESS.md](docs/APRAG_ACCESS.md) and [aprag/README.md](aprag/README.md).
 
 ### Run the serving stack (on the PC)
 

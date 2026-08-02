@@ -46,6 +46,15 @@ Environment variables (set by job_westbury_ingest_v2.slurm):
     EMBED_FUNC_MAX_ASYNC — max concurrent embedding calls (default 1)
     MAX_PARALLEL_INSERT  — LightRAG pipeline concurrency (default 2)
     QDRANT_URL           — if set, use QdrantVectorDBStorage instead of NanoVectorDB (2A)
+    KV_STORAGE           — LightRAG KV backend override (Fix 1; empty = JsonKVStorage)
+    DOC_STATUS_STORAGE   — doc-status backend override (Fix 1; empty = JsonDocStatusStorage)
+    GRAPH_STORAGE        — graph backend override (Fix-graph, docs/INGEST_SCALING_BOTTLENECK.md;
+                           empty = NetworkXStorage full-file GraphML flushes). Neo4JStorage
+                           needs NEO4J_URI/NEO4J_USERNAME/NEO4J_PASSWORD (read by LightRAG
+                           itself) and a one-time GraphML import
+                           (scripts/migrate_to_db_backends.py --ingest-graph). Runs are
+                           guarded by a .graph_backend marker in STORAGE_DIR; override a
+                           deliberate backend change with GRAPH_BACKEND_OVERRIDE=1.
     KV_FLUSH_INTERVAL    — seconds between full-file storage flushes (3A, default 300;
                            0 = upstream per-doc flushing). Hard-kill loss window: docs
                            processed in the last interval re-process on resume.
@@ -91,6 +100,7 @@ import os
 import re
 import signal
 import subprocess
+import threading
 import sys
 import tempfile
 import time
@@ -215,6 +225,12 @@ EMBEDDING_BATCH_NUM = int(os.environ.get("EMBEDDING_BATCH_NUM", 128))
 # Fix 3: if set, embed via an OpenAI-compatible server (scripts/server.py) on its
 # own GPU instead of loading the model in-process. Empty = in-process (default).
 EMBED_ENDPOINT = os.environ.get("EMBED_ENDPOINT", "").strip()
+# Multi-GPU fan-out: accepts a comma-separated list so ONE rebuild process (one
+# 6.9GB GraphML parse, one RAM footprint) can saturate N embedder GPUs. Sharding
+# the rebuild itself would re-parse the graph per shard and blow up memory; fanning
+# out over HTTP keeps the parse single-copy. Calls round-robin across the list.
+EMBED_ENDPOINTS = [e.strip().rstrip("/") for e in EMBED_ENDPOINT.split(",") if e.strip()]
+_embed_rr = itertools.count()
 # ── Skip in-ingest entity/relation VDB writes (2026-07-07) ───────────────────────
 # At scale (measured ~1.4M graph nodes) LightRAG's per-merge entity/relation vector
 # upserts embed large defer-mode descriptions and hit ~109s each, stalling the
@@ -249,6 +265,77 @@ class _SkipWriteVDB:
 # (JsonKVStorage / JsonDocStatusStorage). Requires the matching sidecar (e.g. Redis).
 KV_STORAGE = os.environ.get("KV_STORAGE", "").strip()
 DOC_STATUS_STORAGE = os.environ.get("DOC_STATUS_STORAGE", "").strip()
+# Fix-graph (docs/INGEST_SCALING_BOTTLENECK.md §P): opt-in incremental graph backend.
+# The default NetworkXStorage re-serializes the ENTIRE graph to one GraphML file on
+# every flush — a synchronous O(V+E) event-loop stall that grows without bound
+# (~10 min per flush at 1.55M nodes) — and re-parses it at every boot. Neo4JStorage
+# persists per-upsert (O(delta); index_done_callback is a no-op). Needs NEO4J_URI/
+# NEO4J_USERNAME/NEO4J_PASSWORD in the env (read by LightRAG itself, sidecar started
+# by the SLURM job when GRAPH_BACKEND=neo4j) and a one-time GraphML import:
+# scripts/migrate_to_db_backends.py --ingest-graph. Empty = unchanged NetworkXStorage.
+GRAPH_STORAGE = os.environ.get("GRAPH_STORAGE", "").strip()
+
+_GRAPH_BACKEND_MARKER = ".graph_backend"
+
+
+def check_graph_backend(storage_dir: Path, graph_storage: str) -> str:
+    """Fail fast when this run's graph backend disagrees with what last wrote the store.
+
+    Once a store has been written through Neo4JStorage its GraphML file is a frozen
+    snapshot; silently resuming on NetworkXStorage — or pointing an empty Neo4j at a
+    store whose graph only exists as GraphML — would fork the graph. The marker file
+    records the backend that last wrote the graph (stamped by stamp_graph_backend()
+    and by migrate_to_db_backends.py --ingest-graph after a verified import).
+    GRAPH_BACKEND_OVERRIDE=1 skips the abort for a deliberate change (e.g. rollback).
+    """
+    current = graph_storage or "NetworkXStorage"
+    marker = storage_dir / _GRAPH_BACKEND_MARKER
+    override = os.environ.get("GRAPH_BACKEND_OVERRIDE", "0") == "1"
+    recorded = marker.read_text().strip() if marker.exists() else ""
+    if recorded and recorded != current:
+        print(
+            f"[Fix-graph] Graph-backend mismatch: {storage_dir} was last written "
+            f"with graph_storage={recorded}, but this run would use {current}.",
+            flush=True,
+        )
+        if not override:
+            print(
+                "[Fix-graph] Refusing to fork the graph. Migrate/export first "
+                "(NetworkX→Neo4j: scripts/migrate_to_db_backends.py --ingest-graph; "
+                "Neo4j→GraphML: scripts/export_neo4j_graphml.py), or set "
+                "GRAPH_BACKEND_OVERRIDE=1 if the divergence is deliberate.",
+                flush=True,
+            )
+            sys.exit(1)
+        print("[Fix-graph] Proceeding anyway (GRAPH_BACKEND_OVERRIDE=1).", flush=True)
+    elif not recorded and current == "Neo4JStorage":
+        graphml = storage_dir / "graph_chunk_entity_relation.graphml"
+        if graphml.exists() and graphml.stat().st_size > 1_000_000 and not override:
+            print(
+                f"[Fix-graph] {graphml.name} exists ({graphml.stat().st_size / 1e9:.2f} GB) "
+                "but this store was never migrated to Neo4j (no .graph_backend marker). "
+                "Starting Neo4JStorage now would begin an EMPTY graph and orphan the "
+                "existing one.",
+                flush=True,
+            )
+            print(
+                "[Fix-graph] Run the one-time import first: STORAGE_DIR=<this dir> "
+                "python scripts/migrate_to_db_backends.py --ingest-graph (it stamps the "
+                "marker), or set GRAPH_BACKEND_OVERRIDE=1 to deliberately start empty.",
+                flush=True,
+            )
+            sys.exit(1)
+    return current
+
+
+def stamp_graph_backend(storage_dir: Path, graph_storage: str) -> None:
+    """Record which backend is writing the graph (see check_graph_backend)."""
+    try:
+        (storage_dir / _GRAPH_BACKEND_MARKER).write_text(
+            (graph_storage or "NetworkXStorage") + "\n"
+        )
+    except OSError as e:
+        print(f"[Fix-graph] WARNING: could not stamp {_GRAPH_BACKEND_MARKER}: {e}", flush=True)
 # Fix 2d: dedicated thread pools so blocking IO (PDF reads, doc-status polling) never
 # competes with embedding for the default executor's threads. Default matches the
 # ingest jobs' --cpus-per-task=12: each read thread mostly blocks on one
@@ -285,6 +372,40 @@ _kv_throttle = None  # set in main() once the LightRAG storages exist
 # 4: Rebuild embeddings mode — skip LLM pipeline, recompute vectors from cache
 REBUILD_EMBEDDINGS = os.environ.get("REBUILD_EMBEDDINGS", "0") == "1"
 REBUILD_BATCH_SIZE = int(os.environ.get("REBUILD_BATCH_SIZE", 50))
+# Commit the rebuild in segments of this many vectors (0 = old all-at-the-end
+# behavior). Qdrant's upsert() only BUFFERS; the embed+write happens in
+# _flush_pending_vector_ops, which index_done_callback triggers. The rebuild used
+# to trigger that exactly once, at the very end — so one transient error late in a
+# 12h run discarded EVERY vector. That happened three times on 2026-07-27/28 from
+# three different causes (Neo4j pagecache, max_seq_length, then
+# CUBLAS_STATUS_ALLOC_FAILED): ~30 GPU-hours, zero vectors committed.
+# Segmenting bounds the loss to one segment, makes restarts genuinely resumable
+# (_get_existing_ids skips what landed), and — just as important — shrinks each
+# flush's asyncio.gather from ~28k concurrent embed batches to ~390, which is the
+# VRAM pressure that caused the cuBLAS allocation failure to begin with.
+REBUILD_FLUSH_EVERY = int(os.environ.get("REBUILD_FLUSH_EVERY", 50000))
+# Which rebuild stages to run (comma-separated). Enables STAGE-LEVEL cross-cluster
+# parallelism: the three stages write to three independent Qdrant collections, so
+# e.g. one cluster can run "chunks,entities" while another runs only
+# "relationships", and the finished collection DIRECTORY is copied between stores
+# afterwards (collections are self-contained on disk — this is NOT the forbidden
+# same-collection segment merge). "relations" is accepted as an alias.
+# Within-stage sharding for the relationships loop: "k/N" (e.g. "0/2", "1/2")
+# processes only edges whose enumeration index ≡ k (mod N). Interleaved shards
+# balance load; each job writes its own QDRANT_SUBDIR and the shards are merged
+# afterwards by API-level scroll+upsert (NOT a file-level segment mix). Combined
+# with _get_existing_ids, a shard job also skips anything already committed.
+_shard = os.environ.get("REBUILD_SHARD", "").strip()
+if _shard:
+    REBUILD_SHARD_K, REBUILD_SHARD_N = (int(x) for x in _shard.split("/", 1))
+else:
+    REBUILD_SHARD_K, REBUILD_SHARD_N = 0, 1
+
+REBUILD_STAGES = {
+    ("relationships" if s.strip().lower() in ("relations", "relationships") else s.strip().lower())
+    for s in os.environ.get("REBUILD_STAGES", "chunks,entities,relationships").split(",")
+    if s.strip()
+}
 
 # 5: Structure-aware chunker (replaces LightRAG's token chunker)
 # CHUNKER_TYPE: "scientific" (default) | "book" | "auto" (per-document structure
@@ -419,6 +540,18 @@ def get_embed_model():
     if _embed_model is None:
         import torch
         from sentence_transformers import SentenceTransformer
+        # cuDNN SDPA backend NULL-derefs (SIGSEGV, no traceback) in
+        # at::native::run_cudnn_SDP_fprop on certain chunk-batch shapes on
+        # sm90 (H100/H200) — took down 4 Trillium ingest runs on the W-tail
+        # docs (core-dump verified, libtorch_cuda.so+0x74D2B8, torch 2.11).
+        # A100 (sm80) never routes these shapes to cuDNN, so this is a no-op
+        # there. Flash/mem-efficient handle everything; perf delta is noise.
+        if EMBED_DEVICE.startswith("cuda"):
+            try:
+                torch.backends.cuda.enable_cudnn_sdp(False)
+                print("[EMBED] cuDNN SDPA backend disabled (sm90 run_cudnn_SDP_fprop crash guard)", flush=True)
+            except Exception as _e:  # noqa: BLE001 — guard must never block the load
+                print(f"[EMBED] could not disable cuDNN SDPA: {_e}", flush=True)
         model_kwargs = {"torch_dtype": getattr(torch, EMBED_TORCH_DTYPE)}
         print(f"Loading embedding model {EMBED_MODEL_ID} on {EMBED_DEVICE} ({EMBED_TORCH_DTYPE})…", flush=True)
         import os as _os
@@ -447,6 +580,31 @@ def get_embed_model():
 _embed_stats = {"calls": 0, "total_s": 0.0, "texts": 0, "concurrent": 0, "max_concurrent": 0,
                 "oom_retries": 0, "cache_trims": 0}
 
+# Serializes model.encode() across _EMBED_EXECUTOR threads — see _encode_oom_safe.
+# The shared fast tokenizer is not thread-safe (PyO3 RefCell "Already borrowed").
+_ENCODE_LOCK = threading.Lock()
+
+
+def _is_alloc_error(e: BaseException) -> bool:
+    """True for any CUDA/cuBLAS/cuDNN *allocation* failure, not just OOM.
+
+    torch raises several distinct messages for "out of VRAM", and matching only
+    "out of memory" misses them. On 2026-07-28 a 12h / 4-H100 reembed produced
+    4,506 HTTP 500s and committed ZERO vectors because the flush hit
+    `CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling cublasCreate(handle)` —
+    a workspace allocation failure that never contains "out of memory", so the
+    halving retry never fired. OutOfMemoryError count for that run was 0.
+    """
+    m = str(e).lower()
+    return any(k in m for k in (
+        "out of memory",
+        "cublas_status_alloc_failed",
+        "cublascreate",
+        "cudnn_status_alloc_failed",
+        "cuda error: out of memory",
+        "alloc_failed",
+    ))
+
 
 def _encode_oom_safe(model, texts: list[str], prompt):
     """model.encode with CUDA-OOM protection (07-03 cascade fix, with EMBED_MAX_SEQ).
@@ -456,21 +614,41 @@ def _encode_oom_safe(model, texts: list[str], prompt):
     poisoning every embed for the rest of the run (LightRAG's retries all re-OOM'd:
     18k-error storm → pipeline halt → 9,041 docs failed). Catches RuntimeError with
     an OOM message rather than only torch.cuda.OutOfMemoryError because cuBLAS
-    workspace allocation failures surface as plain RuntimeError."""
+    workspace allocation failures surface as plain RuntimeError.
+
+    Serialized by _ENCODE_LOCK: the HF *fast* tokenizer inside this one shared
+    SentenceTransformer is a Rust object with interior mutability, and
+    transformers' set_truncation_and_padding() does an UNGUARDED check-then-act:
+
+        if _padding != target:
+            self._tokenizer.enable_padding(**target)   # needs a MUTABLE borrow
+
+    _EMBED_EXECUTOR runs EMBED_FUNC_MAX_ASYNC threads against that single
+    tokenizer, so when Qdrant's _flush_pending_vector_ops() asyncio.gathers a
+    large pending batch (observed: 2,958 upserts), one thread can call
+    enable_padding() while another is mid-encode holding an immutable borrow ->
+    `RuntimeError: Already borrowed`. LightRAG turns that into IndexFlushError,
+    which aborts the WHOLE pipeline batch: one race cancelled 345 documents on
+    2026-07-27 (Fir 51339681). It is probabilistic — the same config ran clean
+    for 5h43m in 49860263 — so lowering MAX_PARALLEL_INSERT only reduces the
+    odds. This lock removes the race itself; embedding is a tiny fraction of
+    ingest work (23 embed calls vs 8,643 LLM calls in a sampled run), so
+    serializing it costs almost nothing."""
     import torch
     bs = EMBED_BATCH
     while True:
         try:
-            out = model.encode(
-                texts,
-                prompt=prompt,
-                normalize_embeddings=True,
-                batch_size=bs,
-                show_progress_bar=False,
-            )
+            with _ENCODE_LOCK:
+                out = model.encode(
+                    texts,
+                    prompt=prompt,
+                    normalize_embeddings=True,
+                    batch_size=bs,
+                    show_progress_bar=False,
+                )
             break
         except RuntimeError as e:
-            if "out of memory" not in str(e).lower():
+            if not _is_alloc_error(e):
                 raise
             if EMBED_DEVICE.startswith("cuda"):
                 torch.cuda.empty_cache()
@@ -546,7 +724,10 @@ async def _remote_embed(texts: list[str], context: str) -> np.ndarray:
     dedicated GPU instead of loading the model in-process. Honors the server's
     task-aware `context` hook (queries get the instruction, documents don't)."""
     payload = {"input": texts, "model": EMBED_MODEL_ID, "context": context}
-    url = EMBED_ENDPOINT.rstrip("/") + "/v1/embeddings"
+    # Round-robin so N embedder GPUs share the load evenly. Single-endpoint runs
+    # take index 0 every time, so this is a no-op for the one-GPU path.
+    base = EMBED_ENDPOINTS[next(_embed_rr) % len(EMBED_ENDPOINTS)]
+    url = base + "/v1/embeddings"
     resp = await _get_http_client().post(url, json=payload)
     resp.raise_for_status()
     data = resp.json()["data"]
@@ -744,8 +925,13 @@ def _validate_endpoint_file(filepath: Path) -> str | None:
         filepath.unlink(missing_ok=True)
         return None
 
-    # Extract SLURM job ID from filename (e.g., "28818145.txt")
-    job_id = filepath.stem
+    # Extract SLURM job ID from filename. Two naming schemes are supported:
+    #   "28818145.txt"      — one vLLM per SLURM job (separate vLLM jobs)
+    #   "28818145_gpu0.txt" — several vLLMs inside ONE job (whole-node layout),
+    #                         each pinned to its own GPU. The suffix keeps their
+    #                         registrations from clobbering each other; only the
+    #                         part before "_" is a real job id for squeue.
+    job_id = filepath.stem.split("_", 1)[0]
 
     # Check 1: Is the SLURM job still running?
     if not _is_slurm_job_running(job_id):
@@ -1294,6 +1480,24 @@ async def rebuild_embeddings_from_cache():
         print("Run a full ingestion first to populate the cache.")
         sys.exit(1)
 
+    # Fix-graph: when the graph is written by Neo4JStorage the GraphML on disk is a
+    # frozen snapshot — rebuilding entity/relation vectors from a stale snapshot
+    # silently drops everything ingested since the backend switch. Require a fresh
+    # export (scripts/export_neo4j_graphml.py refreshes the file after each cycle).
+    _marker = STORAGE_DIR / _GRAPH_BACKEND_MARKER
+    if _marker.exists() and _marker.read_text().strip() == "Neo4JStorage":
+        if (graph_path.stat().st_mtime < _marker.stat().st_mtime
+                and os.environ.get("GRAPHML_FRESH_OK", "0") != "1"):
+            print("ERROR: this store's graph is written by Neo4JStorage, and "
+                  f"{graph_path.name} is OLDER than the last Neo4j-backed run.")
+            print("Re-export it first:  python scripts/export_neo4j_graphml.py "
+                  f"--out {graph_path}  (needs NEO4J_URI/USERNAME/PASSWORD + a live Neo4j),")
+            print("or set GRAPHML_FRESH_OK=1 if this snapshot is knowingly current.")
+            sys.exit(1)
+        print(f"[Fix-graph] Neo4j-backed store: rebuilding from GraphML snapshot "
+              f"{graph_path.name} (mtime {time.ctime(graph_path.stat().st_mtime)})",
+              flush=True)
+
     t_start = time.time()
 
     # ── Load cached data ──
@@ -1344,9 +1548,28 @@ async def rebuild_embeddings_from_cache():
         print(f"\nTarget vector DB: Qdrant ({QDRANT_URL})")
     else:
         print("\nTarget vector DB: NanoVectorDB")
+    # Fix-graph: entity/relation data is read from the (fresh, see guard above)
+    # GraphML snapshot either way; passing the DB backend here just spares LightRAG
+    # the multi-minute full-GraphML boot parse. Needs the Neo4j sidecar running.
+    if GRAPH_STORAGE:
+        rag_kwargs["graph_storage"] = GRAPH_STORAGE
+        print(f"[Fix-graph] Using graph_storage={GRAPH_STORAGE} (skips the GraphML boot parse)")
 
     rag = LightRAG(**rag_kwargs)
     await rag.initialize_storages()
+
+    async def _commit_segment(vdb, label: str, done: int, total: int) -> None:
+        """Force a durable commit of everything buffered so far.
+
+        index_done_callback() is the public hook that runs
+        _flush_pending_vector_ops(), i.e. embed-then-write. Calling it mid-loop is
+        what turns this rebuild from all-or-nothing into resumable. Kept in OUR
+        code rather than patching LightRAG/ so the fork stays upgrade-clean.
+        """
+        t0 = time.time()
+        await vdb.index_done_callback()
+        print(f"  [{label}] COMMITTED through {done}/{total} "
+              f"(flush {time.time() - t0:.0f}s)", flush=True)
 
     def _get_existing_ids(vdb) -> set:
         """Scroll a Qdrant collection and return the set of stored item IDs."""
@@ -1375,10 +1598,13 @@ async def rebuild_embeddings_from_cache():
     print(f"\nRebuilding chunk embeddings ({len(chunks)} chunks, batch={REBUILD_BATCH_SIZE})...")
     existing_ids = _get_existing_ids(rag.chunks_vdb)
     print(f"  Already embedded: {len(existing_ids)} — skipping")
+    since_commit = 0
     batch = {}
     done = len(existing_ids)
     embedded = 0
-    for chunk_id, chunk_data in chunks.items():
+    if "chunks" not in REBUILD_STAGES:
+        print("  [chunks] stage SKIPPED (REBUILD_STAGES)", flush=True)
+    for chunk_id, chunk_data in (chunks.items() if "chunks" in REBUILD_STAGES else ()):
         if chunk_id in existing_ids:
             continue
         batch[chunk_id] = {
@@ -1390,7 +1616,11 @@ async def rebuild_embeddings_from_cache():
             await rag.chunks_vdb.upsert(batch)
             done += len(batch)
             embedded += len(batch)
+            since_commit += len(batch)
             batch = {}
+            if REBUILD_FLUSH_EVERY > 0 and since_commit >= REBUILD_FLUSH_EVERY:
+                await _commit_segment(rag.chunks_vdb, "chunks", done, len(chunks))
+                since_commit = 0
             elapsed = time.time() - t_start
             rate = embedded / (elapsed / 60) if elapsed > 0 else 0
             print(f"  Chunks: {done}/{len(chunks)} ({rate:.0f}/min)", flush=True)
@@ -1398,16 +1628,21 @@ async def rebuild_embeddings_from_cache():
         await rag.chunks_vdb.upsert(batch)
         done += len(batch)
         embedded += len(batch)
+    if REBUILD_FLUSH_EVERY > 0:
+        await _commit_segment(rag.chunks_vdb, "chunks", done, len(chunks))
     print(f"  Chunks: {done}/{len(chunks)} done ({embedded} newly embedded)")
 
     # ── Rebuild entity embeddings ──
     print(f"\nRebuilding entity embeddings ({n_entities} entities, batch={REBUILD_BATCH_SIZE})...")
     existing_ids = _get_existing_ids(rag.entities_vdb)
     print(f"  Already embedded: {len(existing_ids)} — skipping")
+    since_commit = 0
     batch = {}
     done = len(existing_ids)
     embedded = 0
-    for node_name, node_data in graph.nodes(data=True):
+    if "entities" not in REBUILD_STAGES:
+        print("  [entities] stage SKIPPED (REBUILD_STAGES)", flush=True)
+    for node_name, node_data in (graph.nodes(data=True) if "entities" in REBUILD_STAGES else ()):
         description = node_data.get("description", "")
         entity_vdb_id = compute_mdhash_id(node_name, prefix="ent-")
         if entity_vdb_id in existing_ids:
@@ -1424,7 +1659,11 @@ async def rebuild_embeddings_from_cache():
             await rag.entities_vdb.upsert(batch)
             done += len(batch)
             embedded += len(batch)
+            since_commit += len(batch)
             batch = {}
+            if REBUILD_FLUSH_EVERY > 0 and since_commit >= REBUILD_FLUSH_EVERY:
+                await _commit_segment(rag.entities_vdb, "entities", done, n_entities)
+                since_commit = 0
             elapsed = time.time() - t_start
             rate = embedded / (elapsed / 60) if elapsed > 0 else 0
             print(f"  Entities: {done}/{n_entities} ({rate:.0f}/min)", flush=True)
@@ -1432,16 +1671,26 @@ async def rebuild_embeddings_from_cache():
         await rag.entities_vdb.upsert(batch)
         done += len(batch)
         embedded += len(batch)
+    if REBUILD_FLUSH_EVERY > 0:
+        await _commit_segment(rag.entities_vdb, "entities", done, n_entities)
     print(f"  Entities: {done}/{n_entities} done ({embedded} newly embedded)")
 
     # ── Rebuild relation embeddings ──
-    print(f"\nRebuilding relation embeddings ({n_relations} relations, batch={REBUILD_BATCH_SIZE})...")
+    print(f"\nRebuilding relation embeddings ({n_relations} relations, batch={REBUILD_BATCH_SIZE}"
+          + (f", shard {REBUILD_SHARD_K}/{REBUILD_SHARD_N}" if REBUILD_SHARD_N > 1 else "") + ")...")
     existing_ids = _get_existing_ids(rag.relationships_vdb)
     print(f"  Already embedded: {len(existing_ids)} — skipping")
+    since_commit = 0
     batch = {}
     done = len(existing_ids)
     embedded = 0
-    for src, tgt, edge_data in graph.edges(data=True):
+    if "relationships" not in REBUILD_STAGES:
+        print("  [relationships] stage SKIPPED (REBUILD_STAGES)", flush=True)
+    _edge_i = -1
+    for src, tgt, edge_data in (graph.edges(data=True) if "relationships" in REBUILD_STAGES else ()):
+        _edge_i += 1
+        if REBUILD_SHARD_N > 1 and (_edge_i % REBUILD_SHARD_N) != REBUILD_SHARD_K:
+            continue
         keywords = edge_data.get("keywords", "")
         description = edge_data.get("description", "")
         rel_vdb_id = compute_mdhash_id(f"{src}_{tgt}", prefix="rel-")
@@ -1461,7 +1710,11 @@ async def rebuild_embeddings_from_cache():
             await rag.relationships_vdb.upsert(batch)
             done += len(batch)
             embedded += len(batch)
+            since_commit += len(batch)
             batch = {}
+            if REBUILD_FLUSH_EVERY > 0 and since_commit >= REBUILD_FLUSH_EVERY:
+                await _commit_segment(rag.relationships_vdb, "relationships", done, n_relations)
+                since_commit = 0
             elapsed = time.time() - t_start
             rate = embedded / (elapsed / 60) if elapsed > 0 else 0
             print(f"  Relations: {done}/{n_relations} ({rate:.0f}/min)", flush=True)
@@ -1469,6 +1722,8 @@ async def rebuild_embeddings_from_cache():
         await rag.relationships_vdb.upsert(batch)
         done += len(batch)
         embedded += len(batch)
+    if REBUILD_FLUSH_EVERY > 0:
+        await _commit_segment(rag.relationships_vdb, "relationships", done, n_relations)
     print(f"  Relations: {done}/{n_relations} done ({embedded} newly embedded)")
 
     # ── Flush and finalize ──
@@ -1758,6 +2013,7 @@ async def main():
           f"(batch_num={EMBEDDING_BATCH_NUM}, func_max_async={EMBED_FUNC_MAX_ASYNC})")
     if KV_STORAGE or DOC_STATUS_STORAGE:
         print(f"KV_STORAGE    : {KV_STORAGE or '(default)'} | DOC_STATUS_STORAGE: {DOC_STATUS_STORAGE or '(default)'}")
+    print(f"GRAPH_STORAGE : {GRAPH_STORAGE or '(default — NetworkXStorage, full-file GraphML flushes)'}")
     print("[v2] Endpoint validation, resume support, status monitor, LLM failover\n")
 
     # Pre-load embedding model now (takes ~1 min) while waiting for vLLM —
@@ -1861,6 +2117,14 @@ async def main():
         rag_kwargs["doc_status_storage"] = DOC_STATUS_STORAGE
         print(f"[Fix1] Using doc_status_storage={DOC_STATUS_STORAGE}")
 
+    # Fix-graph: opt-in incremental graph backend (see GRAPH_STORAGE above). The
+    # marker guard aborts before any storage is opened if this run's backend
+    # disagrees with what last wrote the store.
+    if GRAPH_STORAGE:
+        rag_kwargs["graph_storage"] = GRAPH_STORAGE
+        print(f"[Fix-graph] Using graph_storage={GRAPH_STORAGE}")
+    check_graph_backend(STORAGE_DIR, GRAPH_STORAGE)
+
     # 2A: Use Qdrant if QDRANT_URL is set
     if USE_QDRANT:
         rag_kwargs["vector_storage"] = "QdrantVectorDBStorage"
@@ -1900,6 +2164,7 @@ async def main():
     rag = LightRAG(**rag_kwargs)
 
     await rag.initialize_storages()
+    stamp_graph_backend(STORAGE_DIR, GRAPH_STORAGE)
 
     # Skip the redundant, expensive in-ingest entity/relation vector writes; the final
     # reembed rebuilds them from the graph (see SKIP_ENTITY_RELATION_VDB). Instance

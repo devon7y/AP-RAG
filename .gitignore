@@ -14,6 +14,10 @@ westbury/rag_storage_westbury_qwen3_32b/
 # OS files
 .DS_Store
 
+# Local data tree: live manifests/maps, caches, pipeline state, backups, notes
+# (moved off the repo root; regenerable or personal — never committed)
+/data/
+
 # Local-only / not part of the published wrapper
 .claude/
 # unrelated 523MB Next.js app (has node_modules)

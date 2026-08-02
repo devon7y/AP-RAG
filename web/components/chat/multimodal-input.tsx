@@ -57,6 +57,7 @@ import { XIcon } from "lucide-react";
 import { useActiveChat } from "@/hooks/use-active-chat";
 import { detectFilters } from "@/lib/aprag/detect";
 import {
+  DIGEST_WINDOW_DISMISS_KEY,
   type FilterListKey,
   hasAnyFilter,
   mergeFilters,
@@ -64,7 +65,8 @@ import {
 import type { RagFilters } from "@/lib/aprag/types";
 import { Badge } from "../ui/badge";
 import { ActiveFilters } from "./active-filters";
-import { useFacets } from "./facet-input";
+import { formatDigestWindow } from "./digest-indicator";
+import { useFacets, usePapersIndex } from "./facet-input";
 import { PaperclipIcon, StopIcon } from "./icons";
 import { PreviewAttachment } from "./preview-attachment";
 import { RagControls } from "./rag-controls";
@@ -234,11 +236,21 @@ function PureMultimodalInput({
   // show them as cancellable "will filter" chips before sending. On send these are
   // applied; cancelled ones are reported to the server so its second-pass LLM
   // extraction won't re-add them.
-  const { filters, setFilters } = useActiveChat();
+  const { filters, setFilters, digest } = useActiveChat();
   const facets = useFacets(input.trim().length > 0);
+  const papersIndex = usePapersIndex(input.trim().length > 0);
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
 
+  // Research Digest: on follow-up turns (not the first, which runs the multi-bucket path),
+  // the chat's date window is applied by default and shown as a removable chip. Removing it
+  // drops the window for the next message so the user can look outside the range.
+  const showDigestWindowChip =
+    Boolean(digest) &&
+    messages.length > 0 &&
+    !dismissedKeys.has(DIGEST_WINDOW_DISMISS_KEY);
+
   const FACET_LABEL: Record<FilterListKey, string> = {
+    papers: "Paper",
     authors: "Author",
     journals: "Journal",
     subjects: "Subject",
@@ -247,7 +259,7 @@ function PureMultimodalInput({
   };
 
   const pending = useMemo(() => {
-    const detected = detectFilters(input, facets);
+    const detected = detectFilters(input, facets, papersIndex);
     const active = filters ?? {};
     const chips: {
       key: string;
@@ -255,7 +267,7 @@ function PureMultimodalInput({
       value: string | number;
       label: string;
     }[] = [];
-    for (const dim of ["authors", "journals", "affiliations"] as const) {
+    for (const dim of ["papers", "authors", "journals", "affiliations"] as const) {
       for (const v of detected[dim] ?? []) {
         const key = `${dim}:${v.toLowerCase()}`;
         if (dismissedKeys.has(key)) {
@@ -264,7 +276,13 @@ function PureMultimodalInput({
         if ((active[dim] ?? []).some((a) => a.toLowerCase() === v.toLowerCase())) {
           continue;
         }
-        chips.push({ key, dim, value: v, label: `${FACET_LABEL[dim]}: ${v}` });
+        const display = dim === "papers" ? v.replace(/\.pdf$/i, "") : v;
+        chips.push({
+          key,
+          dim,
+          value: v,
+          label: `${FACET_LABEL[dim]}: ${display}`,
+        });
       }
     }
     const yearLabels: Record<"year" | "year_from" | "year_to", (v: number) => string> =
@@ -294,7 +312,7 @@ function PureMultimodalInput({
     }
     return chips;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input, facets, filters, dismissedKeys]);
+  }, [input, facets, papersIndex, filters, dismissedKeys]);
 
   const pendingToFilters = useCallback((): RagFilters => {
     const out: RagFilters = {};
@@ -304,6 +322,7 @@ function PureMultimodalInput({
       } else if (c.dim === "years") {
         (out.years ??= []).push(c.value as number);
       } else if (
+        c.dim === "papers" ||
         c.dim === "authors" ||
         c.dim === "journals" ||
         c.dim === "affiliations"
@@ -508,6 +527,7 @@ function PureMultimodalInput({
 
       {!editingMessage &&
         !isLoading &&
+        !digest &&
         messages.length === 0 &&
         attachments.length === 0 &&
         uploadQueue.length === 0 && (
@@ -592,11 +612,30 @@ function PureMultimodalInput({
             ))}
           </div>
         )}
-        {(hasAnyFilter(filters) || pending.length > 0) && (
+        {(hasAnyFilter(filters) ||
+          pending.length > 0 ||
+          showDigestWindowChip) && (
           <div className="flex flex-wrap items-center gap-1 px-3.5 pt-2.5">
             {/* Manual/applied filters (solid) and auto-detected pending filters (dashed)
                 share one row — no separate "Filters:" section. */}
             <ActiveFilters />
+            {showDigestWindowChip && digest && (
+              <Badge className="gap-1 pr-1 font-normal" variant="secondary">
+                {`Dates: ${formatDigestWindow(digest)}`}
+                <button
+                  aria-label="Search outside the digest date range"
+                  className="rounded-sm hover:text-foreground"
+                  onClick={() =>
+                    setDismissedKeys((prev) =>
+                      new Set(prev).add(DIGEST_WINDOW_DISMISS_KEY)
+                    )
+                  }
+                  type="button"
+                >
+                  <XIcon className="size-3" />
+                </button>
+              </Badge>
+            )}
             {pending.map((c) => (
               <Badge
                 className="gap-1 border-dashed pr-1 font-normal text-muted-foreground"

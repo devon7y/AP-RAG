@@ -289,6 +289,203 @@ export async function getPaper(filename: string): Promise<PaperDetail> {
   return (await res.json()) as PaperDetail;
 }
 
+// GET /papers_index — every paper as a compact [filename, title, first_author_family,
+// year] row, for the composer's client-side paper-mention detection.
+export type PapersIndexRow = [string, string, string, number];
+
+export async function getPapersIndex(): Promise<{ papers: PapersIndexRow[] }> {
+  const res = await fetch(`${BASE_URL}/papers_index`, {
+    headers: headers(),
+    cache: "no-store",
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    throw new Error(`AP-RAG /papers_index failed: ${res.status}`);
+  }
+  return (await res.json()) as { papers: PapersIndexRow[] };
+}
+
+// POST /similar — papers most similar to one paper (its chunk-centroid's nearest
+// neighbours in the vector store), in the same ranked-paper shape as /search.
+export async function similarPapers(params: {
+  filename: string;
+  topK?: number;
+}): Promise<{ papers: RankedPaper[] }> {
+  const body: Record<string, unknown> = { filename: params.filename };
+  if (params.topK != null) {
+    body.top_k = params.topK;
+  }
+  const res = await fetch(`${BASE_URL}/similar`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify(body),
+    cache: "no-store",
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (res.status === 404) {
+    // The paper isn't in the vector store (e.g. not yet ingested) — no neighbours,
+    // not an outage.
+    return { papers: [] };
+  }
+  if (!res.ok) {
+    throw new Error(
+      `AP-RAG /similar failed: ${res.status} ${await safeText(res)}`
+    );
+  }
+  const json = (await res.json()) as { papers?: RankedPaper[] };
+  return { papers: json.papers ?? [] };
+}
+
+// GET /trends — corpus-wide publication trends (papers per year + per-term-per-year
+// counts for the big facet dimensions), for the Trends dashboard.
+export type TrendTerm = {
+  term: string;
+  total: number;
+  counts: Record<string, number>; // year → papers
+};
+
+export type TrendsData = {
+  years: Record<string, number>;
+  keywords: TrendTerm[];
+  subjects: TrendTerm[];
+  journals: TrendTerm[];
+  authors: TrendTerm[];
+};
+
+export async function getTrends(): Promise<TrendsData> {
+  const res = await fetch(`${BASE_URL}/trends`, {
+    headers: headers(),
+    cache: "no-store",
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    throw new Error(`AP-RAG /trends failed: ${res.status}`);
+  }
+  return (await res.json()) as TrendsData;
+}
+
+// ── PDF assets (GET /pdf, GET /pdf_page) ───────────────────────────────────────
+// Returned RAW (not parsed) so the API route can stream the body straight through and
+// preserve range/conditional semantics — pdf.js relies on 206/304 working end to end.
+
+export async function fetchPdfAsset(
+  kind: "pdf" | "pdf_page",
+  params: Record<string, string>,
+  forward: { range?: string | null; ifNoneMatch?: string | null }
+): Promise<Response> {
+  const sp = new URLSearchParams(params);
+  const h = headers();
+  delete h["Content-Type"]; // GET with no body
+  if (forward.range) {
+    h.Range = forward.range;
+  }
+  if (forward.ifNoneMatch) {
+    h["If-None-Match"] = forward.ifNoneMatch;
+  }
+  return await fetch(`${BASE_URL}/${kind}?${sp.toString()}`, {
+    headers: h,
+    cache: "no-store",
+    signal: AbortSignal.timeout(60_000),
+  });
+}
+
+// ── Knowledge-graph explorer (GET /graph/*) ────────────────────────────────────
+
+export type GraphTypeStat = { type: string; count: number; top: string[] };
+
+export type GraphOverview = {
+  entities: number;
+  relations: number;
+  types: GraphTypeStat[];
+};
+
+export type GraphEntitySummary = {
+  name: string;
+  type: string;
+  degree: number;
+  papers: number;
+  description: string; // snippet
+};
+
+export type GraphRelation = {
+  entity: string;
+  entity_type: string;
+  degree: number;
+  description: string;
+  keywords: string;
+  weight: number;
+};
+
+export type GraphEntityDetail = {
+  name: string;
+  type: string;
+  description: string;
+  degree: number;
+  n_relations: number;
+  relations: GraphRelation[];
+  n_papers: number;
+  papers: { filename: string; title: string; year: string }[];
+};
+
+async function graphGet<T>(path: string, sp: URLSearchParams): Promise<T> {
+  const qs = sp.toString();
+  const res = await fetch(`${BASE_URL}${path}${qs ? `?${qs}` : ""}`, {
+    headers: headers(),
+    cache: "no-store",
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    // `status` lets the proxy route distinguish "unknown entity" (404) from an outage.
+    throw Object.assign(
+      new Error(`AP-RAG ${path} failed: ${res.status} ${await safeText(res)}`),
+      { status: res.status }
+    );
+  }
+  return (await res.json()) as T;
+}
+
+export function getGraphOverview(): Promise<GraphOverview> {
+  return graphGet<GraphOverview>("/graph/overview", new URLSearchParams());
+}
+
+export function searchGraphEntities(params: {
+  q?: string;
+  type?: string;
+  file?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{
+  total: number;
+  entities: GraphEntitySummary[];
+  offset: number;
+  limit: number;
+}> {
+  const sp = new URLSearchParams();
+  if (params.q?.trim()) {
+    sp.set("q", params.q.trim());
+  }
+  if (params.type?.trim()) {
+    sp.set("type", params.type.trim());
+  }
+  if (params.file?.trim()) {
+    sp.set("file", params.file.trim());
+  }
+  if (params.limit != null) {
+    sp.set("limit", String(params.limit));
+  }
+  if (params.offset != null) {
+    sp.set("offset", String(params.offset));
+  }
+  return graphGet("/graph/entities", sp);
+}
+
+export function getGraphEntity(name: string): Promise<GraphEntityDetail> {
+  return graphGet<GraphEntityDetail>(
+    "/graph/entity",
+    new URLSearchParams({ name })
+  );
+}
+
 // POST /search — semantic chunk search folded into ranked papers (the Papers Database's
 // deep-search tier), honoring the same metadata filters as browsing.
 export async function searchPapersRanked(params: {

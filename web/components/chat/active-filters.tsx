@@ -7,12 +7,18 @@ import type { RagFilters } from "@/lib/aprag/types";
 import { Badge } from "../ui/badge";
 
 const LABEL: Record<FilterListKey, string> = {
+  papers: "Paper",
   authors: "Author",
   journals: "Journal",
   subjects: "Subject",
   keywords: "Keyword",
   affiliations: "Affiliation",
 };
+
+// Paper filter values are filenames; chips read better without the extension.
+export function filterValueLabel(key: FilterListKey, value: string): string {
+  return key === "papers" ? value.replace(/\.pdf$/i, "") : value;
+}
 
 // The active metadata filters (manual + LLM-inferred) as removable chips, shown above the
 // composer input so it's clear what retrieval is scoped to.
@@ -72,7 +78,7 @@ export function ActiveFilters() {
     for (const v of filters[key] ?? []) {
       chips.push({
         id: `${key}-${v}`,
-        label: `${LABEL[key]}: ${v}`,
+        label: `${LABEL[key]}: ${filterValueLabel(key, v)}`,
         onRemove: () => removeValue(key, v),
       });
     }

@@ -3,6 +3,7 @@ import type { RagFilters } from "./types";
 // Pure filter helpers shared by the server (chat route) and the client (chip UI).
 
 export const FILTER_LIST_KEYS = [
+  "papers",
   "authors",
   "journals",
   "subjects",
@@ -51,6 +52,12 @@ export function hasAnyFilter(f: RagFilters | null | undefined): boolean {
 export function filterKey(dim: string, value: string | number): string {
   return `${dim}:${String(value).toLowerCase()}`;
 }
+
+// Sentinel dismissal key for a Research Digest chat's sticky date window. On a follow-up
+// turn the window is applied by default; putting this key in `dismissed` (one-shot, like any
+// other dismissed filter) tells the server to drop it for that message, so the user can ask
+// about papers outside the window without leaving the chat.
+export const DIGEST_WINDOW_DISMISS_KEY = "date:window";
 
 // Remove any filter values whose key is in `dismissed` (the user cancelled them in the
 // preview, so the server's second-pass extraction must not re-add them).

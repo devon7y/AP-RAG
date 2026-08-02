@@ -42,24 +42,28 @@ const DEBOUNCE_MS = 300;
 export function PapersToolbar({
   q,
   deep,
+  similar,
   deepLoading,
   filters,
   visible,
   exporting,
   onQChange,
   onDeepSearch,
+  onClearSimilar,
   onFiltersChange,
   onToggleColumn,
   onExport,
 }: {
   q: string;
   deep: string;
+  similar: string;
   deepLoading: boolean;
   filters: RagFilters | null;
   visible: Record<ColumnId, boolean>;
   exporting: boolean;
   onQChange: (q: string) => void;
   onDeepSearch: (query: string) => void;
+  onClearSimilar: () => void;
   onFiltersChange: (f: RagFilters | null) => void;
   onToggleColumn: (id: ColumnId) => void;
   onExport: (format: "csv" | "bibtex") => void;
@@ -71,12 +75,13 @@ export function PapersToolbar({
     setText(q || deep);
   }, [q, deep]);
 
-  // Debounced instant tier. Deep mode is left alone until the user commits (Enter).
+  // Debounced instant tier. Deep/similar modes are left alone until the user commits
+  // (Enter runs a deep search, which exits similar mode).
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const changeText = (value: string) => {
     setText(value);
-    if (deep) {
-      return; // editing while a deep search is shown — wait for Enter/clear
+    if (deep || similar) {
+      return; // editing while a ranked result set is shown — wait for Enter/clear
     }
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
@@ -91,6 +96,8 @@ export function PapersToolbar({
     setText("");
     if (deep) {
       onDeepSearch("");
+    } else if (similar) {
+      onClearSimilar();
     } else {
       onQChange("");
     }
@@ -136,7 +143,7 @@ export function PapersToolbar({
                 for semantic search
               </span>
             )}
-            {(text || deep) && (
+            {(text || deep || similar) && (
               <button
                 aria-label="Clear search"
                 className="rounded-sm p-1 text-muted-foreground hover:text-foreground"
@@ -210,8 +217,10 @@ export function PapersToolbar({
       <FilterChips
         deep={deep}
         filters={filters}
+        onClearSimilar={onClearSimilar}
         onDeepSearch={onDeepSearch}
         onFiltersChange={onFiltersChange}
+        similar={similar}
       />
     </div>
   );
@@ -342,17 +351,21 @@ function FiltersPopover({
   );
 }
 
-// Active filter + deep-search chips (removable), mirroring the chat's filter chips.
+// Active filter + deep-search/similar chips (removable), mirroring the chat's chips.
 function FilterChips({
   filters,
   deep,
+  similar,
   onFiltersChange,
   onDeepSearch,
+  onClearSimilar,
 }: {
   filters: RagFilters | null;
   deep: string;
+  similar: string;
   onFiltersChange: (f: RagFilters | null) => void;
   onDeepSearch: (q: string) => void;
+  onClearSimilar: () => void;
 }) {
   const chips: {
     id: string;
@@ -366,6 +379,14 @@ function FilterChips({
       id: "deep",
       label: `Deep search: ${deep}`,
       onRemove: () => onDeepSearch(""),
+      deep: true,
+    });
+  }
+  if (similar) {
+    chips.push({
+      id: "similar",
+      label: `Similar to: ${similar.replace(/\.pdf$/i, "")}`,
+      onRemove: onClearSimilar,
       deep: true,
     });
   }

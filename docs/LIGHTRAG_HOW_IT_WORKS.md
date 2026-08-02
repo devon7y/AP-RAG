@@ -216,10 +216,10 @@ mix     ──── most expensive (hybrid + raw chunk search)
 
 | File | Role |
 |------|------|
-| [lightrag/lightrag.py](LightRAG/lightrag/lightrag.py) | Main `LightRAG` class, storage wiring, insert/query entry points |
-| [lightrag/operate.py](LightRAG/lightrag/operate.py) | All core logic: chunking, extraction, merging, querying |
-| [lightrag/base.py](LightRAG/lightrag/base.py) | Abstract storage interfaces (`BaseKVStorage`, `BaseVectorStorage`, `BaseGraphStorage`) |
-| [lightrag/prompt.py](LightRAG/lightrag/prompt.py) | All LLM prompt templates |
-| [lightrag/utils.py](LightRAG/lightrag/utils.py) | Tokenizers, embedding wrapper, async queue, caching |
-| [lightrag/kg/](LightRAG/lightrag/kg/) | Storage backend implementations |
-| [lightrag/llm/](LightRAG/lightrag/llm/) | LLM provider bindings (OpenAI, Anthropic, Ollama, etc.) |
+| [lightrag/lightrag.py](../LightRAG/lightrag/lightrag.py) | Main `LightRAG` class, storage wiring, insert/query entry points |
+| [lightrag/operate.py](../LightRAG/lightrag/operate.py) | All core logic: chunking, extraction, merging, querying |
+| [lightrag/base.py](../LightRAG/lightrag/base.py) | Abstract storage interfaces (`BaseKVStorage`, `BaseVectorStorage`, `BaseGraphStorage`) |
+| [lightrag/prompt.py](../LightRAG/lightrag/prompt.py) | All LLM prompt templates |
+| [lightrag/utils.py](../LightRAG/lightrag/utils.py) | Tokenizers, embedding wrapper, async queue, caching |
+| [lightrag/kg/](../LightRAG/lightrag/kg/) | Storage backend implementations |
+| [lightrag/llm/](../LightRAG/lightrag/llm/) | LLM provider bindings (OpenAI, Anthropic, Ollama, etc.) |

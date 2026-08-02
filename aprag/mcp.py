@@ -32,9 +32,12 @@ mcp = FastMCP("aprag")
 
 
 def _build_filters(authors, year, year_from, year_to, journals, subjects,
-                   keywords, affiliations) -> dict | None:
+                   keywords, affiliations, date_from=None, date_to=None,
+                   papers=None) -> dict | None:
     """Assemble the optional metadata filters into a dict (None if all empty)."""
     f: dict = {}
+    if papers:
+        f["papers"] = papers
     if authors:
         f["authors"] = authors
     if journals:
@@ -51,6 +54,10 @@ def _build_filters(authors, year, year_from, year_to, journals, subjects,
         f["year_from"] = year_from
     if year_to is not None:
         f["year_to"] = year_to
+    if date_from:
+        f["date_from"] = date_from
+    if date_to:
+        f["date_to"] = date_to
     return f or None
 
 
@@ -126,11 +133,14 @@ def _format_retrieval(result: dict) -> str:
 async def aprag_query(
     question: str,
     mode: str = "hybrid",
-    reasoning: str = "minimal",
+    reasoning: str = "none",
+    papers: list[str] | None = None,
     authors: list[str] | None = None,
     year: int | None = None,
     year_from: int | None = None,
     year_to: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     journals: list[str] | None = None,
     subjects: list[str] | None = None,
     keywords: list[str] | None = None,
@@ -152,8 +162,10 @@ async def aprag_query(
     Args:
         question: The research question.
         mode: Retrieval strategy — "hybrid" (default), "local", "global", "mix", "naive".
-        reasoning: answer LLM effort — "minimal" (default, fastest), "low", "medium", or
-            "high". Higher is slower but more careful; raise it only for hard questions.
+        reasoning: answer LLM effort — "none" (default, fastest), "low", "medium",
+            "high", or "xhigh". Higher is slower but more careful; raise it for hard questions.
+        papers: pin specific papers by filename (e.g. ["Westbury_2019.pdf"]; ".pdf"
+            optional) — the answer draws ONLY on these papers.
         authors: restrict to these author surnames.
         year / year_from / year_to: restrict by publication year (exact or range).
         journals: restrict to these journals/venues (substring).
@@ -162,7 +174,8 @@ async def aprag_query(
         affiliations: restrict to these institutions (substring).
     """
     filters = _build_filters(authors, year, year_from, year_to, journals,
-                             subjects, keywords, affiliations)
+                             subjects, keywords, affiliations,
+                             date_from=date_from, date_to=date_to, papers=papers)
     try:
         payload = await client.query_full(question, mode=mode, reasoning=reasoning, filters=filters)
     except APRAGError as exc:
@@ -177,10 +190,13 @@ async def aprag_query(
 @mcp.tool()
 async def aprag_search(
     question: str,
+    papers: list[str] | None = None,
     authors: list[str] | None = None,
     year: int | None = None,
     year_from: int | None = None,
     year_to: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     journals: list[str] | None = None,
     subjects: list[str] | None = None,
     keywords: list[str] | None = None,
@@ -198,6 +214,7 @@ async def aprag_search(
 
     Args:
         question: The topic to rank papers by (semantic).
+        papers: pin specific papers by filename (".pdf" optional) — rank only these.
         authors: restrict to these author surnames.
         year / year_from / year_to: restrict by publication year (exact or range).
         journals: restrict to these journals/venues (substring).
@@ -207,7 +224,8 @@ async def aprag_search(
         top_k: chunks pulled before folding into papers (server default if omitted).
     """
     filters = _build_filters(authors, year, year_from, year_to, journals,
-                             subjects, keywords, affiliations)
+                             subjects, keywords, affiliations,
+                             date_from=date_from, date_to=date_to, papers=papers)
     try:
         result = await client.search(question, filters=filters, top_k=top_k)
     except APRAGError as exc:
@@ -221,10 +239,13 @@ async def aprag_retrieve(
     mode: str = "naive",
     top_k: int | None = None,
     chunk_top_k: int | None = None,
+    papers: list[str] | None = None,
     authors: list[str] | None = None,
     year: int | None = None,
     year_from: int | None = None,
     year_to: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     journals: list[str] | None = None,
     subjects: list[str] | None = None,
     keywords: list[str] | None = None,
@@ -253,11 +274,14 @@ async def aprag_retrieve(
             "hybrid"/"mix": combined graph + vector retrieval.
         top_k: KG entities/relations to retrieve (server default if omitted).
         chunk_top_k: text chunks to keep after reranking (server default if omitted).
+        papers: pin specific papers by filename (".pdf" optional) — retrieve only
+            from these.
         authors, year, year_from, year_to, journals, subjects, keywords, affiliations:
             optional metadata filters (see aprag_search).
     """
     filters = _build_filters(authors, year, year_from, year_to, journals,
-                             subjects, keywords, affiliations)
+                             subjects, keywords, affiliations,
+                             date_from=date_from, date_to=date_to, papers=papers)
     try:
         result = await client.retrieve(
             question, mode=mode, top_k=top_k, chunk_top_k=chunk_top_k, filters=filters

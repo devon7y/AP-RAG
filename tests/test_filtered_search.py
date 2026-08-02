@@ -91,6 +91,21 @@ def test_resolve_empty_manifest():
     assert s.resolve_filter({"authors": ["Westbury"]}, {}) == set()
 
 
+def test_filter_by_pinned_papers():
+    # exact filename match, case-insensitive, ".pdf" optional
+    assert s.resolve_filter({"papers": ["Martin_2007.pdf"]}, MANIFEST) == {"Martin_2007.pdf"}
+    assert s.resolve_filter({"papers": ["martin_2007"]}, MANIFEST) == {"Martin_2007.pdf"}
+    assert s.resolve_filter(
+        {"papers": ["Martin_2007", "Smith_2021.pdf"]}, MANIFEST
+    ) == {"Martin_2007.pdf", "Smith_2021.pdf"}
+    # exact, not substring — a stem prefix must not match
+    assert s.resolve_filter({"papers": ["Martin"]}, MANIFEST) == set()
+    # ANDs with other dimensions like any filter
+    assert s.resolve_filter(
+        {"papers": ["Martin_2007", "Smith_2021"], "year_from": 2020}, MANIFEST
+    ) == {"Smith_2021.pdf"}
+
+
 # ── assign_reference_ids ──────────────────────────────────────────────────────
 
 

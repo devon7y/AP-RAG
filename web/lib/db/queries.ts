@@ -9,6 +9,7 @@ import {
   gt,
   gte,
   inArray,
+  isNotNull,
   lt,
   type SQL,
 } from "drizzle-orm";
@@ -80,6 +81,7 @@ export async function saveChat({
   title,
   visibility,
   personaAuthor,
+  digest,
 }: {
   id: string;
   userId: string;
@@ -87,6 +89,13 @@ export async function saveChat({
   visibility: VisibilityType;
   // "Talk to Author": the author this chat is scoped to (null for a normal chat).
   personaAuthor?: string | null;
+  // "Research Digest": the topic + date range this chat summarizes (null for a normal chat).
+  digest?: {
+    topic: string;
+    from: string;
+    to: string;
+    bucket: "month" | "year";
+  } | null;
 }) {
   try {
     return await db.insert(chat).values({
@@ -96,9 +105,52 @@ export async function saveChat({
       title,
       visibility,
       personaAuthor: personaAuthor ?? null,
+      digest: digest ?? null,
     });
   } catch (_error) {
     throw new ChatbotError("bad_request:database", "Failed to save chat");
+  }
+}
+
+// Re-stamp a chat's Research Digest config (window end, refreshedAt, papersAtRefresh)
+// after a digest generation run.
+export async function updateChatDigest({
+  chatId,
+  digest: digestValue,
+}: {
+  chatId: string;
+  digest: Chat["digest"];
+}) {
+  try {
+    return await db
+      .update(chat)
+      .set({ digest: digestValue })
+      .where(eq(chat.id, chatId));
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to update chat digest"
+    );
+  }
+}
+
+// Every digest chat of a user (the /digest library), newest first.
+export async function getDigestChatsByUserId({
+  id,
+}: {
+  id: string;
+}): Promise<Chat[]> {
+  try {
+    return await db
+      .select()
+      .from(chat)
+      .where(and(eq(chat.userId, id), isNotNull(chat.digest)))
+      .orderBy(desc(chat.createdAt));
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get digest chats"
+    );
   }
 }
 

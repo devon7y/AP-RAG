@@ -2,6 +2,7 @@ import { generateObject } from "ai";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/app/(auth)/auth";
+import { openaiOptions } from "@/lib/ai/models";
 import { getLanguageModel } from "@/lib/ai/providers";
 import { pcEmbed, qdrantSearch } from "@/lib/atlas/pc";
 
@@ -51,6 +52,9 @@ export async function POST(req: NextRequest) {
 
     const { object: ghost } = await generateObject({
       model: getLanguageModel(),
+      // Schema-bounded creative write-up; the abstract's length is fixed by the schema,
+      // so keep reasoning off and verbosity tight.
+      providerOptions: openaiOptions("none", "low"),
       schema: GhostSchema,
       prompt:
         `You are the cartographer of a semantic map of a research corpus ` +

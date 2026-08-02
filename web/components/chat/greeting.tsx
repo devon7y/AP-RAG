@@ -5,8 +5,14 @@ import { useActiveChat } from "@/hooks/use-active-chat";
 import { formatAuthorStat, useAuthorStats } from "@/lib/aprag/author-stats";
 
 export const Greeting = () => {
-  const { personaAuthor } = useActiveChat();
+  const { personaAuthor, digest } = useActiveChat();
   const { byAuthor } = useAuthorStats();
+
+  // Digest chats auto-send the prompt on open, so they never sit on an empty greeting —
+  // no greeting/suggestions, straight into the live digest.
+  if (digest) {
+    return null;
+  }
 
   if (personaAuthor) {
     const stat = formatAuthorStat(byAuthor.get(personaAuthor));

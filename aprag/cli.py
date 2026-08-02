@@ -25,8 +25,10 @@ from .client import VALID_MODES, APRAGError
 
 
 def _filters_from_args(args: argparse.Namespace) -> dict | None:
-    """Collect the --author/--year/--journal/... flags into a filter dict (or None)."""
+    """Collect the --paper/--author/--year/... flags into a filter dict (or None)."""
     f: dict = {}
+    if getattr(args, "paper", None):
+        f["papers"] = args.paper
     if getattr(args, "author", None):
         f["authors"] = args.author
     if getattr(args, "journal", None):
@@ -43,6 +45,10 @@ def _filters_from_args(args: argparse.Namespace) -> dict | None:
         f["year_from"] = args.year_from
     if getattr(args, "year_to", None) is not None:
         f["year_to"] = args.year_to
+    if getattr(args, "date_from", None):
+        f["date_from"] = args.date_from
+    if getattr(args, "date_to", None):
+        f["date_to"] = args.date_to
     return f or None
 
 
@@ -280,6 +286,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # Metadata filters — shared by ask/chunks/search (scope retrieval to a paper set).
     filt = argparse.ArgumentParser(add_help=False)
+    filt.add_argument("--paper", action="append", metavar="FILENAME",
+                      help="Pin a specific paper by filename ('.pdf' optional; "
+                           "repeatable) — retrieval uses ONLY the pinned papers.")
     filt.add_argument("--author", action="append", metavar="SURNAME",
                       help="Only papers by this author surname (repeatable).")
     filt.add_argument("--journal", action="append", metavar="NAME",
@@ -295,6 +304,10 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="Only papers from this year onward.")
     filt.add_argument("--year-to", type=int, default=None, dest="year_to",
                       help="Only papers up to this year.")
+    filt.add_argument("--date-from", default=None, dest="date_from", metavar="YYYY[-MM[-DD]]",
+                      help="Only papers on/after this date (precision-aware; e.g. 2024-03).")
+    filt.add_argument("--date-to", default=None, dest="date_to", metavar="YYYY[-MM[-DD]]",
+                      help="Only papers on/before this date (precision-aware).")
 
     # Local-PDF resolution flags — shared by ask/search.
     localopt = argparse.ArgumentParser(add_help=False)
@@ -323,8 +336,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ask.add_argument("--top-k", type=int, default=None, dest="top_k")
     p_ask.add_argument("--chunk-top-k", type=int, default=None, dest="chunk_top_k")
     p_ask.add_argument("--user-prompt", default=None, help="Extra instructions for the answer LLM.")
-    p_ask.add_argument("--reasoning", choices=["minimal", "low", "medium", "high"], default="minimal",
-                       help="Answer LLM reasoning effort (default minimal; higher = slower, more careful).")
+    p_ask.add_argument("--reasoning", choices=["none", "low", "medium", "high", "xhigh"], default="none",
+                       help="Answer LLM reasoning effort (default none; higher = slower, more careful).")
     p_ask.add_argument("--plain", action="store_true",
                        help="Print raw markdown instead of rendering it in the terminal.")
     p_ask.set_defaults(func=_cmd_ask)

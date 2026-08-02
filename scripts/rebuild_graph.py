@@ -102,6 +102,17 @@ def find_missing_docs() -> dict[str, list[str]]:
         print(f"ERROR: {graph_path} not found.", flush=True)
         sys.exit(1)
 
+    # Fix-graph guard: this tool repairs the FILE-backed graph only. Once the
+    # store is written by Neo4JStorage the GraphML here is a frozen snapshot —
+    # "repairing" and rewriting it would fork the graph.
+    marker = STORAGE_DIR / ".graph_backend"
+    if marker.exists() and marker.read_text().strip() == "Neo4JStorage":
+        print("ERROR: this store's graph is written by Neo4JStorage (see "
+              ".graph_backend); rebuild_graph.py only repairs the NetworkX/GraphML "
+              "backend. Adapt it (pass graph_storage=Neo4JStorage + live sidecar) "
+              "before using it on a Neo4j-backed store.", flush=True)
+        sys.exit(1)
+
     print(f"Loading graphml ({graph_path.stat().st_size / 1e6:.1f} MB)…", flush=True)
     G = nx.read_graphml(str(graph_path))
 

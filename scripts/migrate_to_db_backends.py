@@ -18,11 +18,28 @@ so reruns after an interruption are cheap.
 Usage (on the PC, with Postgres :5432 and Neo4j :7687 up):
     venv\Scripts\python migrate_to_db_backends.py [--only kv|graph|docstatus] [--skip-verify]
 
+Ingest-side graph-only import (Fix-graph, docs/INGEST_SCALING_BOTTLENECK.md) — the
+one-time GraphML→Neo4j copy that lets the HPC ingest run GRAPH_STORAGE=Neo4JStorage.
+Needs ONLY a live Neo4j (no Postgres/Qdrant): KV/doc-status/vector fall back to empty
+Json/Nano stores in a scratch staging dir so none of the multi-GB ingest JSONs are
+loaded. On success it stamps STORAGE_DIR/.graph_backend = Neo4JStorage, which is what
+pipeline/ingest.py's backend guard checks before allowing a Neo4JStorage run:
+    STORAGE_DIR=/scratch/.../rag_storage_aprag \
+    NEO4J_URI=bolt://127.0.0.1:7687 NEO4J_USERNAME=neo4j NEO4J_PASSWORD=... \
+    python migrate_to_db_backends.py --ingest-graph
+(SLURM wrapper: slurm/job_graph_migrate_neo4j.slurm starts the Neo4j sidecar for you.)
+
 Env (defaults match the PC deployment):
     STORAGE_DIR       = C:\rag_server\rag_storage_full   (source files; also LightRAG working_dir)
     QDRANT_URL        = http://localhost:6333
     POSTGRES_HOST/PORT/USER/PASSWORD/DATABASE            (lightrag reads these itself)
     NEO4J_URI/NEO4J_USERNAME/NEO4J_PASSWORD              (lightrag reads these itself)
+    KV_STORAGE / DOC_STATUS_STORAGE / GRAPH_STORAGE / VECTOR_STORAGE
+                      — backend class overrides (defaults = the PC set:
+                        PGKVStorage / PGDocStatusStorage / Neo4JStorage /
+                        QdrantVectorDBStorage; --ingest-graph overrides the non-graph
+                        three to Json/Json/Nano)
+    MIGRATE_STAGING_DIR = STORAGE_DIR/_migrate_staging   (--ingest-graph working_dir)
     KV_BATCH          = 2000   records per KV upsert call
     NODE_BATCH        = 2000   nodes per Neo4j batch
     EDGE_BATCH        = 1000   edges per Neo4j batch
@@ -41,6 +58,10 @@ from lightrag import LightRAG
 from lightrag.utils import EmbeddingFunc
 
 STORAGE_DIR = Path(os.environ.get("STORAGE_DIR", r"C:\rag_server\rag_storage_full"))
+KV_STORAGE = os.environ.get("KV_STORAGE", "PGKVStorage")
+DOC_STATUS_STORAGE = os.environ.get("DOC_STATUS_STORAGE", "PGDocStatusStorage")
+GRAPH_STORAGE = os.environ.get("GRAPH_STORAGE", "Neo4JStorage")
+VECTOR_STORAGE = os.environ.get("VECTOR_STORAGE", "QdrantVectorDBStorage")
 KV_BATCH = int(os.environ.get("KV_BATCH", 2000))
 NODE_BATCH = int(os.environ.get("NODE_BATCH", 2000))
 EDGE_BATCH = int(os.environ.get("EDGE_BATCH", 1000))
@@ -117,6 +138,24 @@ async def migrate_doc_status(rag: LightRAG) -> None:
     print(f"[docstatus] DONE {len(items)} records in {time.time() - t0:.0f}s", flush=True)
 
 
+def _graphml_cast(text, typ):
+    """Cast a GraphML <data> value to its declared attr.type. LightRAG's Neo4j
+    store needs numeric weight (double) / created_at (long) as real numbers —
+    imported as strings, _merge_edges_then_upsert does float + str and crashes."""
+    s = text or ""
+    if typ in ("double", "float"):
+        try:
+            return float(s)
+        except (ValueError, TypeError):
+            return 1.0
+    if typ in ("long", "int"):
+        try:
+            return int(float(s))
+        except (ValueError, TypeError):
+            return 0
+    return s
+
+
 def _iter_graphml(path: Path):
     """Stream (kind, payload) from a GraphML file without loading it into RAM.
 
@@ -138,17 +177,22 @@ def _iter_graphml(path: Path):
             continue
         tag = elem.tag
         if tag == f"{ns}key":
-            keys[elem.get("id")] = elem.get("attr.name", elem.get("id"))
+            keys[elem.get("id")] = (elem.get("attr.name", elem.get("id")),
+                                    elem.get("attr.type", "string"))
             elem.clear()
         elif tag == f"{ns}node":
-            props = {keys.get(d.get("key"), d.get("key")): (d.text or "")
-                     for d in elem.findall(f"{ns}data")}
+            props = {}
+            for d in elem.findall(f"{ns}data"):
+                name, typ = keys.get(d.get("key"), (d.get("key"), "string"))
+                props[name] = _graphml_cast(d.text, typ)
             yield "node", (elem.get("id"), props)
             if graph_elem is not None:
                 graph_elem.clear()  # O(1): drop all completed children
         elif tag == f"{ns}edge":
-            props = {keys.get(d.get("key"), d.get("key")): (d.text or "")
-                     for d in elem.findall(f"{ns}data")}
+            props = {}
+            for d in elem.findall(f"{ns}data"):
+                name, typ = keys.get(d.get("key"), (d.get("key"), "string"))
+                props[name] = _graphml_cast(d.text, typ)
             yield "edge", (elem.get("source"), elem.get("target"), props)
             if graph_elem is not None:
                 graph_elem.clear()
@@ -203,49 +247,99 @@ async def migrate_graph(rag: LightRAG) -> None:
     await g.index_done_callback()
 
 
-async def verify(rag: LightRAG) -> None:
+async def verify(rag: LightRAG, graph_only: bool = False) -> None:
     """Spot-check readback through the SAME query-path APIs the server uses."""
-    # 1. a known chunk id from the source file
-    src = STORAGE_DIR / "kv_store_text_chunks.json"
-    with src.open(encoding="utf-8") as f:
-        head = f.read(200)
-    first_key = head.split('"')[1]
-    rec = await rag.text_chunks.get_by_id(first_key)
-    assert rec and rec.get("content"), f"text_chunks readback failed for {first_key}"
-    print(f"[verify] text_chunks.get_by_id OK ({first_key[:24]}…)", flush=True)
+    if not graph_only:
+        # 1. a known chunk id from the source file
+        src = STORAGE_DIR / "kv_store_text_chunks.json"
+        with src.open(encoding="utf-8") as f:
+            head = f.read(200)
+        first_key = head.split('"')[1]
+        rec = await rag.text_chunks.get_by_id(first_key)
+        assert rec and rec.get("content"), f"text_chunks readback failed for {first_key}"
+        print(f"[verify] text_chunks.get_by_id OK ({first_key[:24]}…)", flush=True)
     # 2. graph degree of a node sampled from Neo4j itself
     labels = await rag.chunk_entity_relation_graph.get_all_labels()
     assert labels, "graph has no labels after migration"
     node = await rag.chunk_entity_relation_graph.get_node(labels[0])
     assert node, f"graph get_node failed for {labels[0]!r}"
     print(f"[verify] graph get_node OK ({labels[0][:32]!r})", flush=True)
-    # 3. doc status counts
-    counts = await rag.doc_status.get_status_counts()
-    print(f"[verify] doc_status counts: {counts}", flush=True)
+    # 2b. node/edge counts straight from the DB (INGEST_SCALING_BOTTLENECK.md
+    # acceptance criterion 5 — compare against the source counts logged by
+    # migrate_graph). Reaches for the private driver; degrade gracefully.
+    try:
+        drv = getattr(rag.chunk_entity_relation_graph, "_driver", None)
+        if drv is not None:
+            async with drv.session() as s:
+                n = (await (await s.run("MATCH (n) RETURN count(n) AS c")).single())["c"]
+                e = (await (await s.run("MATCH ()-[r]->() RETURN count(r) AS c")).single())["c"]
+            print(f"[verify] neo4j totals: nodes={n} edges={e}", flush=True)
+    except Exception as exc:  # noqa: BLE001 — diagnostics only, never fail the migration
+        print(f"[verify] neo4j count query skipped: {exc}", flush=True)
+    if not graph_only:
+        # 3. doc status counts
+        counts = await rag.doc_status.get_status_counts()
+        print(f"[verify] doc_status counts: {counts}", flush=True)
 
 
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", choices=["kv", "graph", "docstatus"], default=None)
     ap.add_argument("--skip-verify", action="store_true")
+    ap.add_argument(
+        "--ingest-graph",
+        action="store_true",
+        help="Graph-only import for the HPC ingest store (Fix-graph): implies "
+        "--only graph, needs no Postgres/Qdrant (Json/Nano stand-ins live in a "
+        "staging dir so the multi-GB ingest JSONs are never loaded), and stamps "
+        "STORAGE_DIR/.graph_backend=Neo4JStorage on success.",
+    )
     args = ap.parse_args()
 
+    kv_storage, doc_status_storage, vector_storage = (
+        KV_STORAGE, DOC_STATUS_STORAGE, VECTOR_STORAGE,
+    )
+    working_dir = STORAGE_DIR
+    if args.ingest_graph:
+        args.only = "graph"
+        src = STORAGE_DIR / "graph_chunk_entity_relation.graphml"
+        if not src.exists():
+            print(f"ERROR: --ingest-graph but {src} does not exist", flush=True)
+            return 1
+        # Empty stand-in backends in a staging working_dir: JsonKVStorage eagerly
+        # json.loads its whole file at init, and the ingest store's KV JSONs are
+        # multi-GB (llm_response_cache alone OOM-kills login nodes) — so LightRAG
+        # must NOT be pointed at the real store for a graph-only import.
+        kv_storage, doc_status_storage, vector_storage = (
+            "JsonKVStorage", "JsonDocStatusStorage", "NanoVectorDBStorage",
+        )
+        working_dir = Path(
+            os.environ.get("MIGRATE_STAGING_DIR", STORAGE_DIR / "_migrate_staging")
+        )
+        working_dir.mkdir(parents=True, exist_ok=True)
+        print(f"ingest-graph mode: staging working_dir={working_dir}", flush=True)
+
     print(f"source: {STORAGE_DIR}", flush=True)
+    print(
+        f"backends: kv={kv_storage} docstatus={doc_status_storage} "
+        f"graph={GRAPH_STORAGE} vector={vector_storage}",
+        flush=True,
+    )
     rag = LightRAG(
-        working_dir=str(STORAGE_DIR),
+        working_dir=str(working_dir),
         llm_model_func=_dummy_llm,
         embedding_func=EmbeddingFunc(
             embedding_dim=EMBEDDING_DIM, max_token_size=8192, func=_dummy_embed
         ),
-        kv_storage="PGKVStorage",
-        doc_status_storage="PGDocStatusStorage",
-        graph_storage="Neo4JStorage",
-        vector_storage="QdrantVectorDBStorage",
+        kv_storage=kv_storage,
+        doc_status_storage=doc_status_storage,
+        graph_storage=GRAPH_STORAGE,
+        vector_storage=vector_storage,
         vector_db_storage_cls_kwargs={"cosine_better_than_threshold": 0.2},
         embedding_batch_num=500,
     )
     await rag.initialize_storages()
-    print("storages initialized (PG tables + Neo4j indexes created)", flush=True)
+    print("storages initialized (destination tables/indexes created)", flush=True)
 
     try:
         if args.only in (None, "kv"):
@@ -255,7 +349,12 @@ async def main() -> int:
         if args.only in (None, "graph"):
             await migrate_graph(rag)
         if not args.skip_verify:
-            await verify(rag)
+            await verify(rag, graph_only=args.ingest_graph)
+        if args.ingest_graph:
+            # The backend guard in pipeline/ingest.py keys off this marker: only a
+            # verified import may authorize Neo4JStorage runs against this store.
+            (STORAGE_DIR / ".graph_backend").write_text("Neo4JStorage\n")
+            print(f"stamped {STORAGE_DIR / '.graph_backend'} = Neo4JStorage", flush=True)
     finally:
         await rag.finalize_storages()
     print("MIGRATION COMPLETE", flush=True)

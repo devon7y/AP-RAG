@@ -46,6 +46,9 @@ pip install --quiet --no-index "accelerate>=1.1.0" bitsandbytes sentence-transfo
 pip install --quiet pypdf pymupdf tiktoken  # ensure latest from PyPI as fallback (pymupdf: column-aware extraction)
 pip install --quiet "git+https://github.com/devon7y/LightRAG.git"
 pip install --quiet qdrant-client
+# Fix-graph: Neo4JStorage driver. Wheelhouse first (Trillium compute nodes are
+# offline; pipmaster cannot self-install it at runtime there), PyPI as fallback.
+pip install --quiet --no-index neo4j 2>/dev/null || pip install --quiet neo4j
 
 echo "[$(date)] Verifying vllm version..."
 python3 -c "import vllm; print('vllm version:', vllm.__version__)"

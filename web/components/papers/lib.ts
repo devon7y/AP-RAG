@@ -9,6 +9,7 @@ export type SortOrder = "asc" | "desc";
 export type PapersQuery = {
   q: string; // instant quick match (title/author/journal/DOI/filename tokens)
   deep: string; // semantic deep-search query ("" = browse mode)
+  similar: string; // "related to this paper" mode — a filename ("" = off)
   sort: string;
   order: SortOrder;
   page: number; // 0-based
@@ -21,6 +22,7 @@ export const PER_CHOICES = [25, 50, 100, 200, 500, 1000] as const;
 export const DEFAULT_QUERY: PapersQuery = {
   q: "",
   deep: "",
+  similar: "",
   sort: "year",
   order: "desc",
   page: 0,
@@ -75,6 +77,7 @@ export function parsePapersQuery(sp: ParamsLike): PapersQuery {
   return {
     q: sp.get("q") ?? "",
     deep: sp.get("deep") ?? "",
+    similar: sp.get("similar") ?? "",
     sort: SORT_KEYS.has(sort) ? sort : DEFAULT_QUERY.sort,
     order: sp.get("order") === "asc" ? "asc" : "desc",
     page: Math.max(0, (Number(sp.get("page")) || 1) - 1), // 1-based in the URL
@@ -110,6 +113,9 @@ export function papersQueryString(q: PapersQuery): string {
   }
   if (q.deep) {
     sp.set("deep", q.deep);
+  }
+  if (q.similar) {
+    sp.set("similar", q.similar);
   }
   if (q.sort !== DEFAULT_QUERY.sort) {
     sp.set("sort", q.sort);
