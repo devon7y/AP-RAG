@@ -51,7 +51,7 @@ export function paperWorldPos(
   return out.set(
     THREE.MathUtils.lerp(data.paperGround[i * 3], data.paperSpace[i * 3], morph),
     THREE.MathUtils.lerp(
-      data.paperGroundY[i] + BEACON_EXTRA_LIFT,
+      data.paperGroundY[i] + data.paperLift[i],
       data.paperSpace[i * 3 + 1],
       morph,
     ),
@@ -88,6 +88,7 @@ export default function PaperBeacons({
       s4[i * 4] = data.paperSpace[i * 3];
       s4[i * 4 + 1] = data.paperSpace[i * 3 + 1];
       s4[i * 4 + 2] = data.paperSpace[i * 3 + 2];
+      s4[i * 4 + 3] = data.paperLift[i]; // spare lane: normal-aware clearance
     }
     const posG4 = new THREE.InstancedBufferAttribute(g4, 4);
     const posS4 = new THREE.InstancedBufferAttribute(s4, 4);
@@ -116,7 +117,7 @@ export default function PaperBeacons({
     mat.positionNode = morphPosition(
       vec3(aG4.x, 0, aG4.y),
       vec3(aS4.x, aS4.y, aS4.z),
-      0,
+      aS4.w,
     );
 
     const alive = step(aYear, uYear.add(0.01)).mul(step(uYearLo, aYear.add(0.01)));

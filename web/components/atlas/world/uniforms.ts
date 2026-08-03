@@ -76,7 +76,8 @@ export function groundHeight(worldPos: Node<"vec3">) {
 export function morphPosition(
   aGround: Node<"vec3">,
   aSpace: Node<"vec3">,
-  lift = CHUNK_LIFT,
+  /** constant, or a per-instance node when clearance varies with the slope */
+  lift: number | Node<"float"> = CHUNK_LIFT,
 ) {
   const grounded = vec3(
     aGround.x,

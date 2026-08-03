@@ -80,6 +80,9 @@ export interface WorldData {
   paperColorGround: Float32Array;
   paperColorSpace: Float32Array;
   paperSize: Float32Array;
+  /** clearance above the surface along its NORMAL, so a beacon on a hillside
+   *  stands clear of the slope instead of cutting into it */
+  paperLift: Float32Array;
   paperYear: Float32Array;
   paperCluster: Int16Array;
   // sky
@@ -686,6 +689,7 @@ export function deriveWorld(
   const paperSize = new Float32Array(nPapers);
   const paperYear = new Float32Array(nPapers);
   const paperCluster = new Int16Array(nPapers);
+  const paperLift = new Float32Array(nPapers);
 
   // majority cluster per paper
   const counts = new Map<number, Map<number, number>>();
@@ -706,8 +710,7 @@ export function deriveWorld(
     paperGround[i * 3] = wx;
     paperGround[i * 3 + 1] = 0;
     paperGround[i * 3 + 2] = wz;
-    paperGroundY[i] =
-      sampleField(eras.final, p.centroid[0], p.centroid[1]) * HEIGHT_SCALE + CHUNK_LIFT;
+    paperGroundY[i] = sampleField(eras.final, p.centroid[0], p.centroid[1]) * HEIGHT_SCALE;
     paperSpace[i * 3] = (p.centroid3[0] - 0.5) * WORLD_SIZE;
     paperSpace[i * 3 + 1] = (p.centroid3[1] - 0.5) * WORLD_SIZE;
     paperSpace[i * 3 + 2] = (p.centroid3[2] - 0.5) * WORLD_SIZE;
@@ -734,6 +737,22 @@ export function deriveWorld(
     paperColorSpace[i * 3 + 2] = cAge.b * lum;
     paperSize[i] =
       (1.15 + 1.35 * (Math.log1p(p.nChunks) / Math.log1p(maxChunks))) * beaconScale;
+    // Offset along the surface normal, not straight up: on a slope a purely
+    // vertical lift still leaves the sprite buried in the hillside. The normal's
+    // vertical component is 1/sqrt(1+|grad|^2), so dividing the radius by it
+    // gives the vertical distance that clears the surface by one radius.
+    const d = 0.004;
+    const hx =
+      (sampleField(eras.final, p.centroid[0] + d, p.centroid[1]) -
+        sampleField(eras.final, p.centroid[0] - d, p.centroid[1])) *
+      HEIGHT_SCALE;
+    const hz =
+      (sampleField(eras.final, p.centroid[0], p.centroid[1] + d) -
+        sampleField(eras.final, p.centroid[0], p.centroid[1] - d)) *
+      HEIGHT_SCALE;
+    const run = 2 * d * WORLD_SIZE;
+    const grad = Math.hypot(hx / run, hz / run);
+    paperLift[i] = paperSize[i] * 0.65 * Math.min(4, Math.sqrt(1 + grad * grad));
     paperYear[i] = pd;
   });
 
@@ -889,6 +908,7 @@ export function deriveWorld(
     paperColorGround,
     paperColorSpace,
     paperSize,
+    paperLift,
     paperYear,
     paperCluster,
     entities,
