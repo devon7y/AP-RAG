@@ -191,7 +191,11 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!cancelled && data) {
-          setLocated(tab.id, { page: data.page ?? null, rects: data.rects ?? [] });
+          setLocated(tab.id, {
+            page: data.page ?? null,
+            rects: data.rects ?? [],
+            spans: data.spans ?? [],
+          });
         }
       })
       .catch(() => {
@@ -358,7 +362,24 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
   };
 
   const highlightPage = tab.located?.page ?? null;
-  const highlightRects = tab.located?.rects ?? [];
+  // Highlights per page: a passage that crosses a page break is highlighted on both.
+  const highlightsByPage = useMemo(() => {
+    const map = new Map<number, [number, number, number, number][]>();
+    const located = tab.located;
+    if (!located) {
+      return map;
+    }
+    const spans =
+      located.spans && located.spans.length > 0
+        ? located.spans
+        : located.page
+          ? [{ page: located.page, rects: located.rects }]
+          : [];
+    for (const span of spans) {
+      map.set(span.page, span.rects);
+    }
+    return map;
+  }, [tab.located]);
 
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", !active && "hidden")}>
@@ -490,7 +511,7 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
                 doc={docRef.current}
                 filename={tab.filename}
                 height={pageHeight}
-                highlights={page === highlightPage ? highlightRects : []}
+                highlights={highlightsByPage.get(page) ?? []}
                 key={page}
                 page={page}
                 render={page >= visible.from && page <= visible.to}

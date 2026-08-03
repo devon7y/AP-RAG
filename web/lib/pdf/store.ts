@@ -7,9 +7,16 @@ import { create } from "zustand";
 // message rendering — a citation popover, a reference row, a chunk card — while the
 // reader pane is mounted once at the layout level.
 
-export type PdfLocation = {
-  page: number | null; // page the passage was found on (null = not found)
+export type PdfSpan = {
+  page: number;
   rects: [number, number, number, number][]; // fractional, top-left origin
+};
+
+export type PdfLocation = {
+  page: number | null; // first page of the passage (null = not found)
+  rects: [number, number, number, number][]; // that page's rects
+  // A passage can run across a page break, so the highlight is per page.
+  spans?: PdfSpan[];
 };
 
 export type PdfTab = {

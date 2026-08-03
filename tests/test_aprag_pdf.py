@@ -177,6 +177,51 @@ def test_locate_tolerates_broken_whitespace(real_pdf):
     assert p.locate_quote(str(real_pdf), "Page 3:\n   word\nfrequency")["page"] == 3
 
 
+def test_locate_highlights_a_contiguous_run(tmp_path):
+    """The highlight must cover the whole passage as one span. Sampling phrases from it
+    instead produced disconnected fragments scattered down the page."""
+    pymupdf = pytest.importorskip("pymupdf")
+    pytest.importorskip("PIL")
+    path = tmp_path / "prose.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    lines = [
+        "Generative artificial intelligence is reshaping core activities",
+        "in psychometrics, reflecting a broader shift toward treating",
+        "language as a scalable behavioral trace for cognitive modelling",
+        "and for the measurement of individual differences at scale.",
+    ]
+    for i, line in enumerate(lines):
+        page.insert_text((60, 120 + i * 22), line, fontsize=11)
+    doc.save(str(path))
+    doc.close()
+
+    got = p.locate_quote(str(path), " ".join(lines))
+    assert got["page"] == 1
+    # One rectangle per line of the passage, not a scatter of word-level fragments.
+    assert len(got["rects"]) == len(lines), got["rects"]
+
+
+def test_locate_survives_symbol_only_tokens(tmp_path):
+    """Statistics text is full of standalone '=' and minus signs, which carry no
+    letters or digits; a run of them used to desync alignment and lose the passage."""
+    pymupdf = pytest.importorskip("pymupdf")
+    path = tmp_path / "stats.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((60, 120), "The effect was reliable (z = -0.30, P = 0.767,", fontsize=11)
+    page.insert_text((60, 142), "d < 0.01) across the temporal and spatial conditions.", fontsize=11)
+    doc.save(str(path))
+    doc.close()
+
+    got = p.locate_quote(
+        str(path),
+        "The effect was reliable (z = -0.30, P = 0.767, d < 0.01) across the temporal "
+        "and spatial conditions.",
+    )
+    assert got["page"] == 1 and got["rects"]
+
+
 def test_locate_misses_cleanly_when_absent(real_pdf):
     got = p.locate_quote(str(real_pdf), "this sentence is nowhere in the document at all")
     assert got["page"] is None and got["rects"] == []
