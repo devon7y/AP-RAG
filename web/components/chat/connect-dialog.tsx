@@ -15,6 +15,9 @@ import {
 
 // Public endpoint of the AP-RAG query server (Cloudflare Tunnel → PC).
 const SERVER_URL = "https://rag-api.devon7y.com";
+// The real key is never rendered here: this dialog ships to the browser, and the corpus
+// is exactly what the key protects. Readers get it from Devon and paste it in.
+const KEY_PLACEHOLDER = "<your-key>";
 const REPO = "git+https://github.com/devon7y/AP-RAG.git";
 
 function Code({ children }: { children: string }) {
@@ -86,6 +89,22 @@ export function ConnectDialog() {
             </p>
           </section>
 
+          {/* API key */}
+          <section className="space-y-2">
+            <h3 className="font-medium">2. Get the access key</h3>
+            <p className="text-muted-foreground text-xs">
+              The server is on a public address, so every request needs a shared secret —
+              without it you will get{" "}
+              <code className="text-foreground">401 unauthorized</code>. Ask Devon for the
+              key, then set it wherever the client runs:
+            </p>
+            <Code>{`export APRAG_API_KEY=${KEY_PLACEHOLDER}`}</Code>
+            <p className="text-muted-foreground text-xs">
+              The snippets below assume it is set. Keep it out of anything public — it
+              grants access to the full-text corpus.
+            </p>
+          </section>
+
           {/* MCP */}
           <section className="space-y-2 rounded-xl border border-border/60 p-3.5">
             <div className="flex items-baseline justify-between">
@@ -102,7 +121,8 @@ export function ConnectDialog() {
             </p>
             <p className="font-medium text-xs">Claude Code</p>
             <Code>{`claude mcp add --scope user aprag \\
-  --env APRAG_QUERY_URL=${SERVER_URL} -- aprag-mcp`}</Code>
+  --env APRAG_QUERY_URL=${SERVER_URL} \\
+  --env APRAG_API_KEY=${KEY_PLACEHOLDER} -- aprag-mcp`}</Code>
             <p className="font-medium text-xs">
               Codex / Gemini CLI / Cursor / other MCP clients
             </p>
@@ -110,7 +130,10 @@ export function ConnectDialog() {
   "mcpServers": {
     "aprag": {
       "command": "aprag-mcp",
-      "env": { "APRAG_QUERY_URL": "${SERVER_URL}" }
+      "env": {
+        "APRAG_QUERY_URL": "${SERVER_URL}",
+        "APRAG_API_KEY": "${KEY_PLACEHOLDER}"
+      }
     }
   }
 }`}</Code>
@@ -126,6 +149,7 @@ export function ConnectDialog() {
           <section className="space-y-2 rounded-xl border border-border/60 p-3.5">
             <h3 className="font-medium">Method B — CLI (for quick / scripted use)</h3>
             <Code>{`aprag config set-server ${SERVER_URL}
+export APRAG_API_KEY=${KEY_PLACEHOLDER}   # add to ~/.zshrc to persist
 
 aprag ask    "How does word frequency affect lexical decision times?"
 aprag chunks "contextual diversity" --mode naive
