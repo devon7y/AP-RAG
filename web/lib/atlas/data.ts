@@ -21,22 +21,21 @@ async function j<T>(path: string): Promise<T> {
   return r.json();
 }
 
-/** Binary columnar atlas (atlas.bin + sidecars, written by pack_atlas.py).
- *  Typed arrays view the fetched buffer directly — no number[] parse. This is
- *  the path that survives the full ~500k-chunk corpus; atlas.json is fallback. */
+/** Binary columnar atlas (atlas.bin + doc_hashes.json, written by pack_full.py).
+ *  Typed arrays view the fetched buffer directly — no number[] parse. At the full
+ *  ~445k-chunk corpus the old string sidecar was ~118 MB, so chunk ids ride along
+ *  as (docIdx, chunkNum) columns instead and passage prose is fetched per click. */
 async function loadAtlasBinary(): Promise<AtlasData> {
   const meta = await j<{
     n: number;
     sections: { name: string; dtype: string; offset: number; count: number }[];
   }>("/data/atlas.meta.json");
-  const [buf, strings] = await Promise.all([
+  const [buf, docHashes] = await Promise.all([
     fetch("/data/atlas.bin").then((r) => {
       if (!r.ok) throw new Error(`atlas.bin: ${r.status}`);
       return r.arrayBuffer();
     }),
-    j<{ snippet: string[]; section: string[]; chunkId: string[] }>(
-      "/data/atlas_strings.json",
-    ),
+    j<string[]>("/data/doc_hashes.json"),
   ]);
   const view = <T>(
     name: string,
@@ -53,24 +52,43 @@ async function loadAtlasBinary(): Promise<AtlasData> {
     cluster: view("cluster", Int16Array),
     paper: view("paper", Int32Array),
     year: view("year", Int16Array),
-    snippet: strings.snippet,
-    section: strings.section,
-    chunkId: strings.chunkId,
+    docIdx: view("docIdx", Int32Array),
+    chunkNum: view("chunkNum", Int32Array),
+    docHashes,
   };
 }
 
-async function loadAtlasJson(): Promise<AtlasData> {
-  const rawAtlas = await j<Record<string, unknown>>("/data/atlas.json");
+/** Rebuild a chunk's id (the form the query server indexes by). */
+export function chunkIdOf(atlas: AtlasData, i: number): string {
+  const d = atlas.docIdx[i];
+  if (d < 0) return "";
+  return `doc-${atlas.docHashes[d]}-chunk-${String(atlas.chunkNum[i]).padStart(3, "0")}`;
+}
+
+const CHUNK_ID_RE = /^doc-([0-9a-f]{32})-chunk-(\d+)$/;
+/** Chunk-id lookups go through a numeric key rather than 445k interned strings:
+ *  (docIdx, chunkNum) packs into one integer, which keeps the map ~10x smaller
+ *  and avoids building the string table at all. */
+export interface ChunkIndex {
+  get(chunkId: string): number | undefined;
+}
+
+export function makeChunkIndex(atlas: AtlasData): ChunkIndex {
+  const docOf = new Map<string, number>();
+  atlas.docHashes.forEach((h, i) => docOf.set(h, i));
+  const byKey = new Map<number, number>();
+  for (let i = 0; i < atlas.n; i++) {
+    const d = atlas.docIdx[i];
+    if (d >= 0) byKey.set(d * 1_048_576 + atlas.chunkNum[i], i);
+  }
   return {
-    n: rawAtlas.n as number,
-    pos2: Float32Array.from(rawAtlas.pos2 as number[]),
-    pos3: Float32Array.from(rawAtlas.pos3 as number[]),
-    cluster: Int16Array.from(rawAtlas.cluster as number[]),
-    paper: Int32Array.from(rawAtlas.paper as number[]),
-    year: Int16Array.from(rawAtlas.year as number[]),
-    snippet: rawAtlas.snippet as string[],
-    section: rawAtlas.section as string[],
-    chunkId: rawAtlas.chunkId as string[],
+    get(chunkId: string) {
+      const m = CHUNK_ID_RE.exec(chunkId);
+      if (!m) return undefined;
+      const d = docOf.get(m[1]);
+      if (d === undefined) return undefined;
+      return byKey.get(d * 1_048_576 + Number(m[2]));
+    },
   };
 }
 
@@ -78,7 +96,7 @@ async function loadAtlasJson(): Promise<AtlasData> {
 export function loadCorpus(): Promise<CorpusData> {
   corpusPromise ??= (async () => {
     const [atlas, papers, clusters, voids, hm] = await Promise.all([
-      loadAtlasBinary().catch(loadAtlasJson),
+      loadAtlasBinary(),
       j<CorpusData["papers"]>("/data/papers.json"),
       j<CorpusData["clusters"]>("/data/clusters.json"),
       j<CorpusData["voids"]>("/data/voids.json"),
@@ -101,14 +119,30 @@ export function loadPaperMeta(): Promise<PaperMeta> {
   return paperMetaPromise;
 }
 
-/** kNN graph over chunks (full-vector cosine). */
+/** kNN graph over chunks, computed on GPU at the full 4096 dimensions.
+ *  ~28 MB, so it is a separate binary the radio pulls only when switched on. */
 export function loadKnn(): Promise<KnnGraph> {
   knnPromise ??= (async () => {
-    const raw = await j<{ k: number; idx: number[]; sim: number[] }>("/data/knn.json");
+    const meta = await j<{
+      n: number;
+      k: number;
+      sections: { name: string; offset: number; count: number }[];
+    }>("/data/knn.meta.json");
+    const buf = await fetch("/data/knn.bin").then((r) => {
+      if (!r.ok) throw new Error(`knn.bin: ${r.status}`);
+      return r.arrayBuffer();
+    });
+    const sec = (name: string) => {
+      const x = meta.sections.find((y) => y.name === name);
+      if (!x) throw new Error(`knn.bin: missing ${name}`);
+      return x;
+    };
+    const i = sec("idx");
+    const m = sec("sim");
     return {
-      k: raw.k,
-      idx: Int32Array.from(raw.idx),
-      sim: Float32Array.from(raw.sim),
+      k: meta.k,
+      idx: new Int32Array(buf, i.offset, i.count),
+      sim: new Float32Array(buf, m.offset, m.count),
     };
   })();
   return knnPromise;

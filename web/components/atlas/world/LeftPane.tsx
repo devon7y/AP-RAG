@@ -468,14 +468,7 @@ function LensesPanel({
       if (authorSet && !authorSet.has(i)) return;
       if (j && !p.journal.toLowerCase().includes(j)) return;
       if (terms.length) {
-        const hay = [
-          p.title,
-          p.abstract,
-          ...(paperMeta?.keywords[i] ?? []),
-          ...(paperMeta?.subjects[i] ?? []),
-        ]
-          .join(" | ")
-          .toLowerCase();
+        const hay = data.paperHaystack[i];
         if (!terms.some((t) => hay.includes(t))) return;
       }
       n++;
@@ -706,7 +699,7 @@ function RadioPanel({ data, corpus }: { data: WorldData; corpus: CorpusData }) {
   const chunkIndex = useMemo(() => data.chunkIdToIdx, [data]);
 
   const nowPaper = radioIdx !== null ? corpus.papers[corpus.atlas.paper[radioIdx]] : null;
-  const nowSection = radioIdx !== null ? corpus.atlas.section[radioIdx] : "";
+  const nowSection = useWorld((s) => s.radioSection);
 
   const tune = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -201,6 +201,8 @@ interface WorldState {
   radioBias: number;
   radioFollow: boolean;
   radioSentence: string | null;
+  /** section title of the passage on air (fetched with its text) */
+  radioSection: string;
 
   // the jet (crash-to-read)
   planeOn: boolean;
@@ -296,6 +298,7 @@ export const useWorld = create<WorldState>((set) => ({
   radioBias: 0,
   radioFollow: true,
   radioSentence: null,
+  radioSection: "",
 
   planeOn: false,
   aircraft: "a380",

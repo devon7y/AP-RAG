@@ -67,14 +67,20 @@ def clean_str_list(v, cap: int) -> list[str]:
 
 papers = json.loads((PUB / "papers.json").read_text())
 manifest = json.loads((RAW / "papers_metadata.json").read_text())
-chunk_meta = json.loads((RAW / "chunk_meta.json").read_text())
+# The chunk vectors are the corpus's 7.3 GB of embeddings; they live on the HPC
+# now, so they are optional here — only the daily game needs them.
+_meta_p = RAW / "chunk_meta.json"
+chunk_meta = json.loads(_meta_p.read_text()) if _meta_p.exists() else []
 # repo-root Drive map (filename → webViewLink), built by scripts/build_drive_map.py
 drive_map_path = HERE.parent.parent / "data" / "drive_links.json"
 drive_map: dict[str, str] = (
     json.loads(drive_map_path.read_text()) if drive_map_path.exists() else {}
 )
-vecs = np.load(RAW / "chunk_vectors.npy")
-vecs = vecs / (np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-9)
+_vec_p = RAW / "chunk_vectors.npy"
+if _vec_p.exists() and chunk_meta:
+    vecs = np.load(_vec_p, mmap_mode="r")
+else:
+    vecs = None
 
 file_to_idx = {p["file"]: i for i, p in enumerate(papers)}
 
@@ -198,29 +204,42 @@ jdump(
     },
 )
 
-# ── oeuvre centroids + eligible x all cosine matrix (daily game) ─────────────
-paper_chunks: dict[int, list[int]] = defaultdict(list)
-for ci, m in enumerate(chunk_meta):
-    pi = file_to_idx.get(m["file_path"])
-    if pi is not None:
-        paper_chunks[pi].append(ci)
+# ── oeuvre centroids + cosine matrix (daily game) ────────────────────────────
+# Capped: the matrix is eligible x all, so at full-corpus author counts it would
+# be hundreds of millions of cells. Only the best-represented authors are worth
+# guessing anyway, so both axes are restricted to the top MAX_GAME_AUTHORS.
+MAX_GAME_AUTHORS = 600
 
-cent = np.zeros((len(authors), vecs.shape[1]), dtype=np.float32)
-for ai, a in enumerate(authors):
-    rows = [ci for pi in a["papers"] for ci in paper_chunks.get(pi, [])]
-    if rows:
-        v = vecs[rows].mean(axis=0)
-        cent[ai] = v / (np.linalg.norm(v) + 1e-9)
+if vecs is None:
+    print("no chunk vectors available — skipping author_game.json "
+          "(the daily game needs 4096-d oeuvre centroids)")
+else:
+    paper_chunks: dict[int, list[int]] = defaultdict(list)
+    for ci, m in enumerate(chunk_meta):
+        pi = file_to_idx.get(m["file_path"])
+        if pi is not None:
+            paper_chunks[pi].append(ci)
 
-eligible = [ai for ai, a in enumerate(authors) if len(a["papers"]) >= MIN_PAPERS_ELIGIBLE]
-sim = cent[eligible] @ cent.T  # (n_eligible, n_all)
-jdump(
-    SRV / "author_game.json",
-    {
-        "names": [a["name"] for a in authors],
-        "nPapers": [len(a["papers"]) for a in authors],
-        "eligible": eligible,
-        "sim": [[round(float(x), 3) for x in row] for row in sim],
-    },
-)
+    ranked = sorted(range(len(authors)), key=lambda ai: -len(authors[ai]["papers"]))
+    pool = sorted(ranked[:MAX_GAME_AUTHORS])
+    cent = np.zeros((len(pool), vecs.shape[1]), dtype=np.float32)
+    for row, ai in enumerate(pool):
+        rows = [ci for pi in authors[ai]["papers"] for ci in paper_chunks.get(pi, [])]
+        if rows:
+            v = np.asarray(vecs[rows]).mean(axis=0)
+            cent[row] = v / (np.linalg.norm(v) + 1e-9)
+
+    elig_local = [r for r, ai in enumerate(pool)
+                  if len(authors[ai]["papers"]) >= MIN_PAPERS_ELIGIBLE]
+    sim = cent[elig_local] @ cent.T
+    jdump(
+        SRV / "author_game.json",
+        {
+            "names": [authors[ai]["name"] for ai in pool],
+            "nPapers": [len(authors[ai]["papers"]) for ai in pool],
+            "authorIdx": pool,          # back-reference into authors.json
+            "eligible": elig_local,
+            "sim": [[round(float(x), 3) for x in row] for row in sim],
+        },
+    )
 print("done.")

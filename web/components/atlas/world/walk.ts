@@ -1,7 +1,7 @@
 "use client";
 
 import type { QSearchHit } from "@/lib/atlas/api";
-import { neighborsOf } from "@/lib/atlas/data";
+import { neighborsOf, type ChunkIndex } from "@/lib/atlas/data";
 import type { AtlasData, KnnGraph } from "@/lib/atlas/types";
 
 /**
@@ -96,7 +96,7 @@ export function chooseNext(
 export function buildStation(
   query: string,
   hits: QSearchHit[],
-  chunkIndex: Map<string, number>,
+  chunkIndex: ChunkIndex,
   atlas: AtlasData,
 ): Station | null {
   const matched: { idx: number; score: number }[] = [];

@@ -9,6 +9,7 @@ import {
   slerp,
   type QSearchHit,
 } from "@/lib/atlas/api";
+import { chunkIdOf, makeChunkIndex, type ChunkIndex } from "@/lib/atlas/data";
 import type { AuthorRec, CorpusData } from "@/lib/atlas/types";
 
 /**
@@ -116,12 +117,11 @@ function spreadSample<T>(arr: T[], n: number): T[] {
   return out;
 }
 
-const chunkMapCache = new WeakMap<CorpusData, Map<string, number>>();
-function chunkIndexMap(corpus: CorpusData): Map<string, number> {
+const chunkMapCache = new WeakMap<CorpusData, ChunkIndex>();
+function chunkIndexMap(corpus: CorpusData): ChunkIndex {
   let m = chunkMapCache.get(corpus);
   if (!m) {
-    m = new Map();
-    corpus.atlas.chunkId.forEach((id, i) => m!.set(id, i));
+    m = makeChunkIndex(corpus.atlas);
     chunkMapCache.set(corpus, m);
   }
   return m;
@@ -176,7 +176,7 @@ async function resolveEndpoint(ep: WorldEndpoint, corpus: CorpusData): Promise<R
   const sample = spreadSample(chunkIdxsOfPapers(corpus, idxs), SAMPLE_CHUNKS);
   const recs = await Promise.all(
     sample.map((i) =>
-      fetchChunkText(corpus.atlas.chunkId[i]).then(
+      fetchChunkText(chunkIdOf(corpus.atlas, i)).then(
         (r) => r as { qid?: string },
         () => null,
       ),

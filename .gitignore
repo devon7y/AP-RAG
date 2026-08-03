@@ -48,3 +48,6 @@ scripts/.gemini_rename_cache.json
 .apa_manifest_batch_smoke.json
 *_smoke*.json
 *.log
+
+# regenerable HPC layout artifacts (rebuild via slurm/job_atlas_layout_ror.slurm)
+web/data-pipeline/hpc_out/

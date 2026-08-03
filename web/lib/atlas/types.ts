@@ -32,9 +32,13 @@ export interface AtlasData {
   cluster: Int16Array;
   paper: Int32Array;
   year: Int16Array;
-  snippet: string[];
-  section: string[];
-  chunkId: string[];
+  /** Chunk ids are stored split rather than as 445k strings: `docIdx` indexes
+   *  `docHashes` and `chunkNum` is the suffix, so an id costs 8 bytes instead of
+   *  ~45, and the full table never has to be materialised. Rebuild one with
+   *  chunkIdOf(); go the other way with the corpus chunk index. */
+  docIdx: Int32Array;
+  chunkNum: Int32Array;
+  docHashes: string[];
 }
 
 export interface KnnGraph {

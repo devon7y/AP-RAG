@@ -10,6 +10,7 @@ import type {
   CorpusData,
   PaperMeta,
 } from "@/lib/atlas/types";
+import { makeChunkIndex, type ChunkIndex } from "@/lib/atlas/data";
 import { CHUNK_LIFT, GRID, HEIGHT_SCALE } from "./uniforms";
 
 /**
@@ -95,10 +96,14 @@ export interface WorldData {
   // meta
   yearMin: number;
   yearMax: number;
-  chunkIdToIdx: Map<string, number>;
+  chunkIdToIdx: ChunkIndex;
   clusterById: Map<number, Cluster>;
   labelClusters: { cluster: Cluster; ground: THREE.Vector3; space: THREE.Vector3 }[];
   labelPapers: number[];
+  /** lowercased title+abstract+keywords+subjects per paper. The keyword lens
+   *  runs on every keystroke; at 10k papers rebuilding these strings each time
+   *  is what makes typing lag, so they are built once here. */
+  paperHaystack: string[];
   labelEntities: number[];
 }
 
@@ -784,8 +789,7 @@ export function deriveWorld(
   });
 
   // --- lookups + labels ---
-  const chunkIdToIdx = new Map<string, number>();
-  for (let i = 0; i < n; i++) chunkIdToIdx.set(atlas.chunkId[i], i);
+  const chunkIdToIdx = makeChunkIndex(atlas);
   const clusterById = new Map(clusters.map((cl) => [cl.id, cl]));
 
   const labelClusters = clusters
@@ -815,6 +819,12 @@ export function deriveWorld(
     .filter((e) => !isGenericEntityName(e.id))
     .slice(0, 16)
     .map((e) => e.idx);
+
+  const paperHaystack = papers.map((p, i) =>
+    [p.title, p.abstract, ...(paperMeta?.keywords[i] ?? []), ...(paperMeta?.subjects[i] ?? [])]
+      .join(" | ")
+      .toLowerCase(),
+  );
 
   const peaks = buildPeakLabels(corpus, entities, eras.final);
 
@@ -853,6 +863,7 @@ export function deriveWorld(
     clusterById,
     labelClusters,
     labelPapers,
+    paperHaystack,
     labelEntities,
   };
 }

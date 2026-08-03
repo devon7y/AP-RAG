@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import { fetchChunkText } from "@/lib/atlas/api";
+import { chunkIdOf } from "@/lib/atlas/data";
 import { generateUUID } from "@/lib/utils";
 import type {
   AuthorRec,
@@ -243,7 +244,7 @@ function ChunkCard({
   idx: number;
 }) {
   const p = corpus.papers[corpus.atlas.paper[idx]];
-  const section = corpus.atlas.section[idx];
+  const [section, setSection] = useState("");
   const [text, setText] = useState<string | null>(null);
   const [page, setPage] = useState<number | null>(null);
   const st = useWorld.getState();
@@ -252,13 +253,16 @@ function ChunkCard({
     let alive = true;
     setText(null);
     setPage(null);
-    fetchChunkText(corpus.atlas.chunkId[idx]).then(
+    setSection("");
+    fetchChunkText(chunkIdOf(corpus.atlas, idx)).then(
       (rec) => {
         if (!alive) return;
         setText(rec.text);
         setPage(rec.page);
+        setSection(rec.section);
       },
-      () => alive && setText(corpus.atlas.snippet[idx]),
+      // no shipped snippet at full scale — the passage lives on the server
+      () => alive && setText("(passage unavailable)"),
     );
     return () => {
       alive = false;

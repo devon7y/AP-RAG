@@ -14,6 +14,7 @@ import {
   speak,
   type SpeakHandle,
 } from "./tts";
+import { chunkIdOf } from "@/lib/atlas/data";
 import { fetchChunkText } from "@/lib/atlas/api";
 import type { CorpusData, KnnGraph } from "@/lib/atlas/types";
 import { glowTexture, toWorldXZ, sampleField, type WorldData } from "./derive";
@@ -67,10 +68,11 @@ export function useRover(corpus: CorpusData | null, knn: KnnGraph | null) {
         st().set("radioIdx", current);
         st().set("radioTrail", [...st().radioTrail, current].slice(-TRAIL_MAX));
 
-        let text = corpus.atlas.snippet[current];
+        let text = "";
         try {
-          const rec = await fetchChunkText(corpus.atlas.chunkId[current]);
+          const rec = await fetchChunkText(chunkIdOf(corpus.atlas, current));
           text = rec.text;
+          st().set("radioSection", rec.section || "");
         } catch {
           /* offline PC — drift on the snippet */
         }

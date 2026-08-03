@@ -1,0 +1,1 @@
+{"n": 445394, "k": 8, "sections": [{"name": "idx", "dtype": "int32", "offset": 0, "count": 3563152}, {"name": "sim", "dtype": "float32", "offset": 14252608, "count": 3563152}]}

@@ -391,14 +391,7 @@ function World({
       if (authorSet && !authorSet.has(i)) return false;
       if (j && !p.journal.toLowerCase().includes(j)) return false;
       if (terms.length) {
-        const hay = [
-          p.title,
-          p.abstract,
-          ...(paperMeta?.keywords[i] ?? []),
-          ...(paperMeta?.subjects[i] ?? []),
-        ]
-          .join(" | ")
-          .toLowerCase();
+        const hay = data.paperHaystack[i];
         if (!terms.some((t) => hay.includes(t))) return false;
       }
       return true;
