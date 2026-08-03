@@ -97,9 +97,15 @@ export default function ChunkCloud({
     mat.blending = THREE.AdditiveBlending;
     mat.sizeAttenuation = true;
 
+    // Stand each orb off the ground by its own radius, or half of every point
+    // sits inside the terrain. Derived from the size lane rather than a new
+    // attribute: all 8 vertex buffers are spoken for, and three r185 requests
+    // the device with DEFAULT WebGPU limits, so a 9th would silently kill the
+    // whole cloud.
     mat.positionNode = morphPosition(
       vec3(aG4.x, 0, aG4.y),
       vec3(aS4.x, aS4.y, aS4.z),
+      aSize.mul(0.35),
     );
 
     // time lens: unborn chunks are dark; the newly-born flash white-hot.

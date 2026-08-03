@@ -656,7 +656,11 @@ export function deriveWorld(
     chunkGround[i * 3] = wx;
     chunkGround[i * 3 + 1] = 0;
     chunkGround[i * 3 + 2] = wz;
-    chunkGroundY[i] = sampleField(eras.final, x01, y01) * HEIGHT_SCALE + CHUNK_LIFT;
+    // size first: the resting height stands the orb off by its own radius, and
+    // must match the shader's aSize.mul(0.35) or picking drifts from the visuals
+    chunkSize[i] = (0.5 + 2.0 * Math.pow(centrality[i], 0.75)) * pointScale;
+    chunkGroundY[i] =
+      sampleField(eras.final, x01, y01) * HEIGHT_SCALE + chunkSize[i] * 0.35;
     const [sx, sy, sz] = spaceXYZ(atlas.pos3, i);
     chunkSpace[i * 3] = sx;
     chunkSpace[i * 3 + 1] = sy;
@@ -674,7 +678,6 @@ export function deriveWorld(
     chunkColorSpace[i * 3 + 1] = cAge.g * lum;
     chunkColorSpace[i * 3 + 2] = cAge.b * lum;
 
-    chunkSize[i] = (0.5 + 2.0 * Math.pow(centrality[i], 0.75)) * pointScale;
     chunkPhase[i] = ((i * 0.6180339887) % 1) * Math.PI * 2;
     chunkYear[i] = d;
   }
