@@ -336,29 +336,77 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
     };
   }, [applyZoom]);
 
-  // ── Jump to the requested page once geometry is known ─────────────────────
-  const jumpedTo = useRef<number | null>(null);
+  // ── Jump to the passage itself, not the top of its page ───────────────────
+  // Highlight rectangles are fractions of page height, so the first highlighted line's
+  // position is known exactly: scroll to *it* rather than to the page, or a passage
+  // near the bottom of a page opens off-screen.
+  const passageTop = useCallback((): number | null => {
+    const located = tab.located;
+    if (!(located?.page && pageHeight > 0)) {
+      return null;
+    }
+    const span =
+      located.spans?.find((s) => s.page === located.page) ??
+      (located.rects.length > 0
+        ? { page: located.page, rects: located.rects }
+        : null);
+    if (!span || span.rects.length === 0) {
+      return null;
+    }
+    const firstLine = Math.min(...span.rects.map((r) => r[1]));
+    return pageOffset(span.page) + firstLine * pageHeight;
+  }, [tab.located, pageOffset, pageHeight]);
+
+  // Put the target a third of the way down the viewport so there is context above it,
+  // but never scroll back past the top of its own page.
+  const scrollTargetFor = useCallback(
+    (page: number, el: HTMLDivElement): number => {
+      const passage = passageTop();
+      const pageTop = pageOffset(page) - 8;
+      if (passage == null) {
+        return Math.max(0, pageTop);
+      }
+      return Math.max(0, Math.max(pageTop, passage - el.clientHeight / 3));
+    },
+    [passageTop, pageOffset]
+  );
+
+  // Keyed by page AND passage position: the rectangles arrive a moment after the page
+  // does, and that second update is what moves the view onto the passage.
+  const jumpedTo = useRef<string | null>(null);
   useEffect(() => {
     const want = tab.requestedPage;
     const el = scrollRef.current;
     if (!(want && el && status === "ready" && strideY > 0)) {
       return;
     }
-    if (jumpedTo.current === want) {
+    const passage = passageTop();
+    const key = `${want}:${passage ?? "top"}`;
+    if (jumpedTo.current === key) {
       return;
     }
-    jumpedTo.current = want;
-    el.scrollTo({ top: pageOffset(want) - 8, behavior: "auto" });
+    jumpedTo.current = key;
+    el.scrollTo({ top: scrollTargetFor(want, el), behavior: "auto" });
     recomputeVisible();
-  }, [tab.requestedPage, status, strideY, pageOffset, recomputeVisible]);
+  }, [
+    tab.requestedPage,
+    status,
+    strideY,
+    passageTop,
+    scrollTargetFor,
+    recomputeVisible,
+  ]);
 
-  const goToPage = (page: number) => {
+  const goToPage = (page: number, toPassage = false) => {
     const el = scrollRef.current;
     if (!el) {
       return;
     }
     const clamped = Math.min(Math.max(1, page), numPages || 1);
-    el.scrollTo({ top: pageOffset(clamped) - 8, behavior: "smooth" });
+    const top = toPassage
+      ? scrollTargetFor(clamped, el)
+      : Math.max(0, pageOffset(clamped) - 8);
+    el.scrollTo({ top, behavior: "smooth" });
   };
 
   const highlightPage = tab.located?.page ?? null;
@@ -423,7 +471,7 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
           {highlightPage && (
             <Button
               className="h-7 px-2 text-xs"
-              onClick={() => goToPage(highlightPage)}
+              onClick={() => goToPage(highlightPage, true)}
               title="Scroll back to the cited passage"
               type="button"
               variant="ghost"
