@@ -378,8 +378,10 @@ function buildFigure(
 function detectPeaks(
   field: Float32Array,
   minH = 0.12,
-  radius01 = 0.055,
-  cap = 40,
+  // spacing is in map units: at full corpus the old 0.055 packed dozens of
+  // summits close enough that their labels overlapped into noise
+  radius01 = 0.105,
+  cap = 22,
 ): { x01: number; y01: number; h: number }[] {
   const raw: { x01: number; y01: number; h: number }[] = [];
   for (let y = 1; y < GRID - 1; y++) {
@@ -571,6 +573,25 @@ export function deriveWorld(
   const yearMax = Math.ceil(dMax) - (Number.isInteger(dMax) ? 0 : 1);
   const span = Math.max(0.5, dMax - dMin);
 
+  // Age colour by RANK, not by raw year. The corpus runs 1904-2026, so a
+  // handful of very old outliers stretch a linear ramp until almost everything
+  // modern lands on the same blue. Mapping each date to its percentile spends
+  // the whole ramp on the years that actually hold papers.
+  const sortedDates = Float32Array.from(
+    Array.from(chunkDate).filter((d) => d > 0),
+  ).sort();
+  const ageT = (d: number): number => {
+    if (d <= 0 || sortedDates.length === 0) return 0;
+    let lo = 0;
+    let hi = sortedDates.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sortedDates[mid] < d) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo / sortedDates.length;
+  };
+
   const eras = buildEraFields(corpus, chunkDate, yearMin, yearMax);
   const colorTex = buildColorTexture(corpus);
 
@@ -631,7 +652,7 @@ export function deriveWorld(
     chunkColorGround[i * 3 + 1] = c.g * lum;
     chunkColorGround[i * 3 + 2] = c.b * lum;
     const d = chunkDate[i];
-    if (d > 0) ageColor((d - dMin) / span, cAge);
+    if (d > 0) ageColor(ageT(d), cAge);
     else cAge.set(INK.muted);
     chunkColorSpace[i * 3] = cAge.r * lum;
     chunkColorSpace[i * 3 + 1] = cAge.g * lum;
@@ -693,7 +714,7 @@ export function deriveWorld(
     paperColorGround[i * 3 + 1] = c.g * lum;
     paperColorGround[i * 3 + 2] = c.b * lum;
     const pd = paperMeta?.frac[i] || (p.year > 0 ? p.year + 0.5 : 0);
-    if (pd > 0) ageColor((pd - dMin) / span, cAge);
+    if (pd > 0) ageColor(ageT(pd), cAge);
     else cAge.set(INK.muted);
     paperColorSpace[i * 3] = cAge.r * lum;
     paperColorSpace[i * 3 + 1] = cAge.g * lum;

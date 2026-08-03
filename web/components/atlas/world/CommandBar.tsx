@@ -107,6 +107,12 @@ export default function CommandBar({
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // a notice is a transient answer to one submission, not a permanent banner
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [notice]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const searchHits = useWorld((s) => s.searchHits);

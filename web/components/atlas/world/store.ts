@@ -171,6 +171,10 @@ interface WorldState {
   showSky: boolean;
   showWeb: boolean;
   showLabels: boolean;
+  /** the passage cloud is ~445k points — dense enough to bury the terrain,
+   *  so it is opt-in; paper beacons are the default reading of the map */
+  showChunks: boolean;
+  showPapers: boolean;
 
   /** gentle idle orbit — on until the user moves the camera themselves */
   autoRotate: boolean;
@@ -276,6 +280,8 @@ export const useWorld = create<WorldState>((set) => ({
   showSky: true,
   showWeb: true,
   showLabels: true,
+  showChunks: false,
+  showPapers: true,
 
   autoRotate: true,
 

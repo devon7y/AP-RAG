@@ -338,6 +338,8 @@ function World({
   const lens = useWorld((s) => s.lens);
   const instrument = useWorld((s) => s.instrument);
   const ask = useWorld((s) => s.ask);
+  const showChunks = useWorld((s) => s.showChunks);
+  const showPapers = useWorld((s) => s.showPapers);
 
   useRover(corpus, knn);
   useGhostPlanting(data, corpus !== null);
@@ -434,8 +436,10 @@ function World({
         <Atmosphere />
         <DustShell />
         <Terrain data={data} />
-        <ChunkCloud data={data} lensMask={masks.chunks} />
-        <PaperBeacons data={data} lensMask={masks.papers} goldMask={masks.gold} />
+        {showChunks && <ChunkCloud data={data} lensMask={masks.chunks} />}
+        {showPapers && (
+          <PaperBeacons data={data} lensMask={masks.papers} goldMask={masks.gold} />
+        )}
         <SkyLayer data={data} corpus={corpus} />
         {instrument === "ghosts" && <GhostLayer data={data} sites={ghostSites} />}
         {instrument === "draft" && <DraftLayer data={data} />}

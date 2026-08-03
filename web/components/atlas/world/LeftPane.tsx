@@ -176,6 +176,8 @@ function NavigatePanel({ data, corpus }: { data: WorldData; corpus: CorpusData }
   const showSky = useWorld((s) => s.showSky);
   const showWeb = useWorld((s) => s.showWeb);
   const showLabels = useWorld((s) => s.showLabels);
+  const showChunks = useWorld((s) => s.showChunks);
+  const showPapers = useWorld((s) => s.showPapers);
   const set = useWorld((s) => s.set);
   const requestWarp = useWorld((s) => s.requestWarp);
 
@@ -287,9 +289,15 @@ function NavigatePanel({ data, corpus }: { data: WorldData; corpus: CorpusData }
               ? ([
                   ["constellations", "showSky", showSky],
                   ["concept web", "showWeb", showWeb],
+                  ["papers", "showPapers", showPapers],
+                  ["passage dots", "showChunks", showChunks],
                   ["labels", "showLabels", showLabels],
                 ] as const)
-              : ([["labels", "showLabels", showLabels]] as const)
+              : ([
+                  ["papers", "showPapers", showPapers],
+                  ["passage dots", "showChunks", showChunks],
+                  ["labels", "showLabels", showLabels],
+                ] as const)
           ).map(([label, key, on]) => (
             <label key={key} className="flex cursor-pointer items-center gap-2">
               <input
