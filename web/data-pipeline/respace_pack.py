@@ -17,25 +17,22 @@ SRC = Path("hpc_out")
 GRID, LO, HI = 512, 0.5, 99.5
 
 def norm_pct(a):
-    """Robust [0,1] that preserves the cloud's SHAPE.
+    """Robust [0,1] that preserves the cloud's shape — neither square nor round.
 
-    Scaling each axis independently was what forced the corpus into a square:
-    whatever the true silhouette, stretching x and y to each fill [0,1] makes it
-    fill a box. So one isotropic scale is used for every axis, taken from the
-    radial spread, which keeps the natural outline. Beyond the core the radius
-    passes through a tanh, so the tails taper instead of stacking on the edge
-    the way clipping made them.
+    Two earlier attempts each imposed their own shape. Scaling axes
+    independently stretched the corpus into a square. Then compressing the
+    RADIUS through a tanh pulled every outlier toward a circle, which is why the
+    map looked suspiciously round. What is wanted is one shared scale (so the
+    aspect ratio survives) with the softening applied per axis (so no radial
+    boundary is implied). Only the ~1% of points past the core are touched.
     """
     med = np.median(a, axis=0)
     z = a - med
-    r = np.linalg.norm(z, axis=1)
-    half = np.percentile(r, 90) + 1e-9          # ONE scale, all axes
-    zz = z / half
-    mag = np.linalg.norm(zz, axis=1, keepdims=True)
-    TAIL = 0.35
-    factor = np.where(mag <= 1, 1.0, (1 + TAIL * np.tanh(mag - 1)) / np.maximum(mag, 1e-9))
-    out = zz * factor
-    m = np.abs(out).max() + 1e-9                # shared max keeps aspect ratio
+    scale = np.percentile(np.abs(z), 99.0) + 1e-9   # ONE scalar, all axes
+    zz = z / scale
+    mag = np.abs(zz)
+    out = np.sign(zz) * np.where(mag <= 1, mag, 1 + 0.30 * np.tanh(mag - 1))
+    m = np.abs(out).max() + 1e-9
     return (out / (2 * m) + 0.5).astype(np.float32)
 
 
@@ -58,23 +55,32 @@ occupancy(p2_old, "before")
 occupancy(p2, "after")
 
 # heightmap + voids follow the coordinates, so they are rebuilt here
-H, _, _ = np.histogram2d(p2[:, 0], p2[:, 1], bins=GRID, range=[[0, 1], [0, 1]])
-Hs = gaussian_filter(H, sigma=6.0) + 0.35 * gaussian_filter(H, sigma=2.0)
-# log1p flattened the terrain badly at this scale: with ~445k passages the counts
-# are large enough that log compresses typical and peak density into the same
-# narrow band (the middle half of the map spanned only 0.32 of the height range).
-# A gentler power keeps relief, then a percentile stretch spends the full range
-# on the density that actually occurs rather than on one extreme spike.
-Hs = np.power(Hs, 0.45)
-lo, hi = np.percentile(Hs[Hs > 0], 2), np.percentile(Hs[Hs > 0], 99.5)
-Hs = np.clip((Hs - lo) / (hi - lo + 1e-9), 0, 1)
+papers_tmp = json.loads((SRC / "papers.json").read_text())
+paper_of_tmp = old["paper"]
+npap_tmp = len(papers_tmp)
+_c2 = np.zeros((npap_tmp, 2), np.float32)
+np.add.at(_c2, paper_of_tmp, p2)
+_c2 /= np.maximum(np.bincount(paper_of_tmp, minlength=npap_tmp), 1).astype(np.float32)[:, None]
+
+# Height is PAPER density, not passage density. Passage density let a single
+# long document raise terrain wherever its stray passages landed — which is
+# where those little peaks with no beacon under them came from — and let one
+# book out-rank a region holding dozens of papers. Counting papers puts the
+# terrain and the beacons on exactly the same footing.
+H, _, _ = np.histogram2d(_c2[:, 0], _c2[:, 1], bins=GRID, range=[[0, 1], [0, 1]])
+Hs = gaussian_filter(H, sigma=7.0) + 0.35 * gaussian_filter(H, sigma=2.5)
+# floor stays at zero so one-paper ground reads as genuinely low
+Hs = np.power(Hs / (np.percentile(Hs[Hs > 0], 99.5) + 1e-9), 0.60)
+Hs = np.clip(Hs, 0, 1)
 (SRC / "heightmap.bin").write_bytes(Hs.astype(np.float32).T.tobytes())
 
 papers = json.loads((SRC / "papers.json").read_text())
 paper_of = old["paper"]
 meta_titles = [p["title"][:110] for p in papers]
 occupied = gaussian_filter((H > 0).astype(float), sigma=10) > 0.02
-lab, n_lab = label((Hs < 0.10) & occupied)
+# threshold relative to the field (paper density has a lower floor than the
+# old passage density, so a fixed 0.10 found nothing)
+lab, n_lab = label((Hs < np.percentile(Hs[Hs > 0], 20)) & occupied)
 voids = []
 for li in range(1, n_lab + 1):
     ys, xs = np.where(lab == li)
