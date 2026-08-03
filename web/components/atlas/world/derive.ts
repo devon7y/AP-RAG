@@ -593,6 +593,14 @@ export function deriveWorld(
   const centrality = new Float32Array(n);
   for (let i = 0; i < n; i++) centrality[i] = Math.log1p(acc[i]) / logMax;
 
+  // Marks are sized in WORLD units, so they must shrink as the corpus grows or
+  // 10k beacons merge into one sheet. (Enlarging WORLD_SIZE does NOT help: the
+  // camera and sizeAttenuation scale with it, so it is just a zoom.) Scaled by
+  // 1/sqrt(count) — the density of marks per unit area — with a floor so a big
+  // corpus stays visible rather than dissolving.
+  const beaconScale = Math.min(1, Math.max(0.34, Math.sqrt(1500 / Math.max(papers.length, 1))));
+  const pointScale = Math.min(1, Math.max(0.55, Math.sqrt(60000 / Math.max(n, 1))));
+
   // --- chunk buffers ---
   const chunkGround = new Float32Array(n * 3);
   const chunkSpace = new Float32Array(n * 3);
@@ -629,7 +637,7 @@ export function deriveWorld(
     chunkColorSpace[i * 3 + 1] = cAge.g * lum;
     chunkColorSpace[i * 3 + 2] = cAge.b * lum;
 
-    chunkSize[i] = 0.5 + 2.0 * Math.pow(centrality[i], 0.75);
+    chunkSize[i] = (0.5 + 2.0 * Math.pow(centrality[i], 0.75)) * pointScale;
     chunkPhase[i] = ((i * 0.6180339887) % 1) * Math.PI * 2;
     chunkYear[i] = d;
   }
@@ -690,7 +698,8 @@ export function deriveWorld(
     paperColorSpace[i * 3] = cAge.r * lum;
     paperColorSpace[i * 3 + 1] = cAge.g * lum;
     paperColorSpace[i * 3 + 2] = cAge.b * lum;
-    paperSize[i] = 1.15 + 1.35 * (Math.log1p(p.nChunks) / Math.log1p(maxChunks));
+    paperSize[i] =
+      (1.15 + 1.35 * (Math.log1p(p.nChunks) / Math.log1p(maxChunks))) * beaconScale;
     paperYear[i] = pd;
   });
 

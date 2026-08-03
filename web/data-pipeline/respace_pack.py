@@ -17,10 +17,24 @@ SRC = Path("hpc_out")
 GRID, LO, HI = 512, 0.5, 99.5
 
 def norm_pct(a):
-    """Percentile-clipped [0,1]; outliers stop dictating the scale."""
-    lo = np.percentile(a, LO, axis=0)
-    hi = np.percentile(a, HI, axis=0)
-    return np.clip((a - lo) / (hi - lo + 1e-9), 0.0, 1.0).astype(np.float32)
+    """Robust [0,1] with a SOFT tail — no clipping.
+
+    Clipping to percentiles was the wrong fix: it stacks every outlier exactly on
+    the boundary, which is what produced a blob with a hard square edge and mass
+    heaped against it. Instead the central 90% is scaled to fill most of the map
+    linearly, and everything beyond is passed through a tanh so the tails taper
+    off toward the edge without ever landing on it.
+    """
+    med = np.median(a, axis=0)
+    lo = np.percentile(a, 5, axis=0)
+    hi = np.percentile(a, 95, axis=0)
+    half = (hi - lo) / 2 + 1e-9
+    z = (a - med) / half                      # core lands in [-1, 1]
+    mag = np.abs(z)
+    TAIL = 0.35                               # how far past the core the tails reach
+    out = np.sign(z) * np.where(mag <= 1, mag, 1 + TAIL * np.tanh(mag - 1))
+    m = np.abs(out).max(axis=0) + 1e-9
+    return (out / (2 * m) + 0.5).astype(np.float32)
 
 def occupancy(p2, tag):
     H, _, _ = np.histogram2d(p2[:, 0], p2[:, 1], bins=200, range=[[0, 1], [0, 1]])
