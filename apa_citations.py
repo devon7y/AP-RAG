@@ -192,7 +192,10 @@ def _clean_title(title: str | None) -> str:
 
 def format_intext(record: dict) -> str:
     """In-text citation *core* (no surrounding parentheses): 'Smith et al., 2019'."""
-    year = (record.get("year") or "n.d.").strip()
+    # str(): a record's year is normally a string, but a filename-derived record (the
+    # corpus-scoped manifest synthesizes one for a corpus file the manifest doesn't
+    # cover) carries an int — and an unhandled AttributeError here 500s all of /papers.
+    year = str(record.get("year") or "n.d.").strip()
     yr = f"{year}{record.get('disambig') or ''}"
 
     fams = _surnames(record.get("authors") or [])
@@ -220,7 +223,10 @@ def format_apa7(record: dict) -> str:
     if record.get("_etal") and authors_str:
         authors_str = f"{authors_str} et al."
 
-    year = (record.get("year") or "n.d.").strip()
+    # str(): a record's year is normally a string, but a filename-derived record (the
+    # corpus-scoped manifest synthesizes one for a corpus file the manifest doesn't
+    # cover) carries an int — and an unhandled AttributeError here 500s all of /papers.
+    year = str(record.get("year") or "n.d.").strip()
     yr = f"({year}{record.get('disambig') or ''})."
     prefix = f"{authors_str} {yr}".strip() if authors_str else yr
 

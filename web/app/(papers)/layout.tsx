@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { Toaster } from "sonner";
 import { AppSidebar } from "@/components/chat/app-sidebar";
-import { PdfViewerHost } from "@/components/pdf/pdf-viewer";
+import { PdfSplit } from "@/components/pdf/pdf-split";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { auth } from "../(auth)/auth";
 
@@ -41,9 +41,9 @@ async function SidebarShell({ children }: { children: React.ReactNode }) {
               "!bg-card !text-foreground !border-border/50 !shadow-[var(--shadow-float)]",
           }}
         />
-        {children}
-        {/* The paper drawer's "Read PDF" and the graph/author pages open the same viewer. */}
-        <PdfViewerHost />
+        {/* The paper drawer's "Read PDF" and the graph/author pages open the same
+            reader, splitting the page rather than covering it. */}
+        <PdfSplit>{children}</PdfSplit>
       </SidebarInset>
     </SidebarProvider>
   );

@@ -389,6 +389,37 @@ export async function fetchPdfAsset(
   });
 }
 
+// POST /pdf_locate — which page a cited passage sits on, plus fractional highlight
+// rectangles. `page: null` means the text wasn't found (a scan, or mangled text).
+export type PdfLocateResult = {
+  page: number | null;
+  rects: [number, number, number, number][];
+  page_count?: number;
+  matched?: string;
+};
+
+export async function locatePdfQuote(params: {
+  filename: string;
+  quote: string;
+  hintPage?: number;
+}): Promise<PdfLocateResult> {
+  const res = await fetch(`${BASE_URL}/pdf_locate`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({
+      filename: params.filename,
+      quote: params.quote.slice(0, 2000),
+      hint_page: params.hintPage,
+    }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    throw new Error(`AP-RAG /pdf_locate failed: ${res.status}`);
+  }
+  return (await res.json()) as PdfLocateResult;
+}
+
 // ── Knowledge-graph explorer (GET /graph/*) ────────────────────────────────────
 
 export type GraphTypeStat = { type: string; count: number; top: string[] };

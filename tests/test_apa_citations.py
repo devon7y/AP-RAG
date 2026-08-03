@@ -295,3 +295,12 @@ def test_manifest_loader_missing_file_returns_empty(tmp_path):
     p = tmp_path / "m.json"
     p.write_text(json.dumps({"A_2020.pdf": {"authors": [{"family": "A"}], "year": "2020"}}))
     assert "A_2020.pdf" in apa.load_manifest(str(p))
+
+
+def test_int_year_does_not_crash_formatting():
+    """A filename-derived record (corpus-scoped manifest) carries an int year; APA
+    formatting must coerce rather than raise — an AttributeError here 500s /papers."""
+    record = {"type": "article", "year": 2026, "title": "A synthesized record",
+              "authors": [{"family": "Song", "given": ""}]}
+    assert "2026" in apa.format_apa7(record)
+    assert "2026" in apa.format_intext(record)

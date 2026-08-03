@@ -26,6 +26,9 @@ export function entityHref(name: string): string {
 type EntityList = {
   total: number;
   entities: GraphEntitySummary[];
+  // The graph is far too large to count matches corpus-wide, so the server ranks a
+  // bounded candidate set instead. `total` is then "what we can show", not a census.
+  bounded?: boolean;
 };
 
 // The Knowledge Graph explorer: what the ingest LLM extracted from the corpus —
@@ -120,7 +123,9 @@ export function GraphExplorer() {
           The concepts, methods, theories, authors, and findings the ingest
           model extracted from the corpus — and how they connect. Click an
           entity to see its corpus-wide description, its neighbours, and the
-          papers behind it.
+          papers behind it. <strong>Search for a topic</strong> to find what
+          you care about: the graph has millions of entities, and the most
+          connected ones are generic by nature.
         </p>
 
         <div className="relative">
@@ -188,8 +193,11 @@ export function GraphExplorer() {
         {list && (
           <>
             <p className="text-muted-foreground text-xs">
-              {total.toLocaleString()} entit{total === 1 ? "y" : "ies"}
-              {q || type ? " match" : ""} · sorted by connections
+              {list.bounded && (q || type)
+                ? `Top ${entities.length} of the best matches · most relevant first`
+                : list.bounded
+                  ? `The ${entities.length} most connected entities · search to narrow`
+                  : `${total.toLocaleString()} entit${total === 1 ? "y" : "ies"}${q || type ? " match" : ""} · sorted by connections`}
             </p>
             <ul className="divide-y divide-border/60 rounded-lg border border-border">
               {entities.map((e) => (

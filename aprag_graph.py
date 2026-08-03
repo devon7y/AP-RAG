@@ -2,13 +2,20 @@
 aprag_graph.py — knowledge-graph explorer helpers (pure logic, no I/O).
 
 The web app's Knowledge Graph explorer (/graph) browses the entities and relations
-LightRAG extracted at ingest time. The graph lives in memory on the query server
-(``_rag.chunk_entity_relation_graph._graph`` — a ``networkx.Graph`` whose nodes carry
-``entity_type`` / ``description`` / ``file_path`` and whose edges carry ``description``
-/ ``keywords`` / ``weight``; multi-valued fields are ``<SEP>``-joined). This module
-holds the pure shaping logic — index building, search, overview, entity detail — so it
-deploys next to ``query_server.py`` and is unit-testable without LightRAG. The async
-FastAPI endpoints (and their caches) live in ``query_server.py``.
+LightRAG extracted at ingest time. Nodes carry ``entity_type`` / ``description`` /
+``file_path`` (multi-valued fields ``<SEP>``-joined) and edges carry ``description`` /
+``keywords`` / ``weight``.
+
+**Scale note (2026-08-03).** The serving stack moved the graph to Neo4j, and the full
+corpus graph is ~3.6M nodes / 8.1M relationships — far too large to index in the query
+server's process (the earlier NetworkX-era design built a degree-sorted list of every
+entity at startup). Everything is therefore query-driven and bounded: the database does
+the filtering and ranking, the app only shapes the rows. The NetworkX helpers below are
+kept because a small/file-based store still works that way, and ``query_server.py``
+picks the path by which backend is live.
+
+This module stays pure and unit-testable; the FastAPI endpoints, the Cypher, and the
+caches live in ``query_server.py``.
 """
 from __future__ import annotations
 
@@ -151,6 +158,34 @@ def build_file_map(index: list[IndexRow], graph) -> dict[str, list[str]]:
 
 
 # ── Entity detail ────────────────────────────────────────────────────────────
+
+
+def rank_search_rows(rows: list[dict], query: str) -> list[dict]:
+    """Order candidate search rows: exact name match first, then prefix, then substring,
+    and by connectedness within each tier.
+
+    The database can return matches cheaply, but ordering *all* of them by degree costs
+    ~9s at corpus scale — so the caller fetches a bounded candidate set and this ranks
+    it. Relevance leads because at 3.6M entities a plain degree sort buries the exact
+    thing the user typed under hubs like "Experiment 1".
+    """
+    q = " ".join(str(query or "").lower().split())
+
+    def tier(name: str) -> int:
+        n = " ".join(str(name or "").lower().split())
+        if not q:
+            return 3
+        if n == q:
+            return 0
+        if n.startswith(q):
+            return 1
+        return 2
+
+    return sorted(
+        rows,
+        key=lambda r: (tier(r.get("name", "")), -int(r.get("degree") or 0),
+                       str(r.get("name", "")).lower()),
+    )
 
 
 def entity_detail(

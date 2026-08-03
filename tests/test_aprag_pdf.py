@@ -157,6 +157,35 @@ def test_render_clamps_out_of_range_page(real_pdf):
     assert rendered == 1
 
 
+def test_normalize_quote_collapses_pdf_linebreaks():
+    assert p.normalize_quote("word\nfrequency   and\n\nhumor") == "word frequency and humor"
+    assert p.normalize_quote(None) == ""
+
+
+def test_locate_finds_the_right_page_with_fractional_rects(real_pdf):
+    got = p.locate_quote(str(real_pdf), "Page 2: word frequency and humor.")
+    assert got["page"] == 2, got
+    assert got["page_count"] == 3
+    assert got["rects"], "expected highlight rectangles"
+    for x0, y0, x1, y1 in got["rects"]:
+        assert 0.0 <= x0 < x1 <= 1.0
+        assert 0.0 <= y0 < y1 <= 1.0
+
+
+def test_locate_tolerates_broken_whitespace(real_pdf):
+    # Chunk text arrives with PDF line breaks; the search must still match.
+    assert p.locate_quote(str(real_pdf), "Page 3:\n   word\nfrequency")["page"] == 3
+
+
+def test_locate_misses_cleanly_when_absent(real_pdf):
+    got = p.locate_quote(str(real_pdf), "this sentence is nowhere in the document at all")
+    assert got["page"] is None and got["rects"] == []
+
+
+def test_locate_ignores_too_short_a_quote(real_pdf):
+    assert p.locate_quote(str(real_pdf), "the")["page"] is None
+
+
 def test_render_raises_on_garbage(tmp_path):
     pytest.importorskip("pymupdf")
     bad = tmp_path / "bad.pdf"

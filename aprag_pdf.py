@@ -107,6 +107,110 @@ def page_cache_path(cache_dir: str, filename: str, page: int, width: int,
     return os.path.join(cache_dir, safe_stem or "_", leaf)
 
 
+#: How many opening words of a passage to search for, longest first. Long phrases are
+#: precise but brittle (ligatures, hyphenation, column order); short ones always match
+#: something. Trying in order gets the best available anchor.
+LOCATE_WORD_TIERS = (14, 10, 7, 5)
+#: Extra phrases from later in the passage, searched on the matched page only, so the
+#: highlight covers the whole quoted span rather than just its first line.
+LOCATE_EXTRA_PHRASES = 6
+
+
+def normalize_quote(text: str) -> str:
+    """Collapse whitespace — chunk text carries PDF line breaks that never match."""
+    return " ".join(str(text or "").split())
+
+
+def _phrase_tiers(words: list[str]) -> list[str]:
+    """Opening phrases to try, longest first, de-duplicated."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for n in LOCATE_WORD_TIERS:
+        n = min(n, len(words))
+        if n < 3:
+            continue
+        phrase = " ".join(words[:n])
+        if phrase not in seen:
+            seen.add(phrase)
+            out.append(phrase)
+    return out
+
+
+def locate_quote(pdf_path: str, quote: str, hint_page: int | None = None) -> dict:
+    """Find which page a passage sits on, and where on that page it is.
+
+    This is how the viewer opens at the *cited* page: the corpus store carries no
+    per-chunk page numbers (and no re-ingest is planned), so the page is recovered from
+    the PDF itself by searching for the passage text. Returns fractional rectangles
+    (0-1, top-left origin) so the client can scale them to whatever size it renders at.
+
+    ``{"page": None, "rects": []}`` means "no text match" — a scanned page, or text the
+    extractor mangled. That is a normal outcome, not an error: the caller falls back to
+    opening the paper at page 1 with no highlight.
+    """
+    import pymupdf
+
+    words = normalize_quote(quote).split()
+    result: dict = {"page": None, "rects": [], "page_count": 0, "matched": ""}
+    if len(words) < 3:
+        return result
+
+    try:
+        doc = pymupdf.open(pdf_path)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"cannot open PDF: {exc}") from exc
+
+    try:
+        if getattr(doc, "needs_pass", False) and not doc.authenticate(""):
+            raise RuntimeError("PDF is password-protected")
+        count = doc.page_count
+        result["page_count"] = count
+        if count == 0:
+            return result
+
+        # Search the hinted page first when we have one, then the rest in order.
+        order = list(range(count))
+        if hint_page and 1 <= hint_page <= count:
+            order.remove(hint_page - 1)
+            order.insert(0, hint_page - 1)
+
+        for phrase in _phrase_tiers(words):
+            for index in order:
+                page = doc[index]
+                hits = page.search_for(phrase)
+                if not hits:
+                    continue
+
+                rect = page.rect
+                width = rect.width or 1.0
+                height = rect.height or 1.0
+                spans = list(hits)
+
+                # Extend the highlight across the rest of the passage, but only on this
+                # page — a passage that runs onto the next page just highlights its head.
+                step = max(1, len(words) // (LOCATE_EXTRA_PHRASES + 1))
+                for start in range(step, len(words) - 2, step):
+                    tail = " ".join(words[start:start + 6])
+                    if len(tail.split()) < 3:
+                        break
+                    spans.extend(page.search_for(tail))
+                    if len(spans) > 60:
+                        break
+
+                result["page"] = index + 1
+                result["matched"] = phrase
+                result["rects"] = [
+                    [round(r.x0 / width, 5), round(r.y0 / height, 5),
+                     round(r.x1 / width, 5), round(r.y1 / height, 5)]
+                    for r in spans
+                    if r.x1 > r.x0 and r.y1 > r.y0
+                ]
+                return result
+        return result
+    finally:
+        doc.close()
+
+
 def render_page_image(pdf_path: str, page: int, width: int = DEFAULT_WIDTH,
                       quality: int = DEFAULT_QUALITY) -> tuple[bytes, int, int]:
     """Rasterize a single 1-based page to WebP bytes.

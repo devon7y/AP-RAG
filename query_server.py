@@ -45,8 +45,12 @@ import aprag_search as search   # metadata-filtered semantic search (pure helper
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 STORAGE_DIR   = os.environ.get("STORAGE_DIR", r"C:\rag_server\rag_storage_westbury_qwen3_32b")
-EMBED_HOST    = os.environ.get("EMBED_HOST", "http://localhost:8000/v1")
-QDRANT_URL    = os.environ.get("QDRANT_URL", "http://localhost:6333")
+# Use 127.0.0.1, never "localhost". Every service here binds 0.0.0.0 (IPv4 only),
+# but Windows resolves "localhost" to ::1 first; that refusal takes ~2.05s to come
+# back, so every non-pooled connection paid a ~2s toll. That alone was most of the
+# old per-query latency (naive 2.3s -> 0.12s just from this).
+EMBED_HOST    = os.environ.get("EMBED_HOST", "http://127.0.0.1:8000/v1")
+QDRANT_URL    = os.environ.get("QDRANT_URL", "http://127.0.0.1:6333")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 LLM_MODEL     = os.environ.get("LLM_MODEL", "gpt-5.6-luna")
 # OpenAI processing tier for every LLM call. "fast" (formerly "priority") buys ~2.5x
@@ -1084,6 +1088,49 @@ def get_pdf(request: Request, filename: str, download: bool = False):
     )
 
 
+class LocateRequest(BaseModel):
+    """Where does this passage appear in this paper?"""
+    filename: str
+    quote: str
+    hint_page: int | None = None
+
+
+# Located passages, keyed by (file signature, quote) — the viewer asks for the same
+# citation every time the reader reopens it. Bounded; the corpus is read-mostly.
+_LOCATE_CACHE: dict[str, dict] = {}
+_LOCATE_CACHE_MAX = 2048
+
+
+@app.post("/pdf_locate", dependencies=[Depends(require_api_key)])
+async def pdf_locate(req: LocateRequest):
+    """Find the page a cited passage sits on, plus its highlight rectangles.
+
+    The store carries no per-chunk page numbers, so the viewer recovers the location
+    from the PDF text itself. A miss (scanned page, mangled text) returns page=None —
+    the viewer then opens at page 1 without a highlight rather than erroring."""
+    path, st = _resolved_pdf(req.filename)
+    key = f"{pdfsrv.file_signature(st)}|{pdfsrv.normalize_quote(req.quote)[:300]}"
+    cached = _LOCATE_CACHE.get(key)
+    if cached is not None:
+        return {**cached, "cached": True}
+
+    _t0 = time.perf_counter()
+    async with _page_render_sem():  # same CPU budget as rasterizing
+        try:
+            found = await asyncio.to_thread(
+                pdfsrv.locate_quote, path, req.quote, req.hint_page)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    print(f"[TIMING] pdf_locate {time.perf_counter()-_t0:.2f}s "
+          f"{apa._basename(req.filename)} -> page {found.get('page')} "
+          f"({len(found.get('rects') or [])} rects)", flush=True)
+
+    if len(_LOCATE_CACHE) >= _LOCATE_CACHE_MAX:
+        _LOCATE_CACHE.clear()
+    _LOCATE_CACHE[key] = found
+    return {**found, "cached": False}
+
+
 @app.get("/pdf_page", dependencies=[Depends(require_api_key)])
 async def get_pdf_page(
     request: Request,
@@ -1130,26 +1177,63 @@ async def get_pdf_page(
 
 
 # ── Knowledge-graph explorer (web /graph) ───────────────────────────────────
-# Read-only browsing of the LightRAG entity/relation graph already loaded in memory
-# (NetworkXStorage preloads `_graph` at startup; serving never mutates it, so direct
-# reads are safe — same read-only-private-attr pattern as chunks_vdb._client). The
-# degree-sorted entity index and the file→entities reverse map are built once per
-# server lifetime, lazily.
+# Read-only browsing of the LightRAG entity/relation graph. Two backends are supported
+# and detected at call time, because the serving stack switched from NetworkX to Neo4j
+# (and a small file-based store still uses NetworkX):
+#
+#   Neo4j    — the production path. The graph is ~3.6M nodes / 8.1M relationships, so
+#              NOTHING is indexed in this process: every query is bounded Cypher.
+#              Measured: exact lookup 26ms, substring candidates 0.3s, bounded
+#              neighbours 0.08s, type counts 2.2s (cached), global top-degree 0.55s.
+#              Ordering *all* substring matches by degree costs ~9s, so search fetches a
+#              bounded candidate set and ranks it here (aprag_graph.rank_search_rows).
+#   NetworkX — the in-memory path (small stores): the original degree-sorted index.
 
-_KG: dict = {"index": None, "by_lower": None, "file_map": None}
+_KG: dict = {"index": None, "by_lower": None, "file_map": None,
+             "overview": None, "top": None}
+
+#: Candidate rows pulled before ranking a search (see rank_search_rows).
+KG_SEARCH_CANDIDATES = 300
 
 
-def _kg_graph():
-    graph = getattr(getattr(_rag, "chunk_entity_relation_graph", None), "_graph", None)
-    if graph is None:
+def _kg_store():
+    """(backend, store) for the live graph — ("neo4j"|"networkx", storage)."""
+    store = getattr(_rag, "chunk_entity_relation_graph", None)
+    if store is None:
         raise HTTPException(status_code=501, detail="knowledge graph unavailable")
-    return graph
+    if getattr(store, "_driver", None) is not None:
+        return "neo4j", store
+    if getattr(store, "_graph", None) is not None:
+        return "networkx", store
+    raise HTTPException(status_code=501, detail="knowledge graph unavailable")
+
+
+def _kg_label(store) -> str:
+    """The workspace label Neo4j nodes carry (LightRAG scopes a workspace by label)."""
+    try:
+        return store._get_workspace_label()
+    except Exception:  # noqa: BLE001 — fall back to LightRAG's default
+        return "base"
+
+
+async def _neo4j(store, cypher: str, **params) -> list[dict]:
+    """Run one read-only Cypher statement and return plain dict rows."""
+    async with store._driver.session(
+        database=getattr(store, "_DATABASE", None), default_access_mode="READ"
+    ) as session:
+        result = await session.run(cypher, **params)
+        try:
+            return [dict(record) async for record in result]
+        finally:
+            await result.consume()
 
 
 def _kg_index() -> list:
+    """NetworkX-only: the degree-sorted entity index, built once."""
     if _KG["index"] is None:
         _t0 = time.perf_counter()
-        idx = kg.build_entity_index(_kg_graph())
+        _backend, store = _kg_store()
+        idx = kg.build_entity_index(store._graph)
         _KG["index"] = idx
         _KG["by_lower"] = {r[0]: r[1] for r in idx}
         print(f"[TIMING] kg index {time.perf_counter()-_t0:.2f}s ({len(idx)} entities)",
@@ -1157,61 +1241,207 @@ def _kg_index() -> list:
     return _KG["index"]
 
 
+def _row_to_summary(row: dict) -> dict:
+    """One Cypher row -> the list-row payload the web explorer renders."""
+    return {
+        "name": row.get("id") or "",
+        "type": kg.clean_type(row.get("type")) or "unknown",
+        "degree": int(row.get("degree") or 0),
+        "papers": len(kg.node_files({"file_path": row.get("file_path")})),
+        "description": kg.snippet(row.get("description")),
+    }
+
+
 @app.get("/graph/overview", dependencies=[Depends(require_api_key)])
-def graph_overview():
-    """Graph sizes + per-entity-type counts with each type's top entities."""
+async def graph_overview():
+    """Graph size + per-entity-type counts (cached: the type census is a full scan)."""
     if _rag is None:
         raise HTTPException(status_code=503, detail="RAG not initialized")
-    return kg.overview(_kg_graph(), _kg_index())
+    backend, store = _kg_store()
+    if backend == "networkx":
+        return kg.overview(store._graph, _kg_index())
+
+    if _KG["overview"] is None:
+        _t0 = time.perf_counter()
+        label = _kg_label(store)
+        counts = await _neo4j(
+            store,
+            f"MATCH (n:`{label}`) RETURN n.entity_type AS type, count(*) AS c "
+            "ORDER BY c DESC LIMIT 24")
+        totals = await _neo4j(
+            store,
+            f"MATCH (n:`{label}`) RETURN count(n) AS nodes")
+        rels = await _neo4j(
+            store,
+            f"MATCH (:`{label}`)-[r]-() RETURN count(r) / 2 AS rels")
+        _KG["overview"] = {
+            "entities": int(totals[0]["nodes"]) if totals else 0,
+            "relations": int(rels[0]["rels"]) if rels else 0,
+            # `top` is intentionally empty here: naming each type's top entities would
+            # cost a degree sort per type, and the explorer is search-first anyway.
+            "types": [{"type": kg.clean_type(r["type"]) or "unknown",
+                       "count": int(r["c"]), "top": []}
+                      for r in counts if r.get("type")],
+        }
+        print(f"[TIMING] kg overview {time.perf_counter()-_t0:.2f}s", flush=True)
+    return _KG["overview"]
 
 
 @app.get("/graph/entities", dependencies=[Depends(require_api_key)])
-def graph_entities(
+async def graph_entities(
     q: str | None = None,
     entity_type: str | None = Query(default=None, alias="type"),
     file: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ):
-    """Search/browse entities, degree-sorted. ``q`` = name substring, ``type`` =
-    exact entity type, ``file`` = only entities extracted from that paper
-    ("concepts in this paper")."""
+    """Search/browse entities. ``q`` = name substring (ranked by relevance then
+    connectedness), ``type`` = exact entity type, ``file`` = only entities extracted
+    from that paper ("concepts in this paper")."""
     if _rag is None:
         raise HTTPException(status_code=503, detail="RAG not initialized")
-    graph = _kg_graph()
-    index = _kg_index()
-    names = None
+    backend, store = _kg_store()
+
+    if backend == "networkx":
+        index = _kg_index()
+        names = None
+        if file:
+            if _KG["file_map"] is None:
+                _KG["file_map"] = kg.build_file_map(index, store._graph)
+            names = set(_KG["file_map"].get(apa._basename(file).lower(), []))
+        total, page = kg.search_entities(
+            index, q=q, etype=entity_type, names=names, limit=limit, offset=offset)
+        return {"total": total,
+                "entities": [kg.entity_summary(store._graph, r) for r in page],
+                "offset": offset, "limit": limit}
+
+    label = _kg_label(store)
+    needle = " ".join(str(q or "").lower().split())
+    etype = (entity_type or "").strip().lower()
+    _t0 = time.perf_counter()
+
     if file:
-        if _KG["file_map"] is None:
-            _t0 = time.perf_counter()
-            _KG["file_map"] = kg.build_file_map(index, graph)
-            print(f"[TIMING] kg file map {time.perf_counter()-_t0:.2f}s", flush=True)
-        names = set(_KG["file_map"].get(apa._basename(file).lower(), []))
-    total, page = kg.search_entities(
-        index, q=q, etype=entity_type, names=names, limit=limit, offset=offset)
+        # "Concepts in this paper": file_path is a <SEP>-joined list, so match the
+        # basename as a substring and bound the result.
+        rows = await _neo4j(
+            store,
+            f"MATCH (n:`{label}`) WHERE n.file_path CONTAINS $f "
+            + ("AND toLower(n.entity_type) = $t " if etype else "")
+            + "RETURN n.entity_id AS id, n.entity_type AS type, "
+              "COUNT{(n)--()} AS degree, n.description AS description, "
+              "n.file_path AS file_path "
+              "ORDER BY degree DESC LIMIT $lim",
+            f=apa._basename(file), t=etype, lim=min(limit + offset, 200))
+    elif needle:
+        # Two steps: cheap bounded candidates, then details/degrees for just those.
+        # (One combined query that orders every match by degree measured ~9s.)
+        candidates = await _neo4j(
+            store,
+            f"MATCH (n:`{label}`) WHERE toLower(n.entity_id) CONTAINS $q "
+            + ("AND toLower(n.entity_type) = $t " if etype else "")
+            + "RETURN n.entity_id AS id LIMIT $cap",
+            q=needle, t=etype, cap=KG_SEARCH_CANDIDATES)
+        ids = [r["id"] for r in candidates if r.get("id")]
+        rows = await _neo4j(
+            store,
+            f"MATCH (n:`{label}`) WHERE n.entity_id IN $ids "
+            "RETURN n.entity_id AS id, n.entity_type AS type, COUNT{(n)--()} AS degree, "
+            "n.description AS description, n.file_path AS file_path",
+            ids=ids) if ids else []
+    else:
+        rows = await _neo4j(
+            store,
+            f"MATCH (n:`{label}`) "
+            + ("WHERE toLower(n.entity_type) = $t " if etype else "")
+            + "RETURN n.entity_id AS id, n.entity_type AS type, "
+              "COUNT{(n)--()} AS degree, n.description AS description, "
+              "n.file_path AS file_path "
+              "ORDER BY degree DESC LIMIT $lim",
+            t=etype, lim=min(limit + offset, 200))
+
+    summaries = kg.rank_search_rows([_row_to_summary(r) for r in rows], needle)
+    print(f"[TIMING] kg entities {time.perf_counter()-_t0:.2f}s "
+          f"(q={needle!r} type={etype!r} rows={len(summaries)})", flush=True)
     return {
-        "total": total,
-        "entities": [kg.entity_summary(graph, r) for r in page],
+        # Bounded search: `total` is what we can show, not a corpus-wide count.
+        "total": len(summaries),
+        "entities": summaries[offset:offset + limit],
         "offset": offset,
         "limit": limit,
+        "bounded": True,
     }
 
 
 @app.get("/graph/entity", dependencies=[Depends(require_api_key)])
-def graph_entity(name: str):
-    """One entity's full card: consolidated description, neighbours (strongest
-    edges first), and the papers it was extracted from (slim bib fields)."""
+async def graph_entity(name: str):
+    """One entity's full card: consolidated description, strongest connections, and
+    the papers it was extracted from (slim bib fields)."""
     if _rag is None:
         raise HTTPException(status_code=503, detail="RAG not initialized")
-    graph = _kg_graph()
-    _kg_index()  # ensures the case-insensitive name map exists
-    canonical = _KG["by_lower"].get(str(name).strip().lower())
-    detail = kg.entity_detail(graph, canonical) if canonical else None
-    if detail is None:
-        raise HTTPException(status_code=404, detail="unknown entity")
+    backend, store = _kg_store()
+
+    if backend == "networkx":
+        _kg_index()
+        canonical = _KG["by_lower"].get(str(name).strip().lower())
+        detail = kg.entity_detail(store._graph, canonical) if canonical else None
+        if detail is None:
+            raise HTTPException(status_code=404, detail="unknown entity")
+        files = detail.pop("files")
+    else:
+        label = _kg_label(store)
+        want = str(name or "").strip()
+        node = await _neo4j(
+            store,
+            f"MATCH (n:`{label}` {{entity_id: $name}}) "
+            "RETURN n.entity_id AS id, n.entity_type AS type, n.description AS description, "
+            "n.file_path AS file_path, COUNT{(n)--()} AS degree LIMIT 1",
+            name=want)
+        if not node:
+            # Fall back to a case-insensitive match (links can carry any casing).
+            node = await _neo4j(
+                store,
+                f"MATCH (n:`{label}`) WHERE toLower(n.entity_id) = $name "
+                "RETURN n.entity_id AS id, n.entity_type AS type, n.description AS description, "
+                "n.file_path AS file_path, COUNT{(n)--()} AS degree LIMIT 1",
+                name=want.lower())
+        if not node:
+            raise HTTPException(status_code=404, detail="unknown entity")
+        row = node[0]
+        canonical = row["id"]
+
+        # Take the strongest edges FIRST, then compute neighbour degrees — a hub can
+        # have tens of thousands of edges, and degree-per-neighbour before the limit
+        # would scan all of them.
+        neighbours = await _neo4j(
+            store,
+            f"MATCH (n:`{label}` {{entity_id: $name}})-[r]-(m:`{label}`) "
+            "WITH m, r ORDER BY coalesce(r.weight, 0) DESC LIMIT 60 "
+            "RETURN m.entity_id AS entity, m.entity_type AS entity_type, "
+            "COUNT{(m)--()} AS degree, r.description AS description, "
+            "r.keywords AS keywords, coalesce(r.weight, 0) AS weight",
+            name=canonical)
+        detail = {
+            "name": canonical,
+            "type": kg.clean_type(row.get("type")) or "unknown",
+            "description": " ".join(str(row.get("description") or "").split()),
+            "degree": int(row.get("degree") or 0),
+            "n_relations": int(row.get("degree") or 0),
+            "relations": [{
+                "entity": n.get("entity") or "",
+                "entity_type": kg.clean_type(n.get("entity_type")) or "unknown",
+                "degree": int(n.get("degree") or 0),
+                "description": kg.snippet(n.get("description"), 320),
+                "keywords": kg.snippet(n.get("keywords"), 120),
+                "weight": float(n.get("weight") or 0.0),
+            } for n in neighbours],
+        }
+        files = kg.node_files({"file_path": row.get("file_path")})
+        detail["n_papers"] = len(files)
+        files = files[:60]
+
     manifest = apa.load_manifest(APA_MANIFEST)
     papers = []
-    for fn in detail.pop("files"):
+    for fn in files:
         base = apa._basename(fn)
         rec = manifest.get(base)
         rec = rec if isinstance(rec, dict) else {}
