@@ -102,6 +102,29 @@ PAGE_RENDER_CONCURRENCY = int(os.environ.get("PAGE_RENDER_CONCURRENCY", 2))
 # Set QDRANT_URL for LightRAG's Qdrant backend
 os.environ.setdefault("QDRANT_URL", QDRANT_URL)
 
+# LightRAG constructs QdrantClient(url=..., api_key=...) with no timeout, so it
+# inherits qdrant_client's 5s default. That is far too short for the full corpus
+# store: at 12.1M vectors / 4096 dims the store is ~195GB against 33.5GB of RAM on
+# the serving box, so Qdrant mmaps from SSD and a single search costs ~2s warm and
+# up to ~7s cold. A hybrid query issues several, and the 5s default turned that
+# into "ResponseHandlingException: timed out" -> HTTP 500 on every request.
+#
+# Patched here rather than in lightrag/kg/qdrant_impl.py on purpose: the vendored
+# LightRAG must stay unmodified so it can be upgraded in place (see CLAUDE.md).
+QDRANT_TIMEOUT = int(os.environ.get("QDRANT_TIMEOUT", 120))
+try:
+    import qdrant_client as _qc
+
+    _qc_init = _qc.QdrantClient.__init__
+
+    def _qc_init_with_timeout(self, *args, **kwargs):
+        kwargs.setdefault("timeout", QDRANT_TIMEOUT)
+        return _qc_init(self, *args, **kwargs)
+
+    _qc.QdrantClient.__init__ = _qc_init_with_timeout
+except ImportError:      # NanoVectorDB deployments have no qdrant_client
+    pass
+
 # ── Embedding via local Qwen3-Embedding server (scripts/server.py) ────────────
 # These calls are all query-side; the embedding server applies the Qwen3 query
 # instruction. The `model` field is ignored by that server.
