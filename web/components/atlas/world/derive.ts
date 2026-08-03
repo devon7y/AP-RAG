@@ -238,17 +238,18 @@ function fieldTexture(data: Float32Array): THREE.DataTexture {
 /* ---------------- era fields (the time machine's terrain) ---------------- */
 
 function buildEraFields(
-  corpus: CorpusData,
-  chunkDate: Float32Array,
+  posX: Float32Array,
+  posY: Float32Array,
+  date: Float32Array,
   yearMin: number,
   yearMax: number,
 ): EraFields {
-  const { atlas } = corpus;
+  const count = date.length;
   const K = 14;
   // knot dates at chunk-count quantiles → even *growth* per step, not even
   // years (fractional dates give month-level knots where the corpus is dense)
   const born: number[] = [];
-  for (let i = 0; i < atlas.n; i++) if (chunkDate[i] > 0) born.push(chunkDate[i]);
+  for (let i = 0; i < count; i++) if (date[i] > 0) born.push(date[i]);
   born.sort((a, b) => a - b);
   const knots: number[] = [];
   for (let q = 0; q < K; q++) {
@@ -259,10 +260,10 @@ function buildEraFields(
   if (knots[knots.length - 1] < yearMax + 1) knots.push(yearMax + 1);
 
   const raws = knots.map(() => new Float32Array(GRID * GRID));
-  for (let i = 0; i < atlas.n; i++) {
-    const y = chunkDate[i];
-    const x01 = atlas.pos2[i * 2];
-    const y01 = atlas.pos2[i * 2 + 1];
+  for (let i = 0; i < count; i++) {
+    const y = date[i];
+    const x01 = posX[i];
+    const y01 = posY[i];
     for (let kI = 0; kI < knots.length; kI++) {
       if (y === 0 || y <= knots[kI]) splat(raws[kI], x01, y01);
     }
@@ -592,7 +593,19 @@ export function deriveWorld(
     return lo / sortedDates.length;
   };
 
-  const eras = buildEraFields(corpus, chunkDate, yearMin, yearMax);
+  // Terrain height is PAPER density. Splatting passages let one long document
+  // pile up terrain wherever its passages scattered — raising ground with no
+  // beacon under it, and letting a single book out-rank a region holding dozens
+  // of papers. Papers put the landscape and the beacons on the same footing.
+  const paperX = new Float32Array(papers.length);
+  const paperY = new Float32Array(papers.length);
+  const paperDate = new Float32Array(papers.length);
+  papers.forEach((p, i) => {
+    paperX[i] = p.centroid[0];
+    paperY[i] = p.centroid[1];
+    paperDate[i] = paperMeta?.frac[i] || (p.year > 0 ? p.year + 0.5 : 0);
+  });
+  const eras = buildEraFields(paperX, paperY, paperDate, yearMin, yearMax);
   const colorTex = buildColorTexture(corpus);
 
   // --- KG centrality per chunk (drives brightness in both frames) ---

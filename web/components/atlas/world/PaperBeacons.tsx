@@ -39,8 +39,8 @@ import { useAtlasStore } from "@/lib/atlas/store";
  */
 
 
-/** Beacons ride a little higher than chunk points (lift 1.35 vs 0.55). */
-const BEACON_EXTRA_LIFT = 0.8;
+/** Beacons sit on the terrain surface, like every other mark. */
+const BEACON_EXTRA_LIFT = 0;
 
 export function paperWorldPos(
   data: WorldData,
@@ -116,7 +116,7 @@ export default function PaperBeacons({
     mat.positionNode = morphPosition(
       vec3(aG4.x, 0, aG4.y),
       vec3(aS4.x, aS4.y, aS4.z),
-      1.35,
+      0,
     );
 
     const alive = step(aYear, uYear.add(0.01)).mul(step(uYearLo, aYear.add(0.01)));

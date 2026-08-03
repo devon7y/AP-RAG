@@ -90,6 +90,7 @@ export default function WorldPicker({
           );
         }
       }
+      const st = useWorld.getState();
       // the graph only exists in the galaxy — no entity picking on the ground
       if (morph > 0.4) {
         for (let i = 0; i < data.entities.length; i++) {
@@ -97,6 +98,8 @@ export default function WorldPicker({
           consider(tmp.x, tmp.y, tmp.z, 1.6, () => ({ kind: "entity", idx: i }), 1.35);
         }
       }
+      // a hidden layer is not a target — picking follows what is drawn
+      if (st.showPapers) {
       for (let i = 0; i < data.nPapers; i++) {
         paperWorldPos(data, i, morph, tmp);
         consider(
@@ -108,6 +111,8 @@ export default function WorldPicker({
           1.25,
         );
       }
+      }
+      if (st.showChunks) {
       for (let i = 0; i < data.n; i++) {
         const gx = data.chunkGround[i * 3];
         const gy = data.chunkGroundY[i];
@@ -116,6 +121,7 @@ export default function WorldPicker({
         const y = gy + (data.chunkSpace[i * 3 + 1] - gy) * morph;
         const z = gz + (data.chunkSpace[i * 3 + 2] - gz) * morph;
         consider(x, y, z, data.chunkSize[i] * 0.8, () => ({ kind: "chunk", idx: i }));
+      }
       }
       return best;
     };
