@@ -76,9 +76,25 @@ def main() -> None:
     (PUB / "doc_hashes.json").write_text(json.dumps(doc_hashes, separators=(",", ":")))
 
     # ── straight copies ──────────────────────────────────────────────────────
-    for f in ("papers.json", "clusters.json", "voids.json", "heightmap.bin"):
+    for f in ("papers.json", "voids.json", "heightmap.bin"):
         shutil.copy(SRC / f, PUB / f)
         print(f"wrote {f} ({(PUB / f).stat().st_size/1e6:.2f} MB)")
+
+    # clusters carry LLM region names that the layout job knows nothing about —
+    # copying blindly would silently empty "Fly to a region", so names already
+    # in place are carried across by id.
+    fresh = json.loads((SRC / "clusters.json").read_text())
+    if (PUB / "clusters.json").exists():
+        prev = {c["id"]: c for c in json.loads((PUB / "clusters.json").read_text())}
+        kept = 0
+        for c in fresh:
+            old = prev.get(c["id"])
+            if old and old.get("name") and not c.get("name"):
+                c["name"], c["flavor"] = old["name"], old.get("flavor", "")
+                kept += 1
+        print(f"carried {kept} region names across the rebuild")
+    (PUB / "clusters.json").write_text(json.dumps(fresh, separators=(",", ":")))
+    print(f"wrote clusters.json ({(PUB/'clusters.json').stat().st_size/1e6:.2f} MB)")
 
     # ── kNN as its own binary: the radio is opt-in, so this loads lazily ─────
     k = np.load(SRC / "knn.npz")
