@@ -18,7 +18,7 @@ import { WORLD_SIZE } from "@/lib/atlas/data";
  */
 
 export const GRID = 256; // era height/color field resolution
-export const HEIGHT_SCALE = 13;
+export const HEIGHT_SCALE = 20; // relief on a 100-unit map — raised with the corpus
 export const CHUNK_LIFT = 0.55; // points hover just above the terrain skin
 
 export const uMorph = uniform(0);

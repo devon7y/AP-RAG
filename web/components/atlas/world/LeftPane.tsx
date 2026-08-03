@@ -290,12 +290,12 @@ function NavigatePanel({ data, corpus }: { data: WorldData; corpus: CorpusData }
                   ["constellations", "showSky", showSky],
                   ["concept web", "showWeb", showWeb],
                   ["papers", "showPapers", showPapers],
-                  ["passage dots", "showChunks", showChunks],
+                  ["passages", "showChunks", showChunks],
                   ["labels", "showLabels", showLabels],
                 ] as const)
               : ([
                   ["papers", "showPapers", showPapers],
-                  ["passage dots", "showChunks", showChunks],
+                  ["passages", "showChunks", showChunks],
                   ["labels", "showLabels", showLabels],
                 ] as const)
           ).map(([label, key, on]) => (

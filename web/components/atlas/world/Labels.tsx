@@ -16,6 +16,43 @@ import { uMorph } from "./uniforms";
  * Total label count stays well under the ~60 budget.
  */
 
+/**
+ * One screen-space occupancy list per frame, shared by every label family.
+ *
+ * Region labels used to skip collision entirely while peak labels tested only
+ * against each other, using an estimated rect that badly under-measured the
+ * rendered text — which is why the middle of the map turned into a pile of
+ * overlapping words. Now everything competes in one list, measured from the
+ * real DOM box, and the winner is whoever reserves first: regions (largest
+ * first), then summits by prominence.
+ */
+export interface LabelRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+const occupancy: { frame: number; rects: LabelRect[] } = { frame: -1, rects: [] };
+
+export function beginLabelFrame(frame: number): void {
+  if (occupancy.frame !== frame) {
+    occupancy.frame = frame;
+    occupancy.rects = [];
+  }
+}
+
+/** True when the box is clear; reserves it when so. */
+export function reserveLabel(el: HTMLElement, x: number, y: number): boolean {
+  const w = (el.offsetWidth || 60) + 8;
+  const h = (el.offsetHeight || 14) + 4;
+  const clash = occupancy.rects.some(
+    (r) => Math.abs(r.x - x) * 2 < r.w + w && Math.abs(r.y - y) * 2 < r.h + h,
+  );
+  if (clash) return false;
+  occupancy.rects.push({ x, y, w, h });
+  return true;
+}
+
 function FadingLabel({
   getPos,
   near,
@@ -36,7 +73,7 @@ function FadingLabel({
   const div = useRef<HTMLDivElement>(null);
   const tmp = useMemo(() => new THREE.Vector3(), []);
 
-  useFrame(({ camera }) => {
+  useFrame(({ camera, size, clock }) => {
     const g = group.current;
     const d = div.current;
     if (!g || !d) return;
@@ -47,6 +84,17 @@ function FadingLabel({
     const t = THREE.MathUtils.clamp((far - dist) / (far - near), 0, 1);
     let o = st.warping || !st.showLabels ? 0 : Math.min(1, t * 1.6);
     if (alpha) o *= alpha();
+    // regions reserve screen space before summits do, so the big names win
+    if (o > 0.05) {
+      beginLabelFrame((clock.elapsedTime * 1000) | 0);
+      const p = tmp.clone().project(camera);
+      if (p.z >= 1) o = 0;
+      else {
+        const sx = ((p.x + 1) / 2) * size.width;
+        const sy = ((1 - p.y) / 2) * size.height;
+        if (!reserveLabel(d, sx, sy)) o = 0;
+      }
+    }
     d.style.opacity = o.toFixed(3);
     d.style.pointerEvents = o > 0.25 ? "auto" : "none";
   });
@@ -74,12 +122,12 @@ function PeakLabels({ data }: { data: WorldData }) {
   const divs = useRef<(HTMLDivElement | null)[]>([]);
   const proj = useMemo(() => new THREE.Vector3(), []);
 
-  useFrame(({ camera, size }) => {
+  useFrame(({ camera, size, clock }) => {
     const st = useWorld.getState();
     const timeFade = st.year > st.yearMax ? 1 : 0.15;
     const base = (1 - uMorph.value) * timeFade;
     const globallyHidden = base <= 0.02 || st.warping || !st.showLabels;
-    const accepted: { x: number; y: number; w: number; h: number }[] = [];
+    beginLabelFrame((clock.elapsedTime * 1000) | 0);
 
     for (let i = 0; i < data.peaks.length; i++) {
       const peak = data.peaks[i]; // already rank-ordered, 0 = most prominent
@@ -96,18 +144,7 @@ function PeakLabels({ data }: { data: WorldData }) {
           const far = peak.rank < 10 ? 300 : 150;
           const t = THREE.MathUtils.clamp((far - dist) / (far - 14), 0, 1);
           o = Math.min(1, t * 1.6) * base;
-          if (o > 0.05) {
-            // approximate the label rect (9px display font, 230px wrap lane)
-            const w = Math.min(230, peak.label.length * 5.6) + 10;
-            const lines = Math.ceil((peak.label.length * 5.6) / 230);
-            const h = lines * 12 + 6;
-            const clash = accepted.some(
-              (r) =>
-                Math.abs(r.x - x) * 2 < r.w + w && Math.abs(r.y - y) * 2 < r.h + h,
-            );
-            if (clash) o = 0;
-            else accepted.push({ x, y, w, h });
-          }
+          if (o > 0.05 && !reserveLabel(el, x, y)) o = 0;
         }
       }
       el.style.opacity = o.toFixed(3);

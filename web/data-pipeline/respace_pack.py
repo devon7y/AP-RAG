@@ -60,7 +60,14 @@ occupancy(p2, "after")
 # heightmap + voids follow the coordinates, so they are rebuilt here
 H, _, _ = np.histogram2d(p2[:, 0], p2[:, 1], bins=GRID, range=[[0, 1], [0, 1]])
 Hs = gaussian_filter(H, sigma=6.0) + 0.35 * gaussian_filter(H, sigma=2.0)
-Hs = np.log1p(Hs); Hs /= Hs.max()
+# log1p flattened the terrain badly at this scale: with ~445k passages the counts
+# are large enough that log compresses typical and peak density into the same
+# narrow band (the middle half of the map spanned only 0.32 of the height range).
+# A gentler power keeps relief, then a percentile stretch spends the full range
+# on the density that actually occurs rather than on one extreme spike.
+Hs = np.power(Hs, 0.45)
+lo, hi = np.percentile(Hs[Hs > 0], 2), np.percentile(Hs[Hs > 0], 99.5)
+Hs = np.clip((Hs - lo) / (hi - lo + 1e-9), 0, 1)
 (SRC / "heightmap.bin").write_bytes(Hs.astype(np.float32).T.tobytes())
 
 papers = json.loads((SRC / "papers.json").read_text())
