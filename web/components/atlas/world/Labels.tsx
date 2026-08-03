@@ -182,7 +182,7 @@ function PeakLabels({ data }: { data: WorldData }) {
                 }}
               >
                 <span
-                  className={`font-display block text-[9px] tracking-[0.12em] text-white/75 [text-shadow:0_0_12px_rgba(0,0,0,0.95)] ${
+                  className={`font-display block text-[9px] tracking-[0.12em] text-white [text-shadow:0_0_12px_rgba(0,0,0,0.95)] ${
                     peak.kind === "paper" ? "italic" : ""
                   }`}
                 >
@@ -219,11 +219,8 @@ export default function Labels({ data }: { data: WorldData }) {
             }}
             title={cluster.flavor}
           >
-            <span className="font-display block text-[15px] tracking-[0.14em] text-white/75 [text-shadow:0_0_14px_rgba(0,0,0,0.9)]">
+            <span className="font-display block text-[15px] tracking-[0.14em] text-white [text-shadow:0_0_14px_rgba(0,0,0,0.9)]">
               {cluster.name}
-            </span>
-            <span className="block text-[9px] tracking-[0.3em] text-white/35 uppercase">
-              {cluster.nPapers} papers
             </span>
           </button>
         </FadingLabel>
