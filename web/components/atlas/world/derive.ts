@@ -752,7 +752,9 @@ export function deriveWorld(
       HEIGHT_SCALE;
     const run = 2 * d * WORLD_SIZE;
     const grad = Math.hypot(hx / run, hz / run);
-    paperLift[i] = paperSize[i] * 0.65 * Math.min(4, Math.sqrt(1 + grad * grad));
+    // clearance is the sprite's RADIUS (half its world size), not its width —
+    // enough to sit on the surface rather than float over it
+    paperLift[i] = paperSize[i] * 0.3 * Math.min(2.5, Math.sqrt(1 + grad * grad));
     paperYear[i] = pd;
   });
 
@@ -854,22 +856,67 @@ export function deriveWorld(
   const chunkIdToIdx = makeChunkIndex(atlas);
   const clusterById = new Map(clusters.map((cl) => [cl.id, cl]));
 
+  // Where a region's name sits, and which names win space.
+  //
+  // The label used to sit at the cluster's MEAN position. UMAP regions are
+  // rarely convex — a crescent or a split cluster has a mean that lands in the
+  // middle of somebody else's territory, which is why the papers under a label
+  // often had nothing to do with it. Placing it at the cluster's DENSEST cell
+  // instead puts the name over ground that region actually occupies.
+  const LG = 64; // coarse grid for locating each cluster's densest patch
+  const clusterGrids = new Map<number, Float32Array>();
+  for (let i = 0; i < n; i++) {
+    const c = atlas.cluster[i];
+    let g = clusterGrids.get(c);
+    if (!g) {
+      g = new Float32Array(LG * LG);
+      clusterGrids.set(c, g);
+    }
+    const gx = Math.min(LG - 1, Math.max(0, Math.floor(atlas.pos2[i * 2] * LG)));
+    const gy = Math.min(LG - 1, Math.max(0, Math.floor(atlas.pos2[i * 2 + 1] * LG)));
+    g[gy * LG + gx] += 1;
+  }
+  // a handful of papers is not a "region" — labelling 2-paper clusters as
+  // peers of 1,600-paper ones is what made the map's naming look arbitrary
+  const MIN_REGION_PAPERS = 15;
   const labelClusters = clusters
-    .filter((cl) => cl.name)
-    .map((cl) => ({
-      cluster: cl,
-      ground: new THREE.Vector3(
-        ...(() => {
-          const [x, z] = toWorldXZ(cl.center[0], cl.center[1]);
-          return [x, sampleField(eras.final, cl.center[0], cl.center[1]) * HEIGHT_SCALE + 3.2, z];
-        })(),
-      ),
-      space: new THREE.Vector3(
-        (cl.center3[0] - 0.5) * WORLD_SIZE,
-        (cl.center3[1] - 0.5) * WORLD_SIZE,
-        (cl.center3[2] - 0.5) * WORLD_SIZE,
-      ),
-    }));
+    .filter((cl) => cl.name && cl.nPapers >= MIN_REGION_PAPERS)
+    // biggest regions reserve screen space first — a 20-paper cluster should
+    // never crowd out one holding hundreds
+    .sort((a, b) => b.nPapers - a.nPapers)
+    .map((cl) => {
+      const g = clusterGrids.get(cl.id);
+      let cx = cl.center[0];
+      let cy = cl.center[1];
+      if (g) {
+        let best = -1;
+        let bi = -1;
+        for (let i = 0; i < g.length; i++) {
+          if (g[i] > best) {
+            best = g[i];
+            bi = i;
+          }
+        }
+        if (bi >= 0) {
+          cx = ((bi % LG) + 0.5) / LG;
+          cy = (Math.floor(bi / LG) + 0.5) / LG;
+        }
+      }
+      const [wx, wz] = toWorldXZ(cx, cy);
+      return {
+        cluster: cl,
+        ground: new THREE.Vector3(
+          wx,
+          sampleField(eras.final, cx, cy) * HEIGHT_SCALE + 3.2,
+          wz,
+        ),
+        space: new THREE.Vector3(
+          (cl.center3[0] - 0.5) * WORLD_SIZE,
+          (cl.center3[1] - 0.5) * WORLD_SIZE,
+          (cl.center3[2] - 0.5) * WORLD_SIZE,
+        ),
+      };
+    });
 
   const labelPapers = papers
     .map((p, i) => ({ i, s: p.nChunks }))
