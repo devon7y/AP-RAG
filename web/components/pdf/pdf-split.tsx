@@ -76,20 +76,25 @@ export function PdfSplit({ children }: { children: React.ReactNode }) {
   }
 
   return (
+    // overflow-hidden + fixed height: the split owns the viewport, so nothing here can
+    // scroll the document itself — otherwise scrolling the PDF drags the chat column
+    // (and its composer) up with it.
     <PanelGroup
       autoSaveId="aprag:pdf-split"
-      className="h-dvh w-full"
+      className="h-dvh max-h-dvh w-full overflow-hidden"
       direction="horizontal"
     >
-      <Panel defaultSize={52} minSize={28} order={1}>
-        {/* min-w-0/h-full: let the chat column shrink and scroll inside the split
-            instead of forcing the page wider than the viewport. */}
-        <div className="h-full min-w-0 overflow-hidden">{children}</div>
+      <Panel className="min-w-0 overflow-hidden" defaultSize={52} minSize={28} order={1}>
+        {/* [&>*]:h-full: the chat shell sizes itself to the viewport (h-dvh); inside a
+            panel it must fill the panel instead, or its overflow spills onto the page. */}
+        <div className="h-full min-w-0 overflow-hidden [&>*]:h-full [&>*]:max-h-full">
+          {children}
+        </div>
       </Panel>
       <PanelResizeHandle className="group relative w-1.5 shrink-0 bg-border/40 transition-colors hover:bg-primary/40 data-[resize-handle-state=drag]:bg-primary/60">
         <span className="-translate-x-1/2 -translate-y-1/2 absolute top-1/2 left-1/2 h-8 w-0.5 rounded-full bg-muted-foreground/30 group-hover:bg-primary/60" />
       </PanelResizeHandle>
-      <Panel defaultSize={48} minSize={25} order={2}>
+      <Panel className="min-w-0 overflow-hidden" defaultSize={48} minSize={25} order={2}>
         <PdfReader onClose={closeAll} />
       </Panel>
     </PanelGroup>

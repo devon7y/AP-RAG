@@ -24,27 +24,30 @@ import { type PdfTab, usePdfViewer } from "@/lib/pdf/store";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 
-// The reader pane: one open paper per tab, scrolled continuously like a real PDF
-// viewer, opened at the cited page with the quoted passage highlighted.
+// The reader pane: open papers as tabs, scrolled continuously, opened at the cited page
+// with the quoted passage highlighted.
 //
-// Rendering model — continuous + virtualized:
-//   * Every page gets a placeholder box sized from the document's first page, so the
-//     scrollbar is correct immediately and jumping to page N is just a scroll offset.
-//   * Only pages near the viewport render to canvas (and their text layers), which
-//     keeps a 300-page book as cheap as a 10-page paper.
-//   * Placeholders show the server-rendered WebP of that page, so scrolling fast shows
-//     real content rather than empty boxes.
+// Three properties this file works hard for:
+//   * Switching tabs is instant — every open tab stays mounted and inactive ones are
+//     just hidden, so their canvases, text layers and scroll positions survive.
+//   * Dragging the divider is smooth — re-rendering pdf.js on every pixel of a drag is
+//     what made it crawl, so the pages are CSS-scaled during the drag and re-rastered
+//     once it settles.
+//   * Zoom feels native — trackpad pinch (ctrl+wheel on Chrome, gesture events on
+//     Safari) zooms the PDF only, never the page.
 //
-// Highlighting uses rectangles resolved server-side (/api/pdf-locate searches the PDF
-// text with PyMuPDF and returns fractional boxes), so it does not depend on matching
-// text in the browser's text layer — and it works even though the corpus store carries
-// no page numbers at all.
+// Rendering is continuous + virtualized: each page is an absolutely positioned slot
+// sized from page 1, only pages near the viewport render to canvas, and the
+// server-rendered WebP stands in everywhere else.
 
-const ZOOM_STEPS = [0.6, 0.8, 1, 1.25, 1.5, 2, 3] as const;
-const DEFAULT_ZOOM_INDEX = 2;
+const MIN_ZOOM = 0.4;
+const MAX_ZOOM = 5;
+const ZOOM_STEP = 1.25;
 /** Pages rendered on each side of the viewport. */
 const RENDER_WINDOW = 1;
 const PAGE_GAP = 12;
+/** How long the divider must be still before pages are re-rastered. */
+const RESIZE_SETTLE_MS = 160;
 
 type PageBox = { width: number; height: number };
 
@@ -60,7 +63,7 @@ export function PdfReader({ onClose }: { onClose?: () => void }) {
   }
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col border-border/60 border-l bg-muted/30">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-border/60 border-l bg-muted/30">
       <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-border/60 border-b bg-background/60 px-1.5 py-1 no-scrollbar">
         {tabs.map((tab) => (
           <div
@@ -104,13 +107,20 @@ export function PdfReader({ onClose }: { onClose?: () => void }) {
         )}
       </div>
 
-      {/* Keyed so switching tabs remounts cleanly (each paper has its own scroll). */}
-      <PdfDocumentPane key={active.id} tab={active} />
+      {/* Every open tab stays mounted; only the active one is visible. Re-mounting on
+          each switch is what made switching slow (reload, re-raster, re-locate). */}
+      {tabs.map((tab) => (
+        <PdfDocumentPane
+          active={tab.id === active.id}
+          key={tab.id}
+          tab={tab}
+        />
+      ))}
     </div>
   );
 }
 
-function PdfDocumentPane({ tab }: { tab: PdfTab }) {
+function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
   const setPage = usePdfViewer((s) => s.setPage);
   const setLocated = usePdfViewer((s) => s.setLocated);
 
@@ -122,8 +132,11 @@ function PdfDocumentPane({ tab }: { tab: PdfTab }) {
   );
   const [numPages, setNumPages] = useState(0);
   const [baseBox, setBaseBox] = useState<PageBox | null>(null);
-  const [zoomIndex, setZoomIndex] = useState(DEFAULT_ZOOM_INDEX);
-  const [containerWidth, setContainerWidth] = useState(720);
+  const [zoom, setZoom] = useState(1);
+  // `width` drives rasterization and only changes once a resize settles;
+  // `liveWidth` follows the divider every frame so the pages can be CSS-scaled.
+  const [width, setWidth] = useState(720);
+  const [liveWidth, setLiveWidth] = useState(720);
   const [visible, setVisible] = useState({ from: 1, to: 3 });
   const [currentPage, setCurrentPage] = useState(tab.page);
 
@@ -189,34 +202,54 @@ function PdfDocumentPane({ tab }: { tab: PdfTab }) {
     };
   }, [tab.id, tab.filename, tab.quote, tab.located, tab.requestedPage, setLocated]);
 
-  // ── Geometry ───────────────────────────────────────────────────────────────
+  // ── Width: track live, commit when the drag settles ───────────────────────
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) {
       return;
     }
-    const observer = new ResizeObserver(() => setContainerWidth(el.clientWidth));
+    let settle: ReturnType<typeof setTimeout> | null = null;
+    const observer = new ResizeObserver((entries) => {
+      const next = entries[0]?.contentRect.width ?? 0;
+      // A hidden (inactive) tab measures 0 — ignore, or it would raster at zero width.
+      if (next <= 0) {
+        return;
+      }
+      setLiveWidth(next);
+      if (settle) {
+        clearTimeout(settle);
+      }
+      settle = setTimeout(() => setWidth(next), RESIZE_SETTLE_MS);
+    });
     observer.observe(el);
-    setContainerWidth(el.clientWidth);
-    return () => observer.disconnect();
+    const initial = el.clientWidth;
+    if (initial > 0) {
+      setLiveWidth(initial);
+      setWidth(initial);
+    }
+    return () => {
+      if (settle) {
+        clearTimeout(settle);
+      }
+      observer.disconnect();
+    };
   }, []);
 
   const scale = useMemo(() => {
     if (!baseBox) {
       return 1;
     }
-    const fit = (containerWidth - 24) / baseBox.width;
-    return Math.max(0.1, fit * ZOOM_STEPS[zoomIndex]);
-  }, [baseBox, containerWidth, zoomIndex]);
+    return Math.max(0.1, ((width - 24) / baseBox.width) * zoom);
+  }, [baseBox, width, zoom]);
+
+  // While the divider is moving, stretch what is already painted instead of
+  // re-rendering: cheap, and visually identical until it settles.
+  const previewScale = width > 0 ? liveWidth / width : 1;
 
   const pageHeight = baseBox ? baseBox.height * scale : 0;
   const pageWidth = baseBox ? baseBox.width * scale : 0;
   const strideY = pageHeight + PAGE_GAP;
-
-  const pageOffset = useCallback(
-    (page: number) => (page - 1) * strideY,
-    [strideY]
-  );
+  const pageOffset = useCallback((page: number) => (page - 1) * strideY, [strideY]);
 
   // ── Virtualization + current-page tracking ────────────────────────────────
   const recomputeVisible = useCallback(() => {
@@ -238,13 +271,66 @@ function PdfDocumentPane({ tab }: { tab: PdfTab }) {
     recomputeVisible();
   }, [recomputeVisible]);
 
-  // Keep the store's page in step with what the reader is actually showing.
   useEffect(() => {
-    if (currentPage !== tab.page) {
+    if (active && currentPage !== tab.page) {
       setPage(tab.id, currentPage);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage]);
+  }, [currentPage, active]);
+
+  // ── Trackpad pinch zooms the PDF, not the page ────────────────────────────
+  const applyZoom = useCallback((factor: number) => {
+    setZoom((z) => {
+      const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor));
+      const el = scrollRef.current;
+      if (el && next !== z) {
+        // Keep roughly the same content under the viewport centre.
+        const ratio = next / z;
+        const centre = el.scrollTop + el.clientHeight / 2;
+        requestAnimationFrame(() => {
+          el.scrollTop = centre * ratio - el.clientHeight / 2;
+        });
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) {
+      return;
+    }
+    // macOS trackpad pinch arrives as a wheel event with ctrlKey set; the default
+    // action is a full-page browser zoom, so it must be cancelled here (which needs a
+    // non-passive listener).
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) {
+        return;
+      }
+      e.preventDefault();
+      applyZoom(Math.exp(-e.deltaY * 0.01));
+    };
+    // Safari sends its own gesture events instead.
+    let gestureStart = 1;
+    const onGestureStart = (e: Event) => {
+      e.preventDefault();
+      gestureStart = (e as Event & { scale: number }).scale || 1;
+    };
+    const onGestureChange = (e: Event) => {
+      e.preventDefault();
+      const s = (e as Event & { scale: number }).scale || 1;
+      applyZoom(s / (gestureStart || 1));
+      gestureStart = s;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    el.addEventListener("gesturestart", onGestureStart as EventListener);
+    el.addEventListener("gesturechange", onGestureChange as EventListener);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("gesturestart", onGestureStart as EventListener);
+      el.removeEventListener("gesturechange", onGestureChange as EventListener);
+    };
+  }, [applyZoom]);
 
   // ── Jump to the requested page once geometry is known ─────────────────────
   const jumpedTo = useRef<number | null>(null);
@@ -275,7 +361,7 @@ function PdfDocumentPane({ tab }: { tab: PdfTab }) {
   const highlightRects = tab.located?.rects ?? [];
 
   return (
-    <>
+    <div className={cn("flex min-h-0 flex-1 flex-col", !active && "hidden")}>
       <header className="flex shrink-0 flex-wrap items-center gap-2 border-border/60 border-b px-3 py-1.5">
         <div className="min-w-0 flex-1">
           <p className="truncate text-[13px]">{tab.label || tab.filename}</p>
@@ -326,8 +412,8 @@ function PdfDocumentPane({ tab }: { tab: PdfTab }) {
           )}
           <Button
             aria-label="Zoom out"
-            disabled={zoomIndex === 0}
-            onClick={() => setZoomIndex((i) => Math.max(0, i - 1))}
+            disabled={zoom <= MIN_ZOOM}
+            onClick={() => applyZoom(1 / ZOOM_STEP)}
             size="icon-sm"
             type="button"
             variant="ghost"
@@ -336,10 +422,8 @@ function PdfDocumentPane({ tab }: { tab: PdfTab }) {
           </Button>
           <Button
             aria-label="Zoom in"
-            disabled={zoomIndex === ZOOM_STEPS.length - 1}
-            onClick={() =>
-              setZoomIndex((i) => Math.min(ZOOM_STEPS.length - 1, i + 1))
-            }
+            disabled={zoom >= MAX_ZOOM}
+            onClick={() => applyZoom(ZOOM_STEP)}
             size="icon-sm"
             type="button"
             variant="ghost"
@@ -360,9 +444,10 @@ function PdfDocumentPane({ tab }: { tab: PdfTab }) {
       </header>
 
       <div
-        className="min-h-0 flex-1 overflow-auto overscroll-contain p-2"
+        className="min-h-0 flex-1 overflow-auto overscroll-none p-2"
         onScroll={recomputeVisible}
         ref={scrollRef}
+        style={{ touchAction: "pan-x pan-y" }}
       >
         {(status === "missing" || status === "error") && (
           <div className="mx-auto mt-10 max-w-sm space-y-3 px-4 text-center">
@@ -391,7 +476,14 @@ function PdfDocumentPane({ tab }: { tab: PdfTab }) {
         {status === "ready" && baseBox && (
           <div
             className="relative mx-auto"
-            style={{ width: pageWidth, height: strideY * numPages }}
+            style={{
+              width: pageWidth,
+              height: strideY * numPages,
+              // During a drag this stretches the already-painted pages; it is 1 (a
+              // no-op) as soon as the width settles and the pages re-raster.
+              transform: previewScale === 1 ? undefined : `scale(${previewScale})`,
+              transformOrigin: "top center",
+            }}
           >
             {Array.from({ length: numPages }, (_, i) => i + 1).map((page) => (
               <PageSlot
@@ -410,7 +502,7 @@ function PdfDocumentPane({ tab }: { tab: PdfTab }) {
           </div>
         )}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -468,19 +560,14 @@ function PageSlot({
       taskRef.current = task;
       try {
         await task.promise;
-      } catch (error) {
-        if ((error as { name?: string }).name === "RenderingCancelledException") {
-          return;
-        }
-        return;
+      } catch {
+        return; // superseded by a newer render, or the pane went away
       }
       if (cancelled) {
         return;
       }
       setPainted(true);
 
-      // Selectable text on top of the canvas (pdf.js positions these spans via its
-      // own CSS, which the module imports at the top of this file).
       const layer = textRef.current;
       if (layer) {
         const mod = await getPdfjs();
@@ -507,9 +594,6 @@ function PageSlot({
       className="absolute left-0 bg-white shadow-sm"
       style={{ top, width, height }}
     >
-      {/* Server-rendered page image: correct content while scrolling fast, replaced the
-          moment pdf.js paints this page — and shown again if the page leaves the render
-          window, whose canvas is unmounted to bound memory. */}
       {(!render || !painted) && (
         // biome-ignore lint/performance/noImgElement: rendered pdf page, not a static asset
         <img
@@ -531,8 +615,6 @@ function PageSlot({
             top: `${y0 * 100}%`,
             width: `${Math.max(0, x1 - x0) * 100}%`,
             height: `${Math.max(0, y1 - y0) * 100}%`,
-            // Multiply keeps the page text legible through the wash. PDF pages render
-            // white in both app themes, so this needs no light/dark variant.
             background: "rgb(250 204 21 / 0.42)",
             mixBlendMode: "multiply",
           }}
