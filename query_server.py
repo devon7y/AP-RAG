@@ -32,6 +32,7 @@ from pydantic import BaseModel
 
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache
+from lightrag.base import DocStatus
 from lightrag.utils import EmbeddingFunc
 
 import apa_citations as apa     # APA7 rewriting of the answer LLM's numeric citations
@@ -259,6 +260,7 @@ async def lifespan(app: FastAPI):
         graph_storage=GRAPH_STORAGE,
     )
     await _rag.initialize_storages()
+    await _load_corpus_files()
     _PAGE_AWARE = await _sample_page_aware()
     print(f"Knowledge graph ready. (page_aware={_PAGE_AWARE})", flush=True)
     yield
@@ -501,6 +503,76 @@ async def _count_papers() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"paper count failed ({exc!r})", flush=True)
         return 0
+
+
+# ── Corpus-scoped manifest ────────────────────────────────────────────────────
+# The manifest is built from the whole papers library, so it also carries records for
+# papers that were never ingested. Browsing those in the Paper Database is misleading:
+# they cannot be retrieved or cited, yet they inflate the table's total and disagree
+# with the /stats header. So the browse endpoints are scoped to the ingested corpus:
+#
+#   manifest ∩ ingested   -> full bibliographic record
+#   ingested, no record   -> minimal record derived from the Author_Year filename, so a
+#                            queryable paper is never invisible in the browser
+#   record, not ingested  -> excluded
+#
+# Computed once at startup and cached. If doc_status is unreachable the unscoped
+# manifest is used, preserving the "works even when the databases are down" property.
+_CORPUS_FILES: dict = {"data": None}
+_SCOPED_MANIFEST: dict = {"data": None}
+
+
+async def _load_corpus_files() -> None:
+    """Cache the set of ingested PDF basenames from doc_status."""
+    try:
+        docs = await _rag.doc_status.get_docs_by_statuses(
+            [DocStatus.PROCESSED, DocStatus.PREPROCESSED]
+        )
+        names = set()
+        for d in (docs or {}).values():
+            fp = (d.get("file_path") if isinstance(d, dict) else getattr(d, "file_path", "")) or ""
+            base = os.path.basename(str(fp).replace("\\", "/"))
+            if base:
+                names.add(base)
+        _CORPUS_FILES["data"] = names or None
+        print(f"corpus scope: {len(names):,} ingested filenames", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"corpus scope unavailable ({exc!r}) — browsing the full manifest", flush=True)
+        _CORPUS_FILES["data"] = None
+
+
+def _minimal_record(fn: str) -> dict:
+    """Bib record inferred from an `Author_Year.pdf` filename, for an ingested paper the
+    manifest has no entry for. Marked so the UI can show it as unverified metadata."""
+    stem = fn[:-4] if fn.lower().endswith(".pdf") else fn
+    parts = stem.split("_")
+    year = None
+    for p in reversed(parts):
+        if p.isdigit() and len(p) == 4:
+            year = int(p); break
+    fam = parts[0] if parts else stem
+    return {"type": "article", "authors": [{"family": fam, "given": ""}], "year": year,
+            "title": stem.replace("_", " "), "container_title": "", "doi": "",
+            "keywords": [], "abstract": "", "subjects": [], "metadata_source": "filename"}
+
+
+def corpus_manifest() -> dict:
+    """Manifest scoped to the ingested corpus (see note above). Cached."""
+    if _SCOPED_MANIFEST["data"] is not None:
+        return _SCOPED_MANIFEST["data"]
+    manifest = apa.load_manifest(APA_MANIFEST)
+    files = _CORPUS_FILES["data"]
+    if not files:
+        _SCOPED_MANIFEST["data"] = manifest
+        return manifest
+    scoped = {fn: rec for fn, rec in manifest.items() if fn in files}
+    for fn in files - set(manifest):
+        scoped[fn] = _minimal_record(fn)
+    print(f"corpus manifest: {len(scoped):,} papers "
+          f"({len(files - set(manifest)):,} filename-derived, "
+          f"{len(set(manifest) - files):,} library-only excluded)", flush=True)
+    _SCOPED_MANIFEST["data"] = scoped
+    return scoped
 
 
 # Distinct filter values (for the web UI's filter autocomplete), computed once from the
@@ -786,7 +858,7 @@ def list_papers(
     """Browse the manifest as a table: metadata filters (same semantics as /query·
     /retrieve·/search) + quick text match + sort + pagination. Pure manifest read —
     works even when Qdrant/embeddings are down."""
-    manifest = apa.load_manifest(APA_MANIFEST)
+    manifest = corpus_manifest()
     filters = {k: v for k, v in {
         "authors": authors, "journals": journals, "subjects": subjects,
         "keywords": keywords, "affiliations": affiliations, "types": types,
@@ -841,7 +913,7 @@ def papers_index():
     """Every paper as a compact [filename, title, first_author_family, year] row —
     the corpus-wide lookup the web composer uses to detect paper mentions client-side."""
     if _PAPERS_INDEX["data"] is None:
-        _PAPERS_INDEX["data"] = _compute_papers_index(apa.load_manifest(APA_MANIFEST))
+        _PAPERS_INDEX["data"] = _compute_papers_index(corpus_manifest())
     return {"papers": _PAPERS_INDEX["data"]}
 
 
@@ -1238,6 +1310,42 @@ async def vectors(req: VectorsRequest):
         with_vectors=True, with_payload=False,
     )
     return {"vectors": {str(p.id): p.vector for p in points if p.vector is not None}}
+
+
+class ChunkTextRequest(BaseModel):
+    ids: list[str]                  # chunk_ids (as returned by /qsearch)
+
+
+@app.post("/chunk_text", dependencies=[Depends(require_api_key)])
+async def chunk_text(req: ChunkTextRequest):
+    """Read passages straight out of the text-chunks KV by chunk_id.
+
+    The Atlas needs a passage's prose the moment you click it, and at full corpus
+    scale (~445k chunks) that text is far too big to ship to the browser — so the
+    map carries positions only and reads the words from here on demand.
+    """
+    if _rag is None:
+        raise HTTPException(status_code=503, detail="RAG not initialized")
+    if not 1 <= len(req.ids) <= 64:
+        raise HTTPException(status_code=400, detail="ids: 1-64 chunk ids")
+    if not hasattr(_rag, "text_chunks"):
+        raise HTTPException(status_code=503, detail="text chunks unavailable")
+    try:
+        stored = await _rag.text_chunks.get_by_ids(list(req.ids))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"chunk lookup failed: {exc!r}")
+    out: dict[str, dict] = {}
+    for cid, rec in zip(req.ids, stored):
+        if not isinstance(rec, dict):
+            continue
+        text = rec.get("raw_text_without_overlap") or rec.get("content") or ""
+        out[cid] = {
+            "text": text[:6000],
+            "section": rec.get("section_title") or "",
+            "page": rec.get("page_start"),
+            "file": rec.get("file_path") or "",
+        }
+    return {"chunks": out}
 
 
 _CENTROID_CACHE: dict[str, list[float]] = {}
