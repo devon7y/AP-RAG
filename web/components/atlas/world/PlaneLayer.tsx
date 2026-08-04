@@ -885,6 +885,15 @@ export default function PlaneLayer({
     warnSound.current?.stop();
     warnSound.current = null;
 
+    // The frame loop bails out above the mission block once mode is cleared, so
+    // the branch that would retire the target marker never runs again — leaving
+    // the glowing target hanging over the map for the rest of the session.
+    // Clear it here, where the flight actually ends.
+    marker.place(null);
+    planeTelemetry.hasTarget = false;
+    planeTelemetry.targetFt = 0;
+    planeTelemetry.targetRel = 0;
+
     const gy = groundHeightAt(data, g.position.x, g.position.z);
     crashGroundY.current = Math.max(gy, 0);
     g.position.y = crashGroundY.current + 0.08;
