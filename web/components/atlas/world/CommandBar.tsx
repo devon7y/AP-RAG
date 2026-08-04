@@ -291,15 +291,23 @@ export default function CommandBar({
       switch (cmd.kind) {
         case "warp": {
           setBusy("searching");
-          const raw = await qsearch({ text: cmd.query, limit: 12 });
-          const seen = new Set<number>();
-          const hits: SearchHit[] = [];
+          // Retrieval is per passage — that is what has embeddings — but the
+          // answer people want is which PAPERS. Collapse to one row per paper,
+          // keeping its best passage as the evidence behind it.
+          const raw = await qsearch({ text: cmd.query, limit: 60 });
+          const bestByPaper = new Map<number, SearchHit>();
           for (const h of raw) {
             const idx = data.chunkIdToIdx.get(h.chunkId);
-            if (idx === undefined || seen.has(idx)) continue;
-            seen.add(idx);
-            hits.push({ idx, chunkId: h.chunkId, score: h.score });
+            if (idx === undefined) continue;
+            const paper = corpus.atlas.paper[idx];
+            const prev = bestByPaper.get(paper);
+            if (!prev || h.score > prev.score) {
+              bestByPaper.set(paper, { idx, chunkId: h.chunkId, score: h.score });
+            }
           }
+          const hits: SearchHit[] = [...bestByPaper.values()]
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 12);
           if (!hits.length) {
             setNotice("nothing matched — try different words");
             break;
@@ -502,7 +510,7 @@ export default function CommandBar({
           >
             <div className="flex items-center justify-between px-1">
               <p className="text-[10px] tracking-[0.3em] text-ink-3 uppercase">
-                “{searchQuery}” · {searchHits.length} passages
+                “{searchQuery}” · {searchHits.length} papers
               </p>
               <button
                 type="button"
@@ -528,7 +536,8 @@ export default function CommandBar({
                       className="group w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/5"
                       onClick={() => {
                         const st = useWorld.getState();
-                        st.select({ kind: "chunk", idx: h.idx });
+                        // open the PAPER; its best passage is what matched
+                        st.select({ kind: "paper", idx: corpus.atlas.paper[h.idx] });
                         const [x, y, z] = chunkWorldPos(data, h.idx, uMorph.value);
                         st.requestWarp([x, y, z], 7, 1.6);
                       }}

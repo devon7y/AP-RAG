@@ -23,6 +23,9 @@ import { uCalm, uMorph } from "./uniforms";
  *    colored by temperature.
  */
 
+/** How far the ground trail floats above the beacons it links. */
+const TRAIL_CLEARANCE = 4.5;
+
 const TRAIL_GOLD = "#ffd27a";
 
 interface TrailWaypoint {
@@ -62,6 +65,12 @@ function TrailLabels({
     });
     items.sort((a, b) => a.y - b.y);
     let prevY = Number.NEGATIVE_INFINITY;
+    let shown = 0;
+    // A prolific author has hundreds of papers, and de-overlapping every label
+    // by pushing it down the screen buries the map under a column of chips.
+    // Only a budget of them gets named; the trail itself still shows the rest,
+    // and clicking any dot opens that paper.
+    const MAX_LABELS = 14;
     for (const it of items) {
       const el = innerRefs.current[it.i];
       if (!el) continue;
@@ -69,10 +78,15 @@ function TrailLabels({
         el.style.display = "none";
         continue;
       }
+      if (shown >= MAX_LABELS) {
+        el.style.display = "none";
+        continue;
+      }
       el.style.display = "";
       let y = it.y;
       if (y < prevY + 19) y = prevY + 19;
       prevY = y;
+      shown++;
       el.style.transform = `translate(10px, ${y - it.y - 9}px)`;
     }
   });
@@ -135,8 +149,11 @@ function AuthorTrail({
     const gPts: THREE.Vector3[] = [];
     const sPts: THREE.Vector3[] = [];
     for (const p of papers) {
-      // the trail threads straight through the beacons themselves
+      // The trail threads through the beacons, but a straight run between two
+      // of them cuts through whatever hill lies between — so the ground curve
+      // rides above the surface and only the beacons sit on it.
       paperWorldPos(data, p, 0, tmp);
+      tmp.y += TRAIL_CLEARANCE;
       gPts.push(tmp.clone());
       paperWorldPos(data, p, 1, tmp);
       sPts.push(tmp.clone());

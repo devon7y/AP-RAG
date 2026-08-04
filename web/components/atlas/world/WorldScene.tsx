@@ -6,6 +6,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import HDRCanvas from "@/components/atlas/HDRCanvas";
 import { loadAuthors, loadPaperMeta, WORLD_SIZE } from "@/lib/atlas/data";
+import { useEDR } from "@/lib/atlas/edr";
 import { useAtlasStore } from "@/lib/atlas/store";
 import type {
   AuthorRec,
@@ -545,6 +546,9 @@ function useVisibleGeneration(): { hidden: boolean; generation: number } {
 }
 
 export default function WorldSceneRoot() {
+  // stamps body[data-edr] — the CSS hook the map labels claim HDR headroom
+  // through. Nothing else mounted this, so the stamp never existed.
+  useEDR();
   const { hidden, generation } = useVisibleGeneration();
   const { corpus, error } = useCorpus();
   const constellations = useConstellations();

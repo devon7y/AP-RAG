@@ -60,6 +60,23 @@ function Chip({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** A subject/keyword chip that opens the papers database already filtered by it
+ *  — the same repeated-query-param contract the database's own chips use, so
+ *  the Atlas and /papers stay one system rather than two vocabularies. */
+function FilterChip({ dim, value }: { dim: "subjects" | "keywords"; value: string }) {
+  return (
+    <a
+      href={`/papers?${dim}=${encodeURIComponent(value)}`}
+      target="_blank"
+      rel="noreferrer"
+      title={`Browse every paper with this ${dim === "subjects" ? "subject" : "keyword"}`}
+      className="rounded-full border border-current px-2 py-0.5 text-[10px] text-ink-3 transition-colors hover:border-[#3987e5] hover:text-[#3987e5]"
+    >
+      {value}
+    </a>
+  );
+}
+
 export default function InspectorPanel({
   data,
   corpus,
@@ -166,11 +183,24 @@ function PaperCard({
           {p.abstract}
         </p>
       )}
-      {(kws.length > 0 || subj.length > 0) && (
-        <div className="flex flex-wrap gap-1">
-          {[...kws.slice(0, 6), ...subj.slice(0, 3)].map((k) => (
-            <Chip key={k}>{k}</Chip>
-          ))}
+      {subj.length > 0 && (
+        <div>
+          <p className="text-[10px] tracking-[0.25em] text-ink-3 uppercase">subjects</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {subj.slice(0, 8).map((k) => (
+              <FilterChip key={`s-${k}`} dim="subjects" value={k} />
+            ))}
+          </div>
+        </div>
+      )}
+      {kws.length > 0 && (
+        <div>
+          <p className="text-[10px] tracking-[0.25em] text-ink-3 uppercase">keywords</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {kws.slice(0, 10).map((k) => (
+              <FilterChip key={`k-${k}`} dim="keywords" value={k} />
+            ))}
+          </div>
         </div>
       )}
       <p className="text-[11px] text-ink-3">{p.nChunks} passages in the atlas</p>

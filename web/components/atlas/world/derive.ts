@@ -1032,8 +1032,8 @@ export function deriveWorld(
   // The rank ramp squeezes everything before ~1980 into the first tenth of the
   // bar, so evenly-chosen decades collide there; later ticks win because that
   // is where the corpus (and so the colour) actually lives.
-  const MIN_TICK_GAP = 0.13;
-  const candidates = [AGE_FLOOR, 1995, 2000, 2005, 2010, 2015, 2020, 2025]
+  const MIN_TICK_GAP = 0.1;
+  const candidates = [AGE_FLOOR, 2000, 2010, 2020]
     .filter((y) => y >= yearMin && y <= yearMax + 1)
     .map((y) => ({ year: y, at: ageT(y) }))
     .sort((a, b) => b.at - a.at); // newest first — they get priority
@@ -1091,6 +1091,9 @@ export function deriveWorld(
 
 /* ---------------- shared cosmetics ---------------- */
 
+// The extractor emits more types than the original eight — region, other,
+// result, finding, brainregion, brainwave all fell through to grey, so colour
+// was not actually encoding type for a good share of the sky.
 const ENTITY_TYPE_COLORS: Record<string, string> = {
   concept: CATEGORICAL[0],
   method: CATEGORICAL[1],
@@ -1100,6 +1103,11 @@ const ENTITY_TYPE_COLORS: Record<string, string> = {
   theory: CATEGORICAL[5],
   author: CATEGORICAL[6],
   institution: CATEGORICAL[7],
+  region: CATEGORICAL[1],
+  brainregion: CATEGORICAL[1],
+  brainwave: CATEGORICAL[3],
+  result: CATEGORICAL[5],
+  finding: CATEGORICAL[5],
 };
 
 export function entityColor(type: string): string {

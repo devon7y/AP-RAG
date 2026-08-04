@@ -105,11 +105,16 @@ function EntityStars({ data }: { data: WorldData }) {
       space[i * 3 + 1] = e.space.y;
       space[i * 3 + 2] = e.space.z;
       c.set(e.color);
-      const lum = 0.5 + 0.5 * (Math.log1p(e.deg) / Math.log1p(maxDeg));
+      // Degree spans four orders of magnitude here, and the sprites blend
+      // additively — so a handful of hub entities sitting close together
+      // stacked into a single blown-out blob (the amber/orange one in the
+      // middle of the galaxy). Flatten the curve so brightness still ranks
+      // them without any cluster saturating.
+      const lum = 0.42 + 0.34 * (Math.log1p(e.deg) / Math.log1p(maxDeg));
       colors[i * 3] = c.r * lum;
       colors[i * 3 + 1] = c.g * lum;
       colors[i * 3 + 2] = c.b * lum;
-      sizes[i] = 1.5 + 2.6 * (Math.log1p(e.deg) / Math.log1p(maxDeg));
+      sizes[i] = 1.4 + 1.8 * (Math.log1p(e.deg) / Math.log1p(maxDeg));
       phases[i] = ((i * 0.7548776662) % 1) * Math.PI * 2;
       years[i] = e.minYear;
     });
