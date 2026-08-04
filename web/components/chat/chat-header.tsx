@@ -5,6 +5,7 @@ import { memo } from "react";
 import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
 import { useActiveChat } from "@/hooks/use-active-chat";
+import { cn } from "@/lib/utils";
 import { AppTitle } from "./app-title";
 import { ConnectDialog } from "./connect-dialog";
 import { DigestIndicator } from "./digest-indicator";
@@ -20,21 +21,26 @@ function PureChatHeader({
   selectedVisibilityType: VisibilityType;
   isReadonly: boolean;
 }) {
-  const { state, toggleSidebar, isMobile } = useSidebar();
+  const { state, toggleSidebar, isMobile, peek } = useSidebar();
   const { personaAuthor, digest } = useActiveChat();
   const isAuthorChat = Boolean(personaAuthor);
   const isDigestChat = Boolean(digest);
 
-  if (state === "collapsed" && !isMobile) {
-    return null;
-  }
+  // The header stays put whether or not the sidebar is collapsed. It used to be removed
+  // entirely in that state, which meant opening the PDF reader — which collapses the
+  // sidebar — also took away the corpus status, the connect dialog and the persona/
+  // digest pill, exactly when the reader makes them most useful.
+  // A peeking sidebar is only transiently expanded, so it still counts as collapsed
+  // here; otherwise the toggle would flicker in and out as the pointer passes.
+  const sidebarTucked = peek || state === "collapsed";
 
   return (
     <header className="sticky top-0 flex h-14 items-center gap-2 bg-sidebar px-3">
       <Button
-        className="md:hidden"
+        className={cn(!sidebarTucked && "md:hidden")}
         onClick={toggleSidebar}
         size="icon-sm"
+        title={sidebarTucked ? "Open sidebar" : "Close sidebar"}
         variant="ghost"
       >
         <PanelLeftIcon className="size-4" />
