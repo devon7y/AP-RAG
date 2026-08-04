@@ -189,16 +189,15 @@ function PaperCard({
         <Action onClick={() => sendEndpoint("B", { kind: "paper", paperIdx: idx })} accent="#e66767">
           bridge to
         </Action>
-        {paperMeta?.drive[idx] && (
-          <a
-            href={paperMeta.drive[idx]}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-full border border-[#0ca30c]/60 px-2.5 py-1 text-[10px] tracking-widest text-[#0ca30c] uppercase hover:opacity-80"
-          >
-            open in drive
-          </a>
-        )}
+        {/* the app serves the PDF itself now — a new tab, not an embed */}
+        <a
+          href={`/api/pdf/${encodeURIComponent(p.file)}`}
+          target="_blank"
+          rel="noreferrer"
+          className="rounded-full border border-[#0ca30c]/60 px-2.5 py-1 text-[10px] tracking-widest text-[#0ca30c] uppercase hover:opacity-80"
+        >
+          open pdf
+        </a>
         {p.doi && (
           <a
             href={`https://doi.org/${p.doi}`}

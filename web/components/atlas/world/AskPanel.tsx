@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import * as THREE from "three";
+import { MessageResponse } from "@/components/ai-elements/message";
 import type { CorpusData } from "@/lib/atlas/types";
 import { paperWorldPos } from "./PaperBeacons";
 import type { WorldData } from "./derive";
@@ -113,8 +114,9 @@ export default function AskPanel({
       {ask?.status === "done" && (
         <>
           <p className="text-xs leading-snug text-ink">{ask.question}</p>
-          <div className="max-h-[34vh] overflow-y-auto rounded-md border hairline p-2.5 text-[11px] leading-relaxed whitespace-pre-line text-ink-2 hud-scroll">
-            {ask.answer}
+          <div className="hud-scroll prose-atlas max-h-[34vh] overflow-y-auto rounded-md border hairline p-2.5 text-[11px] leading-relaxed text-ink-2">
+            {/* the query server answers in markdown — render it as such */}
+            <MessageResponse>{ask.answer ?? ""}</MessageResponse>
           </div>
 
           {ask.refs.length > 0 && (

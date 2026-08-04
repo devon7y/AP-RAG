@@ -101,7 +101,13 @@ export interface WorldData {
   yearMax: number;
   chunkIdToIdx: ChunkIndex;
   clusterById: Map<number, Cluster>;
-  labelClusters: { cluster: Cluster; ground: THREE.Vector3; space: THREE.Vector3 }[];
+  labelClusters: {
+    cluster: Cluster;
+    /** earliest paper in the region — the time machine hides it until then */
+    firstYear: number;
+    ground: THREE.Vector3;
+    space: THREE.Vector3;
+  }[];
   labelPapers: number[];
   /** lowercased title+abstract+keywords+subjects per paper. The keyword lens
    *  runs on every keystroke; at 10k papers rebuilding these strings each time
@@ -893,6 +899,16 @@ export function deriveWorld(
   // a handful of papers is not a "region" — labelling 2-paper clusters as
   // peers of 1,600-paper ones is what made the map's naming look arbitrary
   const MIN_REGION_PAPERS = 15;
+  // earliest paper in each cluster, so the time machine can withhold a region's
+  // name until the literature it names actually exists
+  const clusterFirstYear = new Map<number, number>();
+  for (let i = 0; i < n; i++) {
+    const d = chunkDate[i];
+    if (d <= 0) continue;
+    const c = atlas.cluster[i];
+    const prev = clusterFirstYear.get(c);
+    if (prev === undefined || d < prev) clusterFirstYear.set(c, d);
+  }
   const labelClusters = clusters
     .filter((cl) => cl.name && cl.nPapers >= MIN_REGION_PAPERS)
     // biggest regions reserve screen space first — a 20-paper cluster should
@@ -919,6 +935,7 @@ export function deriveWorld(
       const [wx, wz] = toWorldXZ(cx, cy);
       return {
         cluster: cl,
+        firstYear: clusterFirstYear.get(cl.id) ?? 0,
         ground: new THREE.Vector3(
           wx,
           sampleField(eras.final, cx, cy) * HEIGHT_SCALE + 3.2,

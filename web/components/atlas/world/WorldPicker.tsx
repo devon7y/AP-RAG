@@ -98,9 +98,15 @@ export default function WorldPicker({
           consider(tmp.x, tmp.y, tmp.z, 1.6, () => ({ kind: "entity", idx: i }), 1.35);
         }
       }
-      // a hidden layer is not a target — picking follows what is drawn
+      // a hidden layer is not a target — picking follows what is drawn, and
+      // that includes the time lens: an unborn paper is invisible, so it must
+      // not answer the cursor either
+      const yHi = st.year + 0.01;
+      const yLo = st.yearLo;
+      const born = (y: number) => y === 0 || (y <= yHi && y >= yLo);
       if (st.showPapers) {
       for (let i = 0; i < data.nPapers; i++) {
+        if (!born(data.paperYear[i])) continue;
         paperWorldPos(data, i, morph, tmp);
         consider(
           tmp.x,
@@ -114,6 +120,7 @@ export default function WorldPicker({
       }
       if (st.showChunks) {
       for (let i = 0; i < data.n; i++) {
+        if (!born(data.chunkYear[i])) continue;
         const gx = data.chunkGround[i * 3];
         const gy = data.chunkGroundY[i];
         const gz = data.chunkGround[i * 3 + 2];

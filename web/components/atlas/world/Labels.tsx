@@ -203,12 +203,17 @@ export default function Labels({ data }: { data: WorldData }) {
 
   return (
     <group>
-      {data.labelClusters.map(({ cluster, ground, space }) => (
+      {data.labelClusters.map(({ cluster, firstYear, ground, space }) => (
         <FadingLabel
           key={`cl-${cluster.id}`}
           near={40}
           far={230}
           getPos={(out) => out.copy(ground).lerp(space, uMorph.value)}
+          alpha={() => {
+            // a region has no name before the papers that earned it
+            const st = useWorld.getState();
+            return firstYear > 0 && firstYear > st.year + 0.01 ? 0 : 1;
+          }}
         >
           <button
             type="button"
