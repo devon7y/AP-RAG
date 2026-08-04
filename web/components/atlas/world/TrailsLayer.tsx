@@ -140,7 +140,11 @@ function AuthorTrail({
     }
     const gCurve = new THREE.CatmullRomCurve3(gPts, false, "centripetal", 0.65);
     const sCurve = new THREE.CatmullRomCurve3(sPts, false, "centripetal", 0.65);
-    const N = 90;
+    // Samples must scale with the trail, not be a fixed budget: at 90 for the
+    // whole curve a prolific author got barely one sample per segment, so the
+    // Catmull-Rom curvature — and the bowing that lifts the line over terrain —
+    // was never evaluated and the trail drew as straight runs between beacons.
+    const N = Math.min(2400, Math.max(120, (gPts.length - 1) * 16));
     const pos = new Float32Array((N + 1) * 3);
     const spc = new Float32Array((N + 1) * 3);
     const col = new Float32Array((N + 1) * 3);
