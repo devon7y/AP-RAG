@@ -1,19 +1,32 @@
 "use client";
 
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { Html } from "@react-three/drei";
 import * as THREE from "three";
 import { entityWorldPos } from "./SkyLayer";
 import type { WorldData } from "./derive";
+import {
+  disposeLabelGlyph,
+  makeLabelGlyph,
+  scaleLabelGlyph,
+  useFontsReady,
+  type LabelStyle,
+} from "./labelGlyphs";
 import { useWorld } from "./store";
 import { uMorph } from "./uniforms";
+import { useAtlasStore } from "@/lib/atlas/store";
 
 /**
- * DOM labels over the world (drei Html — WGSL-safe, per the atlas conventions).
- * Region names always ride their cluster; the top knowledge-graph entities get
- * small typed chips. Both fade by camera distance and hide while warping.
- * Total label count stays well under the ~60 budget.
+ * Labels over the world. Region names always ride their cluster; the top
+ * knowledge-graph entities get small typed chips. Both fade by camera distance
+ * and hide while warping. Total label count stays well under the ~60 budget.
+ *
+ * Region and summit GLYPHS are drawn in-scene (labelGlyphs.ts) so their white
+ * fill can claim the HDR canvas' EDR headroom like the beacons — DOM text
+ * composites in SDR and clamps at white. The drei Html element stays as an
+ * invisible twin (.map-label--ghost): it keeps the native click/cursor/tooltip
+ * behavior and the real DOM box that the occupancy list measures.
  */
 
 /**
@@ -53,6 +66,43 @@ export function reserveLabel(el: HTMLElement, x: number, y: number): boolean {
   return true;
 }
 
+/** The visible, HDR-capable glyph: an in-scene sprite that tracks a target
+ *  opacity written each frame by its owner (the damp stands in for the DOM
+ *  transition) and rescales to hold its CSS-pixel size on screen. */
+function GlyphSprite({
+  text,
+  fontPx,
+  trackingEm,
+  italic,
+  maxWidth,
+  target,
+}: LabelStyle & { text: string; target: { current: number } }) {
+  const boost = useAtlasStore((s) => s.hdrBoost);
+  const fontsReady = useFontsReady();
+  const glyph = useMemo(
+    () => makeLabelGlyph(text, { fontPx, trackingEm, italic, maxWidth }),
+    // fontsReady: re-rasterize once the display font settles
+    [text, fontPx, trackingEm, italic, maxWidth, fontsReady],
+  );
+  useEffect(() => () => disposeLabelGlyph(glyph), [glyph]);
+  useEffect(() => {
+    glyph.material.color.setScalar(boost);
+  }, [glyph, boost]);
+
+  const tmp = useMemo(() => new THREE.Vector3(), []);
+  useFrame(({ camera, size }, dt) => {
+    const m = glyph.material;
+    m.opacity = THREE.MathUtils.damp(m.opacity, target.current, 14, dt);
+    const visible = m.opacity > 0.015;
+    glyph.sprite.visible = visible;
+    if (!visible) return;
+    glyph.sprite.getWorldPosition(tmp);
+    scaleLabelGlyph(glyph, camera, size.height, camera.position.distanceTo(tmp));
+  });
+
+  return <primitive object={glyph.sprite} />;
+}
+
 function FadingLabel({
   getPos,
   near,
@@ -60,6 +110,7 @@ function FadingLabel({
   children,
   zRange = [20, 0],
   alpha,
+  glyph,
 }: {
   getPos: (out: THREE.Vector3) => void;
   near: number;
@@ -68,10 +119,14 @@ function FadingLabel({
   zRange?: [number, number];
   /** extra opacity multiplier evaluated per frame (morph/time gating) */
   alpha?: () => number;
+  /** when set, the visible text is this in-scene HDR glyph and the DOM child
+   *  should carry .map-label--ghost (hit-area only) */
+  glyph?: LabelStyle & { text: string };
 }) {
   const group = useRef<THREE.Group>(null);
   const div = useRef<HTMLDivElement>(null);
   const tmp = useMemo(() => new THREE.Vector3(), []);
+  const oTarget = useRef(0);
 
   useFrame(({ camera, size, clock }) => {
     const g = group.current;
@@ -95,12 +150,14 @@ function FadingLabel({
         if (!reserveLabel(d, sx, sy)) o = 0;
       }
     }
+    oTarget.current = o;
     d.style.opacity = o.toFixed(3);
     d.style.pointerEvents = o > 0.25 ? "auto" : "none";
   });
 
   return (
     <group ref={group}>
+      {glyph && <GlyphSprite {...glyph} target={oTarget} />}
       <Html center zIndexRange={zRange} style={{ pointerEvents: "none" }}>
         <div
           ref={div}
@@ -125,7 +182,27 @@ function PeakLabels({ data }: { data: WorldData }) {
   const divs = useRef<(HTMLDivElement | null)[]>([]);
   const proj = useMemo(() => new THREE.Vector3(), []);
 
-  useFrame(({ camera, size, clock }) => {
+  const boost = useAtlasStore((s) => s.hdrBoost);
+  const fontsReady = useFontsReady();
+  const glyphs = useMemo(
+    () =>
+      data.peaks.map((peak) =>
+        makeLabelGlyph(peak.label, {
+          fontPx: 9,
+          trackingEm: 0.12,
+          italic: peak.kind === "paper",
+          maxWidth: 230, // same wrap lane as the DOM box
+        }),
+      ),
+    // fontsReady: re-rasterize once the display font settles
+    [data, fontsReady],
+  );
+  useEffect(() => () => glyphs.forEach(disposeLabelGlyph), [glyphs]);
+  useEffect(() => {
+    for (const g of glyphs) g.material.color.setScalar(boost);
+  }, [glyphs, boost]);
+
+  useFrame(({ camera, size, clock }, dt) => {
     const st = useWorld.getState();
     const timeFade = st.year > st.yearMax ? 1 : 0.15;
     const base = (1 - uMorph.value) * timeFade;
@@ -152,6 +229,15 @@ function PeakLabels({ data }: { data: WorldData }) {
       }
       el.style.opacity = o.toFixed(3);
       el.style.pointerEvents = o > 0.25 ? "auto" : "none";
+
+      const g = glyphs[i];
+      if (g) {
+        g.material.opacity = THREE.MathUtils.damp(g.material.opacity, o, 14, dt);
+        const visible = g.material.opacity > 0.015;
+        g.sprite.visible = visible;
+        if (visible)
+          scaleLabelGlyph(g, camera, size.height, camera.position.distanceTo(peak.pos));
+      }
     }
   });
 
@@ -159,6 +245,7 @@ function PeakLabels({ data }: { data: WorldData }) {
     <>
       {data.peaks.map((peak, i) => (
         <group key={`pk-${peak.rank}`} position={peak.pos}>
+          {glyphs[i] && <primitive object={glyphs[i].sprite} />}
           <Html center zIndexRange={[20, 0]} style={{ pointerEvents: "none" }}>
             <div
               ref={(el) => {
@@ -188,7 +275,7 @@ function PeakLabels({ data }: { data: WorldData }) {
                 }}
               >
                 <span
-                  className={`map-label font-display block text-[9px] tracking-[0.12em] ${
+                  className={`map-label map-label--ghost font-display block text-[9px] tracking-[0.12em] ${
                     peak.kind === "paper" ? "italic" : ""
                   }`}
                 >
@@ -214,6 +301,7 @@ export default function Labels({ data }: { data: WorldData }) {
           key={`cl-${cluster.id}`}
           near={40}
           far={230}
+          glyph={{ text: cluster.name, fontPx: 15, trackingEm: 0.14 }}
           getPos={(out) => out.copy(ground).lerp(space, uMorph.value)}
           alpha={() => {
             // a region has no name before the papers that earned it
@@ -230,7 +318,7 @@ export default function Labels({ data }: { data: WorldData }) {
             }}
             title={cluster.flavor}
           >
-            <span className="map-label font-display block text-[15px] tracking-[0.14em]">
+            <span className="map-label map-label--ghost font-display block text-[15px] tracking-[0.14em]">
               {cluster.name}
             </span>
           </button>

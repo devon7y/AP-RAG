@@ -578,8 +578,12 @@ body[data-edr="on"] .atlas-app .edr-glow {
    NOTE: DOM text cannot claim HDR headroom. CSS composites in SDR, and
    color(display-p3 ...) is WIDE GAMUT, not high dynamic range — components
    above 1.0 clamp, and P3 white is identical to sRGB white, so asking for
-   "brighter than white" here is a no-op. Real overshoot needs the label drawn
-   in the SCENE, as the beacons are.
+   "brighter than white" here is a no-op. So the region/summit GLYPHS are now
+   drawn in the SCENE (world/labelGlyphs.ts rasterizes this same look to
+   CanvasTexture sprites, boosted by hdrBoost like the beacons); the DOM label
+   survives as an invisible twin — .map-label--ghost below — that keeps the
+   native click/cursor/tooltip behavior and the measured occupancy box. This
+   rule still paints the entity chips and any non-ghosted label.
 
    PERFORMANCE: these labels have their opacity rewritten every frame, and a
    style write repaints the element. Each blurred text-shadow copy is a
@@ -599,6 +603,14 @@ body[data-edr="on"] .atlas-app .edr-glow {
   text-shadow:
     0 0 6px rgba(0, 0, 0, 0.85),
     0 0 3px rgba(255, 255, 255, 0.4);
+}
+
+/* Invisible hit-area twin of an in-scene glyph: keeps layout (the occupancy
+   list measures this box) and pointer behavior, paints nothing. */
+.atlas-app .map-label--ghost {
+  color: transparent;
+  -webkit-text-stroke-color: transparent;
+  text-shadow: none;
 }
 
 
