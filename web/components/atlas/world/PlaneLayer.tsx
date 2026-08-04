@@ -1200,12 +1200,10 @@ export default function PlaneLayer({
     planeTelemetry.vsFpm = vsSmooth.current;
     planeTelemetry.warning = planeTelemetry.aglFt < WARN_AGL_FT;
 
-    // GPWS siren tracks the warning state (and the sound toggle)
-    const wantSiren =
-      planeTelemetry.warning && useWorld.getState().planeSound;
-    if (wantSiren && !warnSound.current) {
-      warnSound.current = startAltitudeWarning();
-    } else if (!wantSiren && warnSound.current) {
+    // The GPWS siren is gone — low passes are the point of flying here, so an
+    // alarm fires almost continuously and is just noise. planeTelemetry.warning
+    // still drives the HUD's visual low-altitude cue.
+    if (warnSound.current) {
       warnSound.current.stop();
       warnSound.current = null;
     }
