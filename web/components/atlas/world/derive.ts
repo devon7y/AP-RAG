@@ -179,6 +179,35 @@ function spaceXYZ(pos3: ArrayLike<number>, i: number): [number, number, number] 
   ];
 }
 
+/** CPU twin of the shader's era-blended terrain height.
+ *
+ *  The land SINKS as the time machine scrubs back — the shader mixes two era
+ *  fields by year — while `eras.final` is the present-day surface. Anything on
+ *  the CPU that needs to agree with what is drawn (picking, above all) has to
+ *  blend the same way, or it reasons about marks at heights they are not at.
+ *  Mirrors WorldDriver's bracket rule exactly.
+ */
+export function sampleEraHeight(
+  eras: EraFields,
+  year: number,
+  x01: number,
+  y01: number,
+): number {
+  const { years, texes } = eras;
+  const last = years.length - 1;
+  const yy = Math.min(year, years[last]);
+  let i = 0;
+  while (i < last - 1 && years[i + 1] <= yy) i++;
+  const a = texes[i].image.data as Float32Array;
+  const b = texes[Math.min(i + 1, last)].image.data as Float32Array;
+  const y0 = years[i];
+  const y1 = years[Math.min(i + 1, last)];
+  const t = y1 > y0 ? Math.min(1, Math.max(0, (yy - y0) / (y1 - y0))) : 1;
+  const ha = sampleField(a, x01, y01);
+  const hb = sampleField(b, x01, y01);
+  return (ha + (hb - ha) * t) * HEIGHT_SCALE;
+}
+
 /** Bilinear sample of a GRID² field at [0,1]² coords. */
 export function sampleField(f: Float32Array, x01: number, y01: number): number {
   const fx = Math.min(Math.max(x01, 0), 0.999999) * (GRID - 1);

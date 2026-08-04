@@ -4,6 +4,7 @@ import { useEffect, useMemo } from "react";
 import { useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { WORLD_SIZE } from "@/lib/atlas/data";
+import { sampleEraHeight } from "./derive";
 import { paperWorldPos } from "./PaperBeacons";
 import type { WorldData } from "./derive";
 import { entityWorldPos } from "./SkyLayer";
@@ -104,10 +105,22 @@ export default function WorldPicker({
       const yHi = st.year + 0.01;
       const yLo = st.yearLo;
       const born = (y: number) => y === 0 || (y <= yHi && y >= yLo);
+      // heights must come from the era the shader is drawing, not the present
+      const groundY = (wx: number, wz: number, lift: number) =>
+        sampleEraHeight(
+          data.eras,
+          st.year,
+          wx / WORLD_SIZE + 0.5,
+          wz / WORLD_SIZE + 0.5,
+        ) + lift;
       if (st.showPapers) {
       for (let i = 0; i < data.nPapers; i++) {
         if (!born(data.paperYear[i])) continue;
         paperWorldPos(data, i, morph, tmp);
+        tmp.y =
+          groundY(data.paperGround[i * 3], data.paperGround[i * 3 + 2], data.paperLift[i]) *
+            (1 - morph) +
+          data.paperSpace[i * 3 + 1] * morph;
         consider(
           tmp.x,
           tmp.y,
@@ -122,7 +135,7 @@ export default function WorldPicker({
       for (let i = 0; i < data.n; i++) {
         if (!born(data.chunkYear[i])) continue;
         const gx = data.chunkGround[i * 3];
-        const gy = data.chunkGroundY[i];
+        const gy = groundY(gx, data.chunkGround[i * 3 + 2], data.chunkSize[i] * 0.35);
         const gz = data.chunkGround[i * 3 + 2];
         const x = gx + (data.chunkSpace[i * 3] - gx) * morph;
         const y = gy + (data.chunkSpace[i * 3 + 1] - gy) * morph;
@@ -227,8 +240,16 @@ export default function WorldPicker({
       } else if (hit.kind === "chunk") {
         const i = hit.idx;
         const gx = data.chunkGround[i * 3];
-        const gy = data.chunkGroundY[i];
         const gz = data.chunkGround[i * 3 + 2];
+        // fly to where the passage is DRAWN in this era, not the present-day
+        // surface, or the camera lands short whenever time is scrubbed back
+        const gy =
+          sampleEraHeight(
+            data.eras,
+            st.year,
+            gx / WORLD_SIZE + 0.5,
+            gz / WORLD_SIZE + 0.5,
+          ) + data.chunkSize[i] * 0.35;
         const x = gx + (data.chunkSpace[i * 3] - gx) * morph;
         const y = gy + (data.chunkSpace[i * 3 + 1] - gy) * morph;
         const z = gz + (data.chunkSpace[i * 3 + 2] - gz) * morph;
