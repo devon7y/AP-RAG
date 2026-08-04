@@ -57,7 +57,11 @@ function MorphLines({
     const mat = new LineBasicNodeMaterial();
     mat.transparent = true;
     mat.depthWrite = false;
-    mat.blending = THREE.AdditiveBlending;
+    // Additive blending is what produced the orange mass: ~600 entity sprites
+    // sum wherever they crowd, and a dense cluster of one type saturates into a
+    // single blob no matter how the per-sprite gain is tuned. Normal blending
+    // makes a star cost the same whether it is alone or in a crowd.
+    mat.blending = THREE.NormalBlending;
     mat.positionNode = mix(positionLocal, attribute<"vec3">("aSpace", "vec3"), uMorph);
     const c = new THREE.Color(color);
     mat.colorNode = vec3(c.r, c.g, c.b).mul(uCalm);
@@ -137,7 +141,7 @@ function EntityStars({ data }: { data: WorldData }) {
     mat.transparent = true;
     mat.depthWrite = false;
     mat.depthTest = true;
-    mat.blending = THREE.AdditiveBlending;
+    mat.blending = THREE.NormalBlending;
     mat.sizeAttenuation = true;
 
     mat.positionNode = mix(aG, aS, uMorph);
@@ -157,8 +161,8 @@ function EntityStars({ data }: { data: WorldData }) {
       .clamp(0, 1)
       .pow(2.2)
       .mul(smoothstep(1.0, 0.25, d))
-      .mul(0.5);
-    const core = smoothstep(0.0, 0.45, d).oneMinus().pow(2.4).mul(2.2).add(spike);
+      .mul(0.32);
+    const core = smoothstep(0.0, 0.45, d).oneMinus().pow(2.4).mul(1.0).add(spike);
 
     mat.colorNode = aCol
       .mul(twinkle)
@@ -258,7 +262,7 @@ function EntityRing({ data, idx, color }: { data: WorldData; idx: number; color:
       transparent: true,
       depthWrite: false,
       depthTest: false,
-      blending: THREE.AdditiveBlending,
+      blending: THREE.NormalBlending,
     });
     m.color.set(color);
     const s = new THREE.Sprite(m);
@@ -292,7 +296,7 @@ function Nebulae({ corpus }: { corpus: CorpusData }) {
         transparent: true,
         depthWrite: false,
         depthTest: false,
-        blending: THREE.AdditiveBlending,
+        blending: THREE.NormalBlending,
         opacity: 0,
       });
       m.color.set(clusterColor(cl.id)).multiplyScalar(0.55);
