@@ -8,10 +8,12 @@ import { LineBasicNodeMaterial } from "three/webgpu";
 import { attribute, mix, positionLocal, vec3 } from "three/tsl";
 import { tempRGB } from "./temperature";
 import type { AuthorRec, CorpusData } from "@/lib/atlas/types";
-import { glowTexture, type WorldData } from "./derive";
+import { WORLD_SIZE } from "@/lib/atlas/data";
+import { glowTexture, sampleField, type WorldData } from "./derive";
 import { paperWorldPos } from "./PaperBeacons";
 import { authorAnchors } from "./derive";
 import { useWorld } from "./store";
+import { HEIGHT_SCALE } from "./uniforms";
 import { uCalm, uMorph } from "./uniforms";
 
 /**
@@ -23,8 +25,8 @@ import { uCalm, uMorph } from "./uniforms";
  *    colored by temperature.
  */
 
-/** How far the ground trail floats above the beacons it links. */
-const TRAIL_CLEARANCE = 4.5;
+/** Clearance the trail keeps over terrain BETWEEN beacons (zero at each). */
+const TRAIL_CLEARANCE = 2.2;
 
 const TRAIL_GOLD = "#ffd27a";
 
@@ -102,28 +104,8 @@ function TrailLabels({
               groupRefs.current[i] = el;
             }}
           >
-            <Html zIndexRange={[22, 0]} style={{ pointerEvents: "none" }}>
-              <div
-                ref={(el) => {
-                  innerRefs.current[i] = el;
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() =>
-                    useWorld.getState().select({ kind: "paper", idx: w.paperIdx })
-                  }
-                  className="pointer-events-auto block max-w-[220px] cursor-pointer truncate rounded-full border px-2 py-0.5 text-left text-[10px] leading-4 whitespace-nowrap backdrop-blur-[2px]"
-                  style={{
-                    borderColor: `${TRAIL_GOLD}88`,
-                    color: TRAIL_GOLD,
-                    background: "rgba(10,10,14,0.55)",
-                  }}
-                >
-                  {p.year || "n.d."} · {p.title}
-                </button>
-              </div>
-            </Html>
+            {/* no labels: de-overlapping a prolific author's papers buried the
+                map under a column of chips. The trail shows them; click to open. */}
           </group>
         );
       })}
@@ -149,11 +131,9 @@ function AuthorTrail({
     const gPts: THREE.Vector3[] = [];
     const sPts: THREE.Vector3[] = [];
     for (const p of papers) {
-      // The trail threads through the beacons, but a straight run between two
-      // of them cuts through whatever hill lies between — so the ground curve
-      // rides above the surface and only the beacons sit on it.
+      // the trail lands ON each beacon; clearing terrain is handled per-sample
+      // below, so the curve arcs over hills instead of floating above them
       paperWorldPos(data, p, 0, tmp);
-      tmp.y += TRAIL_CLEARANCE;
       gPts.push(tmp.clone());
       paperWorldPos(data, p, 1, tmp);
       sPts.push(tmp.clone());
@@ -169,7 +149,18 @@ function AuthorTrail({
       const t = i / N;
       const gp = gCurve.getPoint(t);
       const sp = sCurve.getPoint(t);
-      pos.set([gp.x, gp.y, gp.z], i * 3);
+      // Push the sample up only where the ground would swallow it. The lift
+      // tapers to nothing at the waypoints, so the curve still touches every
+      // beacon while bowing over whatever ridge lies between two of them.
+      const gy = sampleField(
+        data.eras.final,
+        gp.x / WORLD_SIZE + 0.5,
+        gp.z / WORLD_SIZE + 0.5,
+      ) * HEIGHT_SCALE;
+      const nearWaypoint = Math.abs(t * (gPts.length - 1) - Math.round(t * (gPts.length - 1)));
+      const taper = Math.min(1, nearWaypoint * 4);
+      const clear = gy + TRAIL_CLEARANCE * taper;
+      pos.set([gp.x, Math.max(gp.y, clear), gp.z], i * 3);
       spc.set([sp.x, sp.y, sp.z], i * 3);
       const w = 0.35 + 0.65 * t; // brightens toward the present
       col.set([c.r * w, c.g * w, c.b * w], i * 3);

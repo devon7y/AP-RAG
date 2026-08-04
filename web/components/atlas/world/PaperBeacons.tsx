@@ -134,8 +134,12 @@ export default function PaperBeacons({
 
     const d = uv().sub(0.5).length().mul(2.0).clamp(0, 1);
     // beacon profile: hot core + a distinct halo ring (reads different from chunks)
-    const core = smoothstep(0.0, 0.42, d).oneMinus().pow(3.0).mul(2.4).add(0.35);
-    const ring = smoothstep(0.5, 0.65, d).mul(smoothstep(0.78, 0.95, d).oneMinus()).mul(0.85);
+    // Beacons blend additively, so wherever papers crowd — the oldest, densest
+    // literature especially, which all clamps to the red end of the age ramp —
+    // hundreds of sprites summed into a single blown-out orange mass. Lower core
+    // gain keeps an individual beacon legible without letting a crowd saturate.
+    const core = smoothstep(0.0, 0.42, d).oneMinus().pow(3.0).mul(1.25).add(0.28);
+    const ring = smoothstep(0.5, 0.65, d).mul(smoothstep(0.78, 0.95, d).oneMinus()).mul(0.5);
     const profile = core.add(ring);
 
     const baseCol = mix(aColG, aColS, uMorph);

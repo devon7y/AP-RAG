@@ -255,6 +255,18 @@ interface WorldState {
 
 let warpSeq = 0;
 
+/** chunk idx -> paper idx, published once the corpus is derived.
+ *
+ *  Selecting a passage opens its PAPER. People want to know which paper matched,
+ *  not which 500-token window did, and every producer of results (search, the
+ *  interpolation engine, the picker, drop-a-draft) went through select() — so
+ *  redirecting here fixes all of them at once and keeps the passage card from
+ *  ever appearing. */
+let chunkToPaper: Int32Array | null = null;
+export function setChunkToPaper(map: Int32Array): void {
+  chunkToPaper = map;
+}
+
 export const useWorld = create<WorldState>((set) => ({
   view: "atlas",
   instrument: "navigate",
@@ -347,6 +359,9 @@ export const useWorld = create<WorldState>((set) => ({
     }),
   select: (s) =>
     set((st) => {
+      if (s?.kind === "chunk" && chunkToPaper && s.idx < chunkToPaper.length) {
+        s = { kind: "paper", idx: chunkToPaper[s.idx] };
+      }
       const same =
         s !== null &&
         st.selection !== null &&

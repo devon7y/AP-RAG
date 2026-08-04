@@ -30,7 +30,7 @@ import PlaneHud from "./PlaneHud";
 import PlaneLayer, { type PlanePose } from "./PlaneLayer";
 import RoverLayer, { useRover } from "./RoverLayer";
 import SkyLayer from "./SkyLayer";
-import { OPENING_SHOT, useWorld, type PlantedGhost } from "./store";
+import { OPENING_SHOT, setChunkToPaper, useWorld, type PlantedGhost } from "./store";
 import Terrain from "./Terrain";
 import TrailsLayer from "./TrailsLayer";
 import { uMorph } from "./uniforms";
@@ -341,6 +341,11 @@ function World({
   const ask = useWorld((s) => s.ask);
   const showChunks = useWorld((s) => s.showChunks);
   const showPapers = useWorld((s) => s.showPapers);
+
+  // passage selections resolve to their paper (see setChunkToPaper)
+  useEffect(() => {
+    if (corpus) setChunkToPaper(corpus.atlas.paper);
+  }, [corpus]);
 
   useRover(corpus, knn);
   useGhostPlanting(data, corpus !== null);
