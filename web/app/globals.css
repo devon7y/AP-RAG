@@ -589,18 +589,16 @@ body[data-edr="on"] .atlas-app .edr-glow {
    background is now a single cheap gradient paint instead of a 44px blur. */
 .atlas-app .map-label {
   color: #fff;
+  /* A drawn OUTLINE, not a haze. paint-order puts the stroke behind the fill so
+     the glyph keeps its shape instead of being eaten from the inside, which is
+     what a plain text-stroke does. Cheap too: one stroke pass, no blur, and no
+     background box to smear an ellipse across the terrain. */
+  -webkit-text-stroke: 3px rgba(0, 0, 0, 0.88);
+  paint-order: stroke fill;
+  /* one tight shadow for separation, one faint white to keep the glyph forward */
   text-shadow:
-    0 0 1px rgba(0, 0, 0, 1),
-    0 0 3px rgba(0, 0, 0, 0.98),
-    0 0 8px rgba(0, 0, 0, 0.92),
-    0 0 4px rgba(255, 255, 255, 0.5);
-  padding: 0 0.35em;
-  background: radial-gradient(
-    ellipse 60% 70% at 50% 50%,
-    rgba(0, 0, 0, 0.82) 0%,
-    rgba(0, 0, 0, 0.6) 45%,
-    rgba(0, 0, 0, 0) 78%
-  );
+    0 0 6px rgba(0, 0, 0, 0.85),
+    0 0 3px rgba(255, 255, 255, 0.4);
 }
 
 
