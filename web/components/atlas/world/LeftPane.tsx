@@ -172,11 +172,14 @@ function AgeLegend({ data }: { data: WorldData }) {
         style={{ background: `linear-gradient(90deg, ${AGE_STOPS.join(", ")})` }}
       />
       <div className="relative mt-1 h-3">
+        {/* the ramp is open-ended at the new end — say so rather than printing
+            a year the corpus may not have reached */}
+        <span className="absolute right-0 text-[10px] text-ink-3">present</span>
         {ticks.map((t: { year: number; at: number }) => (
           <span
             key={t.year}
             className="absolute -translate-x-1/2 text-[10px] text-ink-3 tabular-nums"
-            style={{ left: `${Math.min(96, Math.max(4, t.at * 100))}%` }}
+            style={{ left: `${Math.min(78, Math.max(3, t.at * 100))}%` }}
           >
             {t.year}
           </span>

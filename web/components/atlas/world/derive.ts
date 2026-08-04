@@ -134,6 +134,9 @@ const WEB_EDGES = 150;
  *  1904-2026 but the papers are overwhelmingly post-1950, so equal-area-per-
  *  paper spends the rainbow where the literature actually is.
  */
+/** Where the colour ramp begins — older work all reads as the reddest end. */
+export const AGE_FLOOR = 1990;
+
 export const AGE_STOPS = [
   "#ff9aa2", // R
   "#ffb480", // O
@@ -643,11 +646,14 @@ export function deriveWorld(
   // handful of very old outliers stretch a linear ramp until almost everything
   // modern lands on the same blue. Mapping each date to its percentile spends
   // the whole ramp on the years that actually hold papers.
+  // The ramp starts at AGE_FLOOR: everything older is simply "the oldest", so
+  // the rainbow is spent on the span people actually read in. Within that span
+  // position is still a RANK, so the dense recent decades stay separable.
   const sortedDates = Float32Array.from(
-    Array.from(chunkDate).filter((d) => d > 0),
+    Array.from(chunkDate).filter((d) => d >= AGE_FLOOR),
   ).sort();
   const ageT = (d: number): number => {
-    if (d <= 0 || sortedDates.length === 0) return 0;
+    if (d <= AGE_FLOOR || sortedDates.length === 0) return 0;
     let lo = 0;
     let hi = sortedDates.length;
     while (lo < hi) {
@@ -1027,7 +1033,7 @@ export function deriveWorld(
   // bar, so evenly-chosen decades collide there; later ticks win because that
   // is where the corpus (and so the colour) actually lives.
   const MIN_TICK_GAP = 0.13;
-  const candidates = [1950, 1970, 1980, 1990, 2000, 2010, 2020]
+  const candidates = [AGE_FLOOR, 1995, 2000, 2005, 2010, 2015, 2020, 2025]
     .filter((y) => y >= yearMin && y <= yearMax + 1)
     .map((y) => ({ year: y, at: ageT(y) }))
     .sort((a, b) => b.at - a.at); // newest first — they get priority
