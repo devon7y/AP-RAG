@@ -76,46 +76,64 @@ export function PdfSplit({
     }
   }, [isOpen, isWide, sidebarOpen, setSidebarOpen]);
 
-  if (!isOpen) {
-    return <>{children}</>;
-  }
+  const splitOpen = isOpen && isWide;
 
-  if (!isWide) {
-    return (
-      <>
-        {children}
+  return (
+    // The content panel is ALWAYS rendered, in the same place in the tree, whether or
+    // not the reader is open. Returning a different shape for each case (bare children /
+    // children + sheet / panel group) moved `children` to a different position, so React
+    // unmounted and remounted the whole chat every time the reader opened or closed —
+    // which reset its scroll position to the bottom.
+    //
+    // overflow-hidden + fixed height: the split owns the viewport, so nothing here can
+    // scroll the document itself — otherwise scrolling the PDF drags the chat column
+    // (and its composer) up with it.
+    <>
+      <PanelGroup
+        autoSaveId="aprag:pdf-split"
+        className="h-dvh max-h-dvh w-full overflow-hidden"
+        direction="horizontal"
+      >
+        <Panel
+          className="min-w-0 overflow-hidden"
+          defaultSize={splitOpen ? 52 : 100}
+          id="aprag-content"
+          minSize={splitOpen ? 28 : 100}
+          order={1}
+        >
+          {/* [&>*]:h-full: the chat shell sizes itself to the viewport (h-dvh); inside a
+              panel it must fill the panel instead, or its overflow spills onto the page. */}
+          <div className="h-full min-w-0 overflow-hidden [&>*]:h-full [&>*]:max-h-full">
+            {children}
+          </div>
+        </Panel>
+        {splitOpen && (
+          <>
+            <PanelResizeHandle className="group relative w-1.5 shrink-0 bg-border/40 transition-colors hover:bg-primary/40 data-[resize-handle-state=drag]:bg-primary/60">
+              <span className="-translate-x-1/2 -translate-y-1/2 absolute top-1/2 left-1/2 h-8 w-0.5 rounded-full bg-muted-foreground/30 group-hover:bg-primary/60" />
+            </PanelResizeHandle>
+            <Panel
+              className="min-w-0 overflow-hidden"
+              defaultSize={48}
+              id="aprag-reader"
+              minSize={25}
+              order={2}
+            >
+              <PdfReader onClose={closeAll} />
+            </Panel>
+          </>
+        )}
+      </PanelGroup>
+
+      {/* Too narrow to split: the reader comes back as an overlay instead. */}
+      {isOpen && !isWide && (
         <Sheet onOpenChange={(o) => !o && closeAll()} open>
           <SheetContent className="flex w-full flex-col gap-0 p-0" side="right">
             <SheetTitle className="sr-only">PDF reader</SheetTitle>
             <PdfReader onClose={closeAll} />
           </SheetContent>
         </Sheet>
-      </>
-    );
-  }
-
-  return (
-    // overflow-hidden + fixed height: the split owns the viewport, so nothing here can
-    // scroll the document itself — otherwise scrolling the PDF drags the chat column
-    // (and its composer) up with it.
-    <PanelGroup
-      autoSaveId="aprag:pdf-split"
-      className="h-dvh max-h-dvh w-full overflow-hidden"
-      direction="horizontal"
-    >
-      <Panel className="min-w-0 overflow-hidden" defaultSize={52} minSize={28} order={1}>
-        {/* [&>*]:h-full: the chat shell sizes itself to the viewport (h-dvh); inside a
-            panel it must fill the panel instead, or its overflow spills onto the page. */}
-        <div className="h-full min-w-0 overflow-hidden [&>*]:h-full [&>*]:max-h-full">
-          {children}
-        </div>
-      </Panel>
-      <PanelResizeHandle className="group relative w-1.5 shrink-0 bg-border/40 transition-colors hover:bg-primary/40 data-[resize-handle-state=drag]:bg-primary/60">
-        <span className="-translate-x-1/2 -translate-y-1/2 absolute top-1/2 left-1/2 h-8 w-0.5 rounded-full bg-muted-foreground/30 group-hover:bg-primary/60" />
-      </PanelResizeHandle>
-      <Panel className="min-w-0 overflow-hidden" defaultSize={48} minSize={25} order={2}>
-        <PdfReader onClose={closeAll} />
-      </Panel>
-    </PanelGroup>
+      )}
+    </>
   );
 }
