@@ -287,11 +287,43 @@ def locate_quote(pdf_path: str, quote: str, hint_page: int | None = None) -> dic
         if not target:
             return result
 
-        # Which pages are worth aligning against? Phrase search usually pins the page in
-        # a few milliseconds; it fails on some text layers even when the words are all
-        # there, so an empty result falls back to considering every page.
-        phrase_used = ""
-        pages_to_try: list[int] = []
+        # A retrieved chunk is stored as "<situating blurb>\n\n<passage>", where the
+        # blurb is written by the ingest model and appears nowhere in the paper. The
+        # client strips it when it can, but not when it runs long — so the quote can
+        # open with text that cannot possibly match. The blank line is the giveaway:
+        # if the whole quote fails to place, try again from after it.
+        candidates: list[tuple[list[str], list[str]]] = [(words, target)]
+        for segment in str(quote or "").split("\n\n")[1:]:
+            segment_words = normalize_quote(segment).split()
+            segment_target = [w for w in (_norm_word(w) for w in segment_words) if w]
+            if len(segment_target) >= 5:
+                candidates.append((segment_words, segment_target))
+
+        for attempt_index, (attempt_words, attempt_target) in enumerate(candidates):
+            found = _locate_attempt(doc, count, order, attempt_words, attempt_target,
+                                    use_phrase_search=attempt_index == 0)
+            if found:
+                result.update(found)
+                return result
+        return result
+    finally:
+        doc.close()
+
+
+def _locate_attempt(doc, count: int, order: list[int], words: list[str],
+                    target: list[str], use_phrase_search: bool) -> dict | None:
+    """One placement attempt for a (possibly truncated) passage. Returns the page,
+    rectangles and per-page spans, or None when the passage is not convincingly here."""
+    if not target:
+        return None
+
+    # Which pages are worth aligning against? Phrase search usually pins the page in
+    # a few milliseconds; it fails on some text layers even when the words are all
+    # there, so an empty result falls back to considering every page. Retries skip it —
+    # their opening words are mid-sentence, where a phrase match is unreliable.
+    phrase_used = ""
+    pages_to_try: list[int] = []
+    if use_phrase_search:
         for phrase in _phrase_tiers(words):
             for index in order:
                 if doc[index].search_for(phrase):
@@ -300,76 +332,75 @@ def locate_quote(pdf_path: str, quote: str, hint_page: int | None = None) -> dic
                     break
             if pages_to_try:
                 break
-        if not pages_to_try:
-            pages_to_try = order
+    if not pages_to_try:
+        pages_to_try = order
 
-        # A passage must actually be *mostly* here to be worth highlighting: a couple of
-        # coincidentally shared words is how a wrong page wins and a single stray line
-        # gets painted, which is worse than admitting the passage wasn't found. The bar
-        # scales with the passage — a short quote must match nearly all of its words,
-        # while a long one only needs a solid run (it may be clipped by a page break) —
-        # and can never exceed the number of words there are to match.
-        ratio = 0.6 if len(target) < 12 else 0.25
-        floor = min(len(target), max(3, min(int(ratio * len(target)), 20)))
+    # A passage must actually be *mostly* here to be worth highlighting: a couple of
+    # coincidentally shared words is how a wrong page wins and a single stray line
+    # gets painted, which is worse than admitting the passage wasn't found. The bar
+    # scales with the passage — a short quote must match nearly all of its words,
+    # while a long one only needs a solid run (it may be clipped by a page break) —
+    # and can never exceed the number of words there are to match.
+    ratio = 0.6 if len(target) < 12 else 0.25
+    floor = min(len(target), max(3, min(int(ratio * len(target)), 20)))
 
-        # Word-level alignment gives the CONTIGUOUS run the passage covers. (Searching
-        # sampled phrases instead produced a scatter of disconnected fragments — a
-        # passage is one continuous stretch of page.)
-        best_matched = 0
-        best_page: int | None = None
-        for index in pages_to_try:
-            tokens, _map = _page_tokens(doc[index].get_text("words"))
-            _start, end, matched, _consumed = _align_words(tokens, target)
-            if end >= 0 and matched > best_matched:
-                best_matched = matched
-                best_page = index
-        if best_page is None or best_matched < floor:
-            return result
+    # Word-level alignment gives the CONTIGUOUS run the passage covers. (Searching
+    # sampled phrases instead produced a scatter of disconnected fragments — a
+    # passage is one continuous stretch of page.)
+    best_matched = 0
+    best_page: int | None = None
+    for index in pages_to_try:
+        tokens, _map = _page_tokens(doc[index].get_text("words"))
+        _start, end, matched, _consumed = _align_words(tokens, target)
+        if end >= 0 and matched > best_matched:
+            best_matched = matched
+            best_page = index
+    if best_page is None or best_matched < floor:
+        return None
 
-        spans: list[dict] = []
-        remaining = target
-        page_index = best_page
-        for _ in range(LOCATE_MAX_CONTINUATION_PAGES + 1):
-            if not remaining or page_index >= count:
-                break
-            current = doc[page_index]
-            words_on_page = current.get_text("words")
-            tokens, index_map = _page_tokens(words_on_page)
-            start, end, matched, consumed = _align_words(tokens, remaining)
-            if end < start or matched < 3:
-                break
+    spans: list[dict] = []
+    remaining = target
+    page_index = best_page
+    for _ in range(LOCATE_MAX_CONTINUATION_PAGES + 1):
+        if not remaining or page_index >= count:
+            break
+        current = doc[page_index]
+        words_on_page = current.get_text("words")
+        tokens, index_map = _page_tokens(words_on_page)
+        start, end, matched, consumed = _align_words(tokens, remaining)
+        if end < start or matched < 3:
+            break
 
-            rect = current.rect
-            width = rect.width or 1.0
-            height = rect.height or 1.0
-            spans.append({
-                "page": page_index + 1,
-                "rects": [
-                    [round(x0 / width, 5), round(y0 / height, 5),
-                     round(x1 / width, 5), round(y1 / height, 5)]
-                    # Token indices map back to the raw word list for rect merging.
-                    for x0, y0, x1, y1 in _merge_line_rects(
-                        words_on_page, index_map[start], index_map[end])
-                    if x1 > x0 and y1 > y0
-                ],
-            })
+        rect = current.rect
+        width = rect.width or 1.0
+        height = rect.height or 1.0
+        spans.append({
+            "page": page_index + 1,
+            "rects": [
+                [round(x0 / width, 5), round(y0 / height, 5),
+                 round(x1 / width, 5), round(y1 / height, 5)]
+                # Token indices map back to the raw word list for rect merging.
+                for x0, y0, x1, y1 in _merge_line_rects(
+                    words_on_page, index_map[start], index_map[end])
+                if x1 > x0 and y1 > y0
+            ],
+        })
 
-            remaining = remaining[consumed:]
-            # Only follow onto the next page when the passage really ran out of page —
-            # otherwise it simply ended here.
-            if len(remaining) < 5 or end < len(tokens) - 3:
-                break
-            page_index += 1
+        remaining = remaining[consumed:]
+        # Only follow onto the next page when the passage really ran out of page —
+        # otherwise it simply ended here.
+        if len(remaining) < 5 or end < len(tokens) - 3:
+            break
+        page_index += 1
 
-        if not spans:
-            return result
-        result["page"] = spans[0]["page"]
-        result["rects"] = spans[0]["rects"]
-        result["spans"] = spans
-        result["matched"] = phrase_used or " ".join(words[:8])
-        return result
-    finally:
-        doc.close()
+    if not spans:
+        return None
+    return {
+        "page": spans[0]["page"],
+        "rects": spans[0]["rects"],
+        "spans": spans,
+        "matched": phrase_used or " ".join(words[:8]),
+    }
 
 
 def render_page_image(pdf_path: str, page: int, width: int = DEFAULT_WIDTH,

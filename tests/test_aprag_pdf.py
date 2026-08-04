@@ -237,3 +237,33 @@ def test_render_raises_on_garbage(tmp_path):
     bad.write_bytes(b"this is not a pdf at all")
     with pytest.raises(RuntimeError):
         p.render_page_image(str(bad), 1)
+
+
+def test_locate_survives_a_contextual_blurb_prefix(tmp_path):
+    """Retrieved chunks are stored as "<situating blurb>\\n\\n<passage>", and the blurb is
+    written by the ingest model — it appears nowhere in the paper. A long one reaches the
+    locator, so anchoring on the opening words searches for text that cannot exist."""
+    pymupdf = pytest.importorskip("pymupdf")
+    path = tmp_path / "blurbed.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    lines = [
+        "As a validation, we also calibrated the respondent proficiency",
+        "distribution using the fixed item parameter methods described",
+        "above, and obtained correlations within 0.02 of those reported",
+        "for the fifty human respondents in the preceding section.",
+    ]
+    for i, line in enumerate(lines):
+        page.insert_text((60, 120 + i * 22), line, fontsize=11)
+    doc.save(str(path))
+    doc.close()
+
+    blurb = (
+        "The chunk presents the validation of respondent proficiency distributions "
+        "using fixed item parameter methods and introduces the Discussion section, "
+        "which summarizes the study's findings on LLM proficiency as synthetic "
+        "respondents for item calibration across several conditions."
+    )
+    got = p.locate_quote(str(path), f"{blurb}\n\n{' '.join(lines)}")
+    assert got["page"] == 1, "the passage is on the page even though the blurb is not"
+    assert got["rects"]

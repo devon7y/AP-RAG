@@ -2,7 +2,6 @@
 
 import {
   CalendarIcon,
-  ExternalLinkIcon,
   FileTextIcon,
   SparklesIcon,
 } from "lucide-react";
@@ -100,21 +99,8 @@ export function RagReferences({
                       Open PDF
                     </button>
                   )}
-                  {ref.drive_url ? (
-                    <a
-                      className="inline-flex items-center gap-1 text-primary hover:underline"
-                      href={ref.drive_url}
-                      rel="noopener noreferrer"
-                      target="_blank"
-                    >
-                      <ExternalLinkIcon className="size-3" />
-                      Open in Drive
-                    </a>
-                  ) : (
-                    <span className="inline-flex items-center gap-1">
-                      {ref.filename}
-                    </span>
-                  )}
+                  {/* No Drive link here: the reader opens the paper in place, and a
+                      second, slower route to the same PDF only crowds the row. */}
                   {ref.filename && (
                     <Link
                       className="inline-flex items-center gap-1 text-primary hover:underline"
