@@ -8,6 +8,7 @@ import { entityWorldPos } from "./SkyLayer";
 import type { WorldData } from "./derive";
 import {
   disposeLabelGlyph,
+  labelBoost,
   makeLabelGlyph,
   scaleLabelGlyph,
   useFontsReady,
@@ -86,7 +87,7 @@ function GlyphSprite({
   );
   useEffect(() => () => disposeLabelGlyph(glyph), [glyph]);
   useEffect(() => {
-    glyph.material.color.setScalar(boost);
+    glyph.material.color.setScalar(labelBoost(boost));
   }, [glyph, boost]);
 
   const tmp = useMemo(() => new THREE.Vector3(), []);
@@ -199,7 +200,7 @@ function PeakLabels({ data }: { data: WorldData }) {
   );
   useEffect(() => () => glyphs.forEach(disposeLabelGlyph), [glyphs]);
   useEffect(() => {
-    for (const g of glyphs) g.material.color.setScalar(boost);
+    for (const g of glyphs) g.material.color.setScalar(labelBoost(boost));
   }, [glyphs, boost]);
 
   useFrame(({ camera, size, clock }, dt) => {

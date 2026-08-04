@@ -168,6 +168,15 @@ export function disposeLabelGlyph(g: LabelGlyph): void {
   g.texture.dispose();
 }
 
+/** Label luminance from the canvas' hdrBoost. Text gets extra gain over the
+ *  shared boost so the thin glyphs read as bright as the fat emissive beacons
+ *  (equal multipliers leave small text looking dimmer); on SDR canvases
+ *  (boost 1) this is exactly 1 and the glyph never blows out. */
+const HDR_TEXT_GAIN = 2.0;
+export function labelBoost(hdrBoost: number): number {
+  return 1 + (hdrBoost - 1) * HDR_TEXT_GAIN;
+}
+
 /** Scale the sprite so the glyph occupies its CSS-pixel box on screen,
  *  whatever the camera distance (mirrors drei Html sizing). */
 export function scaleLabelGlyph(
