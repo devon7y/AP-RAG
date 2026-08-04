@@ -8,6 +8,11 @@ import useSWR from "swr";
 import { SidebarToggle } from "@/components/chat/sidebar-toggle";
 import { paperFetcher } from "@/components/papers/lib";
 import type { GraphEntitySummary, GraphOverview } from "@/lib/aprag/client";
+import {
+  formatSourcePapers,
+  isSourcePapersCapped,
+  SOURCE_PAPERS_CAPPED_HINT,
+} from "@/lib/aprag/graph";
 import { cn } from "@/lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -211,11 +216,17 @@ export function GraphExplorer() {
                       <Badge className="font-normal" variant="outline">
                         {e.type}
                       </Badge>
-                      <span className="text-muted-foreground text-xs tabular-nums">
+                      <span
+                        className="text-muted-foreground text-xs tabular-nums"
+                        title={
+                          isSourcePapersCapped(e.papers)
+                            ? SOURCE_PAPERS_CAPPED_HINT
+                            : undefined
+                        }
+                      >
                         {e.degree.toLocaleString()} link
                         {e.degree === 1 ? "" : "s"}
-                        {e.papers > 0 &&
-                          ` · ${e.papers} paper${e.papers === 1 ? "" : "s"}`}
+                        {e.papers > 0 && ` · ${formatSourcePapers(e.papers)}`}
                       </span>
                     </span>
                     {e.description && (

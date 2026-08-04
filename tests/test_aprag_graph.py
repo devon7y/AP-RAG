@@ -59,6 +59,17 @@ def test_node_files_splits_and_drops_unknown():
     assert g.node_files(G.nodes["Orphan"]) == []
 
 
+def test_node_files_ignores_the_truncation_marker():
+    """A capped entity carries a "...truncated..." placeholder where the papers it
+    stopped recording would be. Counting it as a paper is what made every hub entity
+    claim an identical 76 papers — one more than LightRAG's cap of 75."""
+    attrs = {"file_path": g.GRAPH_FIELD_SEP.join(
+        ["A_2001.pdf", "B_2002.pdf", "...truncated...(KEEP Old)"])}
+    assert g.node_files(attrs) == ["A_2001.pdf", "B_2002.pdf"]
+    assert g.files_truncated(attrs) is True
+    assert g.files_truncated({"file_path": "A_2001.pdf"}) is False
+
+
 def test_index_sorted_by_degree_then_name():
     G = make_graph()
     idx = g.build_entity_index(G)

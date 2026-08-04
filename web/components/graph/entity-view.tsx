@@ -15,6 +15,12 @@ import { SidebarToggle } from "@/components/chat/sidebar-toggle";
 import { type ListFilterKey, paperFetcher } from "@/components/papers/lib";
 import { PaperDrawer } from "@/components/papers/paper-drawer";
 import type { GraphEntityDetail, GraphRelation } from "@/lib/aprag/client";
+import {
+  formatSourcePapers,
+  isSourcePapersCapped,
+  MAX_SOURCE_PAPERS,
+  SOURCE_PAPERS_CAPPED_HINT,
+} from "@/lib/aprag/graph";
 import { generateUUID } from "@/lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -135,11 +141,17 @@ export function EntityView() {
               )}
             </div>
 
-            <p className="text-muted-foreground text-xs">
+            <p
+              className="text-muted-foreground text-xs"
+              title={
+                isSourcePapersCapped(data.n_papers)
+                  ? SOURCE_PAPERS_CAPPED_HINT
+                  : undefined
+              }
+            >
               {data.degree.toLocaleString()} connection
               {data.degree === 1 ? "" : "s"} · extracted from{" "}
-              {data.n_papers.toLocaleString()} paper
-              {data.n_papers === 1 ? "" : "s"}
+              {formatSourcePapers(data.n_papers)}
             </p>
 
             {data.description && (
@@ -198,8 +210,22 @@ export function EntityView() {
                 <h2 className="mb-1.5 font-medium text-muted-foreground text-xs uppercase tracking-wide">
                   Papers
                   {data.n_papers > data.papers.length &&
-                    ` — ${data.papers.length} of ${data.n_papers.toLocaleString()}`}
+                    ` — ${data.papers.length} of ${
+                      isSourcePapersCapped(data.n_papers)
+                        ? `${MAX_SOURCE_PAPERS}+`
+                        : data.n_papers.toLocaleString()
+                    }`}
                 </h2>
+                {isSourcePapersCapped(data.n_papers) && (
+                  // Without this the list reads as "the papers this concept came from",
+                  // when it is really "the first 75 papers it was seen in" — which is why
+                  // every hub entity shows the same early-alphabet set.
+                  <p className="mb-1.5 text-[11px] text-muted-foreground">
+                    Recording stops at {MAX_SOURCE_PAPERS} papers per entity, keeping
+                    the earliest ingested — so a concept this common appears in many
+                    more papers than are listed here.
+                  </p>
+                )}
                 <ul className="divide-y divide-border/60 rounded-lg border border-border">
                   {data.papers.map((p) => (
                     <li key={p.filename}>

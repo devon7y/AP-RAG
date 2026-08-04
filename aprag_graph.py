@@ -32,12 +32,34 @@ def _split_field(value) -> list[str]:
     return [v.strip() for v in str(value).split(GRAPH_FIELD_SEP) if v.strip()]
 
 
+#: LightRAG stops recording source papers per entity at ``MAX_FILE_PATHS`` (default 75)
+#: and appends a marker like ``...truncated...(KEEP Old)`` in their place. It is not a
+#: filename, so it must not be counted as a paper — left in, every hub entity reported an
+#: identical, oddly specific "76 papers".
+TRUNCATION_MARKER = "...truncated..."
+
+
+def is_truncation_marker(value) -> bool:
+    """Is this file_path entry LightRAG's "and more were dropped" placeholder?"""
+    return TRUNCATION_MARKER in str(value or "")
+
+
+def files_truncated(attrs: dict) -> bool:
+    """Whether this node hit the cap, so its file list is a floor rather than a count."""
+    return any(is_truncation_marker(f)
+               for f in _split_field((attrs or {}).get("file_path")))
+
+
 def node_files(attrs: dict) -> list[str]:
-    """The paper filenames a node was extracted from (order-preserving, deduped)."""
+    """The paper filenames a node was extracted from (order-preserving, deduped).
+
+    Capped nodes list the *earliest* papers the entity was seen in, not the most
+    relevant ones — see TRUNCATION_MARKER.
+    """
     seen: set[str] = set()
     out: list[str] = []
     for f in _split_field((attrs or {}).get("file_path")):
-        if f and f != "unknown_source" and f not in seen:
+        if f and f != "unknown_source" and f not in seen and not is_truncation_marker(f):
             seen.add(f)
             out.append(f)
     return out
