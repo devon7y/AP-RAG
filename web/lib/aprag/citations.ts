@@ -14,8 +14,9 @@ import type { RagChunk, RagReference } from "./types";
 // bracketed [n] markers we can rewrite to (Author, Year).
 export const CITATION_STYLE_PROMPT =
   'Citation style (APA7): cite each supporting source by placing its bracketed ' +
-  'reference number directly after the statement it supports, e.g. "Lexical decision ' +
-  'times fall as word frequency rises [2]." Use the bracket only — do NOT add words ' +
+  'reference number directly after the statement it supports and INSIDE the sentence — ' +
+  'before the closing period, never after it, e.g. "Lexical decision times fall as word ' +
+  'frequency rises [2]." not "…rises. [2]". Use the bracket only — do NOT add words ' +
   'such as "see", "cf.", "e.g.", or "Supported by" before it, do NOT wrap it in extra ' +
   'parentheses, and do NOT cite the same source more than once in a sentence. When ' +
   'several sources support one statement, group them in adjacent brackets, e.g. "… as ' +
@@ -77,6 +78,48 @@ export function buildContext(
   }
   const body = lines.join("\n\n") || "(no sources retrieved)";
   return `-----Sources (cite each supporting passage by its bracketed number)-----\n${body}`;
+}
+
+// A bracketed citation run: "[2]", "[2][3]", "[1, 4]".
+const CITATION_RUN = String.raw`(?:\[[ \t]*\d+(?:[ \t]*[,;][ \t]*\d+)*[ \t]*\])+`;
+// Sentence-final punctuation followed by a citation run that belongs inside the sentence.
+const TRAILING_CITATION_RE = new RegExp(
+  String.raw`([.!?])([)"'”’\]]*)[ \t]*(${CITATION_RUN})`,
+  "g"
+);
+// Periods that end an abbreviation rather than a sentence — moving a citation across
+// one of these would produce "et al [2]." instead of "et al. [2]".
+const ABBREVIATION_RE =
+  /(?:^|[\s(])(?:al|e\.g|i\.e|cf|vs|etc|Fig|Eq|Ref|No|pp?|Ch|Dr|Prof|Mr|Mrs|Ms|St|Jr|Sr|approx|ca)\.$/i;
+
+/**
+ * Move a citation that trails a sentence back inside it: "…are local. [2][3] Its main…"
+ * becomes "…are local [2][3]. Its main…", which is where APA puts it.
+ *
+ * The models mostly follow the instruction to cite before the period, but not reliably,
+ * and a citation stranded after the full stop reads as though it belongs to the *next*
+ * sentence. Runs on the raw bracket markers, before they are rewritten into APA form.
+ */
+export function citationsInsideSentence(text: string): string {
+  if (!text) {
+    return text;
+  }
+  return text.replace(
+    TRAILING_CITATION_RE,
+    (match, punctuation: string, closers: string, cites: string, offset: number) => {
+      if (punctuation === "." && ABBREVIATION_RE.test(text.slice(0, offset + 1))) {
+        return match;
+      }
+      // A closing quote or bracket means the sentence ends something quoted; moving the
+      // citation inside it would attribute the quotation itself, so leave it be.
+      if (closers) {
+        return match;
+      }
+      // Keep a single space before the citation unless one is already there.
+      const spacer = /\s/.test(text[offset - 1] ?? "") ? "" : " ";
+      return `${spacer}${cites}${punctuation}${closers}`;
+    }
+  );
 }
 
 const REFS_HEADING_RE =

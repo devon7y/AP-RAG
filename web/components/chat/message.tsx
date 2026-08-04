@@ -3,6 +3,7 @@ import type { UseChatHelpers } from "@ai-sdk/react";
 import {
   type CiteRef,
   citedReferenceIds,
+  citationsInsideSentence,
   normalizeMath,
   rewriteIntext,
   stripReferencesSection,
@@ -189,7 +190,9 @@ const PurePreviewMessage = ({
       // unterminated "[1" simply isn't matched yet.
       const text = isAssistant
         ? rewriteIntext(
-            normalizeMath(stripReferencesSection(sanitizeText(part.text))),
+            citationsInsideSentence(
+              normalizeMath(stripReferencesSection(sanitizeText(part.text)))
+            ),
             byCiteIndex
           )
         : sanitizeText(part.text);
