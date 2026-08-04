@@ -5,6 +5,7 @@ Run: python -m pytest tests/test_apa_citations.py -v
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -304,3 +305,51 @@ def test_int_year_does_not_crash_formatting():
               "authors": [{"family": "Song", "given": ""}]}
     assert "2026" in apa.format_apa7(record)
     assert "2026" in apa.format_intext(record)
+
+
+# ── citations_inside_sentence ─────────────────────────────────────────────────
+
+
+def test_citation_moves_inside_the_sentence():
+    """The reported bug: the citation sat after the full stop, reading as though it
+    belonged to the next sentence."""
+    text = ("retrieval is local: only nearby items contribute. [2][3] Its main "
+            "limitation is the framework")
+    assert apa.citations_inside_sentence(text) == (
+        "retrieval is local: only nearby items contribute [2][3]. Its main "
+        "limitation is the framework"
+    )
+
+
+def test_citation_already_inside_is_untouched():
+    text = "word frequency rises [2]. The next sentence follows"
+    assert apa.citations_inside_sentence(text) == text
+
+
+def test_citation_after_an_abbreviation_is_untouched():
+    for text in ("as shown by Brown et al. [7] in later work",
+                 "compare across studies, e.g. [3] and others"):
+        assert apa.citations_inside_sentence(text) == text
+
+
+def test_citation_after_a_closing_quote_is_untouched():
+    # Moving it inside would attribute the quotation itself.
+    text = 'the effect held.” [5] Later work'
+    assert apa.citations_inside_sentence(text) == text
+
+
+def test_citation_at_the_end_and_after_a_question_mark():
+    assert apa.citations_inside_sentence("that was the finding. [4]") == (
+        "that was the finding [4]."
+    )
+    assert apa.citations_inside_sentence("does it replicate? [6] Apparently") == (
+        "does it replicate [6]? Apparently"
+    )
+
+
+def test_no_citation_marker_is_lost():
+    text = ("first claim. [1][3] second claim. [9] third by Brown et al. [2] and "
+            "a question? [4] end. [5]")
+    before = re.findall(r"\[\s*\d+", text)
+    after = re.findall(r"\[\s*\d+", apa.citations_inside_sentence(text))
+    assert before == after

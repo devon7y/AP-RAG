@@ -358,6 +358,45 @@ _CLUSTER_RE = re.compile(rf"\([ \t]*({_RUN})[ \t]*\)|({_RUN})")
 _NUM_RE = re.compile(r"\d+")
 
 
+#: Sentence-final punctuation followed by a citation run that belongs inside the sentence.
+_TRAILING_CITATION_RE = re.compile(rf"([.!?])([)\"'”’\]]*)[ \t]*({_RUN})")
+#: Periods ending an abbreviation rather than a sentence — moving a citation across one
+#: would produce "et al [2]." instead of "et al. [2]".
+_ABBREVIATION_RE = re.compile(
+    r"(?:^|[\s(])(?:al|e\.g|i\.e|cf|vs|etc|Fig|Eq|Ref|No|pp?|Ch|Dr|Prof|Mr|Mrs|Ms|St"
+    r"|Jr|Sr|approx|ca)\.$",
+    re.IGNORECASE,
+)
+
+
+def citations_inside_sentence(text: str) -> str:
+    """Move a citation that trails a sentence back inside it: ``"…are local. [2][3] Its"``
+    becomes ``"…are local [2][3]. Its"``, which is where APA puts it.
+
+    The answer models mostly honour the instruction to cite before the period, but not
+    reliably, and a citation stranded after the full stop reads as though it belongs to
+    the following sentence. Runs on the raw ``[n]`` markers, before they are rewritten
+    into APA form. Mirrors ``citationsInsideSentence`` in the web client, which does the
+    same for chat answers.
+    """
+    if not text:
+        return text
+
+    def move(match: re.Match) -> str:
+        punctuation, closers, cites = match.group(1), match.group(2), match.group(3)
+        # A closing quote/bracket means the sentence ends something quoted; moving the
+        # citation inside it would attribute the quotation itself.
+        if closers:
+            return match.group(0)
+        if punctuation == "." and _ABBREVIATION_RE.search(text[: match.start() + 1]):
+            return match.group(0)
+        start = match.start()
+        spacer = "" if start > 0 and text[start - 1].isspace() else " "
+        return f"{spacer}{cites}{punctuation}"
+
+    return _TRAILING_CITATION_RE.sub(move, text)
+
+
 def rewrite_intext(text: str, id_to_intext: dict) -> str:
     """Replace numeric in-text citations with APA7 parentheticals.
 
@@ -493,7 +532,9 @@ def render_answer(content: str, references: list[dict], manifest: dict,
         ref_models.append(model)
         id_to_intext[rid] = model["intext"]
 
-    body = _collapse_redundant_citations(rewrite_intext(body_src, id_to_intext))
+    body = _collapse_redundant_citations(
+        rewrite_intext(citations_inside_sentence(body_src), id_to_intext)
+    )
 
     # APA references are alphabetised by author; the numeric ids are now gone.
     ref_models.sort(key=lambda r: r["intext"].lower())
