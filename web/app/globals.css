@@ -574,6 +574,24 @@ body[data-edr="on"] .atlas-app .edr-glow {
   text-shadow: 0 0 24px color(display-p3 0.25 0.5 1 / 0.55);
 }
 
+/* Map labels. The scene's beacons are emissive and overshoot 1.0, so SDR-clamped
+   white text sits visually behind them. Same trick as .edr-glow, in white: push
+   the channels past 1 so the label claims HDR headroom too, and carry a soft
+   white bloom alongside the dark shadow that keeps it legible over terrain. */
+.atlas-app .map-label {
+  color: #fff;
+  text-shadow:
+    0 0 14px rgba(0, 0, 0, 0.92),
+    0 0 7px rgba(255, 255, 255, 0.3);
+}
+
+body[data-edr="on"] .atlas-app .map-label {
+  color: color(display-p3 1.12 1.12 1.15);
+  text-shadow:
+    0 0 14px rgba(0, 0, 0, 0.92),
+    0 0 10px color(display-p3 1 1 1 / 0.4);
+}
+
 .atlas-app ::selection {
   background: rgba(57, 135, 229, 0.4);
 }
