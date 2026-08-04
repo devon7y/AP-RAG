@@ -13,6 +13,7 @@ import type {
   PaperRow,
   RankedPaper,
 } from "@/lib/aprag/types";
+import { usePdfViewer } from "@/lib/pdf/store";
 import { Button } from "../ui/button";
 import {
   Select,
@@ -24,6 +25,7 @@ import {
 import { downloadFile, fetchAllRows, rowsToBibtex, rowsToCsv } from "./export";
 import {
   apiListQueryString,
+  displayTitle,
   type ListFilterKey,
   type PapersQuery,
   PER_CHOICES,
@@ -34,7 +36,6 @@ import {
   toggleListFilter,
   toggleYearFilter,
 } from "./lib";
-import { PaperDrawer } from "./paper-drawer";
 import {
   type ColumnId,
   defaultColumnVisibility,
@@ -53,6 +54,7 @@ export function PapersBrowser() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const query = useMemo(() => parsePapersQuery(searchParams), [searchParams]);
+  const openPdf = usePdfViewer((s) => s.openPdf);
 
   // View changes push a history entry, so the browser's back/forward arrows step back
   // through filters, sorts, and pages rather than leaving the Papers Database. The one
@@ -132,7 +134,6 @@ export function PapersBrowser() {
     Partial<Record<ColumnId, number>>
   >("aprag:papers:colwidths", {});
 
-  const [openFilename, setOpenFilename] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
 
   const onSort = (key: string) => {
@@ -146,15 +147,22 @@ export function PapersBrowser() {
   };
 
   // Clicking a chip (author, keyword, subject, affiliation) toggles that filter.
-  const onToggleFilter = (dim: ListFilterKey, value: string) => {
+  const onToggleFilter = (dim: ListFilterKey, value: string) =>
     update({ filters: toggleListFilter(query.filters, dim, value) });
-    setOpenFilename(null); // filtering from the drawer should reveal the filtered table
-  };
 
-  const onToggleYear = (year: number) => {
+  const onToggleYear = (year: number) =>
     update({ filters: toggleYearFilter(query.filters, year) });
-    setOpenFilename(null);
-  };
+
+  // The row itself is the "open the paper" affordance: every field the old detail
+  // drawer showed now lives in a column, so a click goes straight to the PDF reader
+  // (which splits the page beside the table rather than covering it).
+  const onOpenPaper = (row: PaperRow) =>
+    openPdf({
+      filename: row.filename,
+      page: 1,
+      label: row.intext || displayTitle(row),
+      driveUrl: row.drive_url,
+    });
 
   const onExport = async (format: "csv" | "bibtex") => {
     setExporting(true);
@@ -270,9 +278,12 @@ export function PapersBrowser() {
         filters={query.filters}
         graphEntities={graph?.entities}
         isLoading={isLoading}
-        onOpen={setOpenFilename}
+        onOpen={onOpenPaper}
         onResizeColumn={(id, px) =>
           setColWidths((prev) => ({ ...prev, [id]: px }))
+        }
+        onShowSimilar={(filename) =>
+          update({ similar: filename, deep: "", q: "" })
         }
         onSort={onSort}
         onToggleFilter={onToggleFilter}
@@ -348,13 +359,6 @@ export function PapersBrowser() {
           </div>
         )}
       </footer>
-
-      <PaperDrawer
-        filename={openFilename}
-        onAddFilter={onToggleFilter}
-        onClose={() => setOpenFilename(null)}
-        onOpenPaper={setOpenFilename}
-      />
     </div>
   );
 }

@@ -278,6 +278,7 @@ export function PapersTable({
   onSort,
   onResizeColumn,
   onOpen,
+  onShowSimilar,
   onToggleFilter,
   onToggleYear,
   filters,
@@ -292,7 +293,9 @@ export function PapersTable({
   order: SortOrder;
   onSort: (key: string) => void;
   onResizeColumn: (id: ColumnId, px: number) => void;
-  onOpen: (filename: string) => void;
+  // Clicking a row opens the paper in the PDF reader.
+  onOpen: (row: PaperRow) => void;
+  onShowSimilar: (filename: string) => void;
   onToggleFilter: (dim: ListFilterKey, value: string) => void;
   onToggleYear: (year: number) => void;
   filters: RagFilters | null;
@@ -353,7 +356,8 @@ export function PapersTable({
               <tr
                 className="cursor-pointer border-border/60 border-b align-top transition-colors hover:bg-accent/40"
                 key={row.filename}
-                onClick={() => onOpen(row.filename)}
+                onClick={() => onOpen(row)}
+                title="Open this paper in the reader"
               >
                 {deepMode && (
                   <td className="px-3 py-2 tabular-nums">
@@ -374,6 +378,7 @@ export function PapersTable({
                       deepMode={deepMode}
                       filters={filters}
                       graphEntities={graphEntities?.[row.filename]}
+                      onShowSimilar={onShowSimilar}
                       onToggleFilter={onToggleFilter}
                       onToggleYear={onToggleYear}
                       row={row}
@@ -460,6 +465,7 @@ function Cell({
   deepMode,
   filters,
   graphEntities,
+  onShowSimilar,
   onToggleFilter,
   onToggleYear,
 }: {
@@ -468,6 +474,7 @@ function Cell({
   deepMode: boolean;
   filters: RagFilters | null;
   graphEntities: GraphFileEntity[] | undefined;
+  onShowSimilar: (filename: string) => void;
   onToggleFilter: (dim: ListFilterKey, value: string) => void;
   onToggleYear: (year: number) => void;
 }) {
@@ -491,6 +498,17 @@ function Cell({
               …{snippet}…
             </div>
           )}
+          <button
+            className="mt-0.5 block text-primary text-xs hover:underline"
+            onClick={(e) => {
+              e.stopPropagation(); // rank the corpus, don't open the PDF
+              onShowSimilar(row.filename);
+            }}
+            title="Rank the whole corpus by similarity to this paper"
+            type="button"
+          >
+            See all similar papers →
+          </button>
         </div>
       );
     }
