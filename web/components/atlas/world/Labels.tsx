@@ -102,7 +102,10 @@ function FadingLabel({
   return (
     <group ref={group}>
       <Html center zIndexRange={zRange} style={{ pointerEvents: "none" }}>
-        <div ref={div} style={{ opacity: 0, transition: "opacity 0.2s linear" }}>
+        <div
+          ref={div}
+          style={{ opacity: 0, transition: "opacity 0.2s linear", willChange: "opacity" }}
+        >
           {children}
         </div>
       </Html>
@@ -164,6 +167,9 @@ function PeakLabels({ data }: { data: WorldData }) {
               style={{
                 opacity: 0,
                 transition: "opacity 0.15s linear",
+                // opacity is rewritten every frame; its own layer keeps that a
+                // GPU blend rather than a repaint of the shadowed glyph
+                willChange: "opacity",
                 // fixed lane so text wraps naturally onto multiple lines
                 // instead of being clipped or squeezed into a vertical stack
                 width: 230,

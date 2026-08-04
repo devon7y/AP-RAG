@@ -575,31 +575,34 @@ body[data-edr="on"] .atlas-app .edr-glow {
 }
 
 /* Map labels.
-   NOTE: DOM text cannot claim HDR headroom. CSS is composited in SDR, and
+   NOTE: DOM text cannot claim HDR headroom. CSS composites in SDR, and
    color(display-p3 ...) is WIDE GAMUT, not high dynamic range — components
    above 1.0 clamp, and P3 white is identical to sRGB white, so asking for
-   "brighter than white" here is a no-op by construction. (The .edr-glow rule
-   below trades on the same misconception; it is unused.) Emissive overshoot
-   needs the label drawn in the SCENE, as the beacons are.
+   "brighter than white" here is a no-op. Real overshoot needs the label drawn
+   in the SCENE, as the beacons are.
 
-   What does work in SDR is contrast: a layered white bloom so the glyph carries
-   its own halo, over a dark scrim that stops bright terrain reading through. */
+   PERFORMANCE: these labels have their opacity rewritten every frame, and a
+   style write repaints the element. Each blurred text-shadow copy is a
+   separate blur of the glyph, so a deep stack at large radii was being
+   re-blurred ~40 times a frame and dragged the whole scene down. Keep the
+   stack short and the radii small; the wide falloff that used to sink the
+   background is now a single cheap gradient paint instead of a 44px blur. */
 .atlas-app .map-label {
   color: #fff;
   text-shadow:
-    /* tight opaque core: kills bright terrain showing through the glyph */
     0 0 1px rgba(0, 0, 0, 1),
-    0 0 3px rgba(0, 0, 0, 1),
-    0 0 6px rgba(0, 0, 0, 0.98),
-    /* mid scrim: separates the word from a busy background */
-    0 0 14px rgba(0, 0, 0, 0.95),
-    0 0 26px rgba(0, 0, 0, 0.85),
-    /* wide falloff: sinks the whole neighbourhood so the label sits forward */
-    0 0 44px rgba(0, 0, 0, 0.6),
-    /* white bloom last, so it reads above its own scrim */
-    0 0 4px rgba(255, 255, 255, 0.55),
-    0 0 12px rgba(255, 255, 255, 0.35);
+    0 0 3px rgba(0, 0, 0, 0.98),
+    0 0 8px rgba(0, 0, 0, 0.92),
+    0 0 4px rgba(255, 255, 255, 0.5);
+  padding: 0 0.35em;
+  background: radial-gradient(
+    ellipse 60% 70% at 50% 50%,
+    rgba(0, 0, 0, 0.82) 0%,
+    rgba(0, 0, 0, 0.6) 45%,
+    rgba(0, 0, 0, 0) 78%
+  );
 }
+
 
 
 .atlas-app ::selection {
