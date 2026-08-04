@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
-import { fetchChunkText } from "@/lib/atlas/api";
+import { fetchChunkText, fetchPaperDetail } from "@/lib/atlas/api";
 import { chunkIdOf } from "@/lib/atlas/data";
 import { generateUUID } from "@/lib/utils";
 import type {
@@ -176,6 +176,26 @@ function PaperCard({
       )
       .slice(0, 12);
   }, [authors, idx, corpus]);
+  // The pack carries a 320-char teaser; the whole abstract comes from the
+  // query server when the card opens, so 10k abstracts never ship to a browser.
+  const [abstract, setAbstract] = useState(p.abstract);
+  useEffect(() => {
+    let alive = true;
+    setAbstract(p.abstract);
+    fetchPaperDetail(p.file).then(
+      (rec) => {
+        const full = typeof rec.abstract === "string" ? rec.abstract.trim() : "";
+        if (alive && full.length > (p.abstract?.length ?? 0)) setAbstract(full);
+      },
+      () => {
+        /* offline server — the teaser stands */
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [p.file, p.abstract]);
+
   const kws = paperMeta?.keywords[idx] ?? [];
   const subj = paperMeta?.subjects[idx] ?? [];
 
@@ -189,9 +209,9 @@ function PaperCard({
       <p className="text-xs text-ink-2">
         {p.authorsFull?.length ? p.authorsFull.join(", ") : p.authors}
       </p>
-      {p.abstract && (
-        <p className="line-clamp-[9] text-[11px] leading-relaxed text-ink-3">
-          {p.abstract}
+      {abstract && (
+        <p className="hud-scroll max-h-[30vh] overflow-y-auto text-[11px] leading-relaxed text-ink-3">
+          {abstract}
         </p>
       )}
       {subj.length > 0 && (

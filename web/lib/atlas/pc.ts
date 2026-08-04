@@ -68,6 +68,15 @@ export async function paperCentroid(file: string): Promise<number[]> {
   return data.centroid;
 }
 
+/** GET one paper's full manifest record (the query server's /paper). */
+export async function pcPaperDetail(file: string): Promise<Response> {
+  return fetch(`${BASE_URL}/paper?filename=${encodeURIComponent(file)}`, {
+    headers: API_KEY ? { "X-API-Key": API_KEY } : {},
+    cache: "no-store",
+    signal: AbortSignal.timeout(20_000),
+  });
+}
+
 /** Proxy a JSON POST to the PC query server (adds X-API-Key when configured). */
 export async function pcQueryServer(path: string, body: unknown): Promise<Response> {
   // answer synthesis can be slow

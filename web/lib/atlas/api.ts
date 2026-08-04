@@ -122,3 +122,14 @@ export function slerp(a: number[], b: number[], t: number): number[] {
   const fb = Math.sin(t * omega) / so;
   return a.map((v, i) => fa * v + fb * b[i]);
 }
+
+/** Full manifest record for one paper (abstract, affiliations, APA strings). */
+export async function fetchPaperDetail(file: string): Promise<{
+  abstract?: string;
+  apa?: string;
+  [k: string]: unknown;
+}> {
+  const r = await fetch(`/api/atlas/paper?file=${encodeURIComponent(file)}`);
+  if (!r.ok) throw new Error(`paper fetch failed: ${r.status}`);
+  return r.json();
+}
