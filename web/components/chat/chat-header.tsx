@@ -5,6 +5,7 @@ import { memo } from "react";
 import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
 import { useActiveChat } from "@/hooks/use-active-chat";
+import { usePdfViewer } from "@/lib/pdf/store";
 import { cn } from "@/lib/utils";
 import { AppTitle } from "./app-title";
 import { ConnectDialog } from "./connect-dialog";
@@ -22,6 +23,7 @@ function PureChatHeader({
   isReadonly: boolean;
 }) {
   const { state, toggleSidebar, isMobile, peek } = useSidebar();
+  const readerOpen = usePdfViewer((s) => s.tabs.length > 0);
   const { personaAuthor, digest } = useActiveChat();
   const isAuthorChat = Boolean(personaAuthor);
   const isDigestChat = Boolean(digest);
@@ -55,8 +57,10 @@ function PureChatHeader({
       </div>
 
       <div className="flex items-center gap-2">
-        {/* Author/digest chats hide the corpus connect/status badge to spotlight the pill. */}
-        {!(isAuthorChat || isDigestChat) && <ConnectDialog />}
+        {/* Author/digest chats hide the corpus connect/status badge to spotlight the
+            pill; so does the reader, where the header has half the width to work with
+            and reading the source matters more than setup instructions. */}
+        {!(isAuthorChat || isDigestChat || readerOpen) && <ConnectDialog />}
         {!isReadonly && (
           <VisibilitySelector
             chatId={chatId}

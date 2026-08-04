@@ -191,10 +191,28 @@ function Sidebar({
       peekOut.current = null
     }
   }, [])
-  const onPeekEnter = () => {
-    if (!peekOnHover || isMobile) return
+  // Only the collapsed strip itself opens the sidebar. The pointer has to actually
+  // reach it: triggering anywhere in the wider element made the sidebar fly open while
+  // the cursor was still over the chat.
+  const onPeekEnter = (event: React.MouseEvent<HTMLElement>) => {
+    if (!peekOnHover || isMobile || state !== "collapsed") return
+    const rect = event.currentTarget.getBoundingClientRect()
+    // --sidebar-width-icon is a custom property, so it comes back as authored ("3rem")
+    // rather than resolved pixels.
+    const raw = getComputedStyle(event.currentTarget)
+      .getPropertyValue("--sidebar-width-icon")
+      .trim()
+    const value = Number.parseFloat(raw)
+    const rootPx =
+      Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+    const strip = Number.isFinite(value)
+      ? raw.endsWith("px")
+        ? value
+        : value * rootPx
+      : 48
+    if (event.clientX - rect.left > strip) return
     cancelPeekOut()
-    if (state === "collapsed") setPeek(true)
+    setPeek(true)
   }
   const onPeekLeave = () => {
     if (!peek) return
@@ -270,7 +288,6 @@ function Sidebar({
             ? "group-data-[peek=true]:w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"
             : "group-data-[peek=true]:w-(--sidebar-width-icon)"
         )}
-        onMouseEnter={onPeekEnter}
       />
       <div
         data-slot="sidebar-container"

@@ -41,7 +41,10 @@ async function SidebarShell({ children }: { children: React.ReactNode }) {
   return (
     <SidebarProvider defaultOpen={!isCollapsed}>
       <AppSidebar user={session?.user} />
-      <SidebarInset>
+      {/* min-w-0: without it this flex child cannot shrink below its content's
+          intrinsic width, so the PDF split overflowed the viewport to the right and
+          pushed the reader's own controls off-screen. */}
+      <SidebarInset className="min-w-0">
         <Toaster
           position="top-center"
           theme="system"

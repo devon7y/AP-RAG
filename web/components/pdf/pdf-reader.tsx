@@ -239,16 +239,18 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
     };
   }, []);
 
-  const scale = useMemo(() => {
-    if (!baseBox) {
-      return 1;
-    }
-    return Math.max(0.1, ((width - 24) / baseBox.width) * zoom);
-  }, [baseBox, width, zoom]);
-
-  // While the divider is moving, stretch what is already painted instead of
-  // re-rendering: cheap, and visually identical until it settles.
-  const previewScale = width > 0 ? liveWidth / width : 1;
+  // Two scales. `rasterScale` is what pdf.js last drew at and only changes once a drag
+  // settles; `scale` follows the pane every frame and drives layout. During a drag the
+  // canvas is simply stretched to the live size — geometry tracks the divider exactly
+  // (an earlier version scaled the whole page with a CSS transform on top of a layout
+  // that had already changed, so the page shrank roughly twice as fast as the pane).
+  const fitScale = useCallback(
+    (forWidth: number) =>
+      baseBox ? Math.max(0.1, ((forWidth - 24) / baseBox.width) * zoom) : 1,
+    [baseBox, zoom]
+  );
+  const scale = fitScale(liveWidth);
+  const rasterScale = fitScale(width);
 
   const pageHeight = baseBox ? baseBox.height * scale : 0;
   const pageWidth = baseBox ? baseBox.width * scale : 0;
@@ -545,14 +547,7 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
         {status === "ready" && baseBox && (
           <div
             className="relative mx-auto"
-            style={{
-              width: pageWidth,
-              height: strideY * numPages,
-              // During a drag this stretches the already-painted pages; it is 1 (a
-              // no-op) as soon as the width settles and the pages re-raster.
-              transform: previewScale === 1 ? undefined : `scale(${previewScale})`,
-              transformOrigin: "top center",
-            }}
+            style={{ width: pageWidth, height: strideY * numPages }}
           >
             {Array.from({ length: numPages }, (_, i) => i + 1).map((page) => (
               <PageSlot
@@ -562,8 +557,9 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
                 highlights={highlightsByPage.get(page) ?? []}
                 key={page}
                 page={page}
+                rasterScale={rasterScale}
                 render={page >= visible.from && page <= visible.to}
-                scale={scale}
+                stretched={Math.abs(scale - rasterScale) > 0.001}
                 top={pageOffset(page)}
                 width={pageWidth}
               />
@@ -582,7 +578,8 @@ function PageSlot({
   top,
   width,
   height,
-  scale,
+  rasterScale,
+  stretched,
   render,
   highlights,
 }: {
@@ -590,9 +587,13 @@ function PageSlot({
   filename: string;
   page: number;
   top: number;
+  /** Live display size — follows the divider every frame. */
   width: number;
   height: number;
-  scale: number;
+  /** Scale the canvas bitmap was drawn at; lags `width` during a drag. */
+  rasterScale: number;
+  /** True while the display size is ahead of the last raster (mid-drag). */
+  stretched: boolean;
   render: boolean;
   highlights: [number, number, number, number][];
 }) {
@@ -609,7 +610,7 @@ function PageSlot({
     let cancelled = false;
     (async () => {
       const pdfPage = await doc.getPage(page);
-      const viewport = pdfPage.getViewport({ scale });
+      const viewport = pdfPage.getViewport({ scale: rasterScale });
       const canvas = canvasRef.current;
       if (!canvas || cancelled) {
         return;
@@ -617,8 +618,8 @@ function PageSlot({
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       canvas.width = Math.floor(viewport.width * dpr);
       canvas.height = Math.floor(viewport.height * dpr);
-      canvas.style.width = `${Math.floor(viewport.width)}px`;
-      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      // CSS size comes from the layout (see the wrapper below), so a drag stretches
+      // this bitmap instead of forcing a re-raster on every frame.
 
       taskRef.current?.cancel();
       const task = pdfPage.render({
@@ -643,7 +644,7 @@ function PageSlot({
         layer.replaceChildren();
         layer.style.width = `${Math.floor(viewport.width)}px`;
         layer.style.height = `${Math.floor(viewport.height)}px`;
-        layer.style.setProperty("--total-scale-factor", String(scale));
+        layer.style.setProperty("--total-scale-factor", String(rasterScale));
         const textLayer = new mod.TextLayer({
           textContentSource: pdfPage.streamTextContent(),
           container: layer,
@@ -656,7 +657,7 @@ function PageSlot({
       cancelled = true;
       taskRef.current?.cancel();
     };
-  }, [render, doc, page, scale]);
+  }, [render, doc, page, rasterScale]);
 
   return (
     <div
@@ -672,8 +673,18 @@ function PageSlot({
           src={pdfPageImageUrl(filename, page)}
         />
       )}
-      {render && <canvas className="block" ref={canvasRef} />}
-      {render && <div className="textLayer absolute inset-0" ref={textRef} />}
+      {/* The canvas fills the slot, so its displayed size is the live layout size and a
+          drag simply scales the existing bitmap until the re-raster lands. */}
+      {render && <canvas className="block h-full w-full" ref={canvasRef} />}
+      {/* The text layer positions its spans in raster-space pixels, so while a drag has
+          the display out of step with the last render it is hidden rather than left
+          floating away from the words underneath. */}
+      {render && (
+        <div
+          className={cn("textLayer absolute inset-0", stretched && "invisible")}
+          ref={textRef}
+        />
+      )}
 
       {highlights.map(([x0, y0, x1, y1], i) => (
         <div
@@ -684,7 +695,9 @@ function PageSlot({
             top: `${y0 * 100}%`,
             width: `${Math.max(0, x1 - x0) * 100}%`,
             height: `${Math.max(0, y1 - y0) * 100}%`,
-            background: "rgb(250 204 21 / 0.42)",
+            // A pale wash: enough to find the passage at a glance, light enough that
+            // the words under it stay comfortable to read.
+            background: "rgb(253 230 138 / 0.38)",
             mixBlendMode: "multiply",
           }}
         />
