@@ -230,6 +230,7 @@ function NavigatePanel({ data, corpus }: { data: WorldData; corpus: CorpusData }
           ))}
         </div>
         {view === "atlas" ? (
+          <>
           <p className="mt-2 text-xs leading-relaxed text-ink-3">
             Every passage of every paper is embedded by the language model, then
             flattened onto this map —{" "}
@@ -247,6 +248,8 @@ function NavigatePanel({ data, corpus }: { data: WorldData; corpus: CorpusData }
             itself — the paper or knowledge-graph concept that dominates each
             summit.
           </p>
+          <AgeLegend data={data} />
+          </>
         ) : (
           <>
             <p className="mt-2 text-xs leading-relaxed text-ink-3">

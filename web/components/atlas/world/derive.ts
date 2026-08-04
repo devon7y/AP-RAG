@@ -993,13 +993,22 @@ export function deriveWorld(
   // actually puts them — the corpus is overwhelmingly post-1950, so an evenly
   // spaced axis would claim colour is spread over decades that hold almost
   // nothing
+  // Candidate years, kept only where they will not overprint their neighbour.
+  // The rank ramp squeezes everything before ~1980 into the first tenth of the
+  // bar, so evenly-chosen decades collide there; later ticks win because that
+  // is where the corpus (and so the colour) actually lives.
+  const MIN_TICK_GAP = 0.13;
+  const candidates = [1950, 1970, 1980, 1990, 2000, 2010, 2020]
+    .filter((y) => y >= yearMin && y <= yearMax + 1)
+    .map((y) => ({ year: y, at: ageT(y) }))
+    .sort((a, b) => b.at - a.at); // newest first — they get priority
   const ageTicks: { year: number; at: number }[] = [];
-  for (const y of [1950, 1980, 2000, 2010, 2020]) {
-    if (y >= yearMin && y <= yearMax + 1) ageTicks.push({ year: y, at: ageT(y) });
+  for (const t of candidates) {
+    if (ageTicks.every((k) => Math.abs(k.at - t.at) >= MIN_TICK_GAP)) {
+      ageTicks.push(t);
+    }
   }
-  if (!ageTicks.length || ageTicks[0].at > 0.08) {
-    ageTicks.unshift({ year: yearMin, at: 0 });
-  }
+  ageTicks.sort((a, b) => a.at - b.at);
 
   const peaks = buildPeakLabels(corpus, entities, eras.final);
 
