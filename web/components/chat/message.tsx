@@ -448,6 +448,30 @@ const PurePreviewMessage = ({
     </>
   );
 
+  // A finished assistant turn with nothing to show is a stream artifact, not a message:
+  // the retrieval payload can land in its own message, and once the answer cites nothing
+  // from it there is no text, no references and no chunks to render — leaving an empty
+  // bubble that still carried an avatar and a copy button. Drop it entirely.
+  // (Only when loading has finished; mid-stream a message is legitimately empty.)
+  const hasReasoning = message.parts?.some(
+    (part) =>
+      part.type === "reasoning" && "text" in part && part.text?.trim().length > 0
+  );
+  const hasToolPart = message.parts?.some((part) => part.type.startsWith("tool-"));
+  const showsRetrieval = Boolean(
+    retrieval &&
+      (retrieval.chunkMode
+        ? retrieval.chunks.length > 0
+        : citedReferences.length > 0)
+  );
+  if (
+    isAssistant &&
+    !isLoading &&
+    !(hasText || hasReasoning || hasToolPart || showsRetrieval)
+  ) {
+    return null;
+  }
+
   return (
     <div
       className={cn(
