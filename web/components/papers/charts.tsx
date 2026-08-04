@@ -129,6 +129,379 @@ export function fillYears(data: YearCount[]): YearCount[] {
   return out;
 }
 
+/**
+ * Centred rolling mean over a year series.
+ *
+ * At ~200 collected papers a year, a single year's count for one term is mostly
+ * sampling noise — a term with 6 papers in 2011 and 2 in 2012 has not halved in
+ * importance. Smoothing is offered as a toggle rather than applied silently, since
+ * it does move the peak.
+ */
+export function smoothYears(data: YearCount[], window: number): YearCount[] {
+  if (window <= 1 || data.length === 0) {
+    return data;
+  }
+  const half = Math.floor(window / 2);
+  return data.map((d, i) => {
+    const lo = Math.max(0, i - half);
+    const hi = Math.min(data.length, i + half + 1);
+    let sum = 0;
+    for (let k = lo; k < hi; k++) {
+      sum += data[k].count;
+    }
+    return { year: d.year, count: sum / (hi - lo) };
+  });
+}
+
+/**
+ * A bare trajectory — no axes, no labels, no interaction of its own.
+ *
+ * The dashboard's discovery problem is that a term has to be *typed* before it can
+ * be seen, so nothing invites browsing. A grid of these turns the top of each
+ * dimension into something scannable: shape first, name second.
+ */
+export function Sparkline({
+  points,
+  width = 116,
+  height = 30,
+  slot = 0,
+  showPeak = false,
+  className,
+}: {
+  points: YearCount[];
+  width?: number;
+  height?: number;
+  slot?: number;
+  showPeak?: boolean;
+  className?: string;
+}) {
+  const filled = useMemo(
+    () => fillYears([...points].sort((a, b) => a.year - b.year)),
+    [points]
+  );
+  if (filled.length < 2) {
+    return <div className={className} style={{ width, height }} />;
+  }
+
+  const pad = 2;
+  const maxV = Math.max(...filled.map((d) => d.count), 1e-9);
+  const xOf = (i: number) =>
+    pad + (i / (filled.length - 1)) * (width - pad * 2);
+  const yOf = (v: number) =>
+    height - pad - (v / maxV) * (height - pad * 2);
+
+  const line = filled
+    .map((d, i) => `${xOf(i).toFixed(1)},${yOf(d.count).toFixed(1)}`)
+    .join(" L");
+  const area = `M${xOf(0).toFixed(1)},${height - pad} L${line} L${xOf(
+    filled.length - 1
+  ).toFixed(1)},${height - pad} Z`;
+
+  let peakIndex = 0;
+  for (let i = 1; i < filled.length; i++) {
+    if (filled[i].count > filled[peakIndex].count) {
+      peakIndex = i;
+    }
+  }
+  const color = SERIES_SLOTS[slot % SERIES_SLOTS.length];
+
+  return (
+    <svg
+      aria-hidden
+      className={cn("block overflow-visible", className)}
+      height={height}
+      width={width}
+    >
+      <path className={cn(color.fill, "opacity-15")} d={area} />
+      <path
+        className={cn(color.stroke, "fill-none")}
+        d={`M${line}`}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={1.5}
+      />
+      {showPeak && filled[peakIndex].count > 0 && (
+        <circle
+          className={cn(color.fill, "stroke-card")}
+          cx={xOf(peakIndex)}
+          cy={yOf(filled[peakIndex].count)}
+          r={2.5}
+          strokeWidth={1.5}
+        />
+      )}
+    </svg>
+  );
+}
+
+export type StackBand = { label: string; points: YearCount[] };
+
+/**
+ * Composition over time: each band is a share of that year's total, so the bands
+ * always sum to 100%.
+ *
+ * The per-term line chart answers "how big is this one thing"; nothing on the page
+ * answered "what is the corpus made of, and how has that changed". Shares rather
+ * than counts on purpose — the collection's own volume peaks in the 2000s, which
+ * would otherwise dominate the shape of every band.
+ */
+export function StackedAreaChart({
+  bands,
+  height = 220,
+  minYear,
+  maxYear,
+  onBandClick,
+  className,
+}: {
+  bands: StackBand[];
+  height?: number;
+  minYear?: number;
+  maxYear?: number;
+  onBandClick?: (label: string) => void;
+  className?: string;
+}) {
+  const [ref, width] = useContainerWidth();
+  const [hover, setHover] = useState<{ year: number; band: string | null } | null>(
+    null
+  );
+  const tableId = useId();
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  const { years, stacks } = useMemo(() => {
+    const all = new Set<number>();
+    for (const band of bands) {
+      for (const p of band.points) {
+        all.add(p.year);
+      }
+    }
+    let list = [...all].sort((a, b) => a - b);
+    if (minYear !== undefined) {
+      list = list.filter((y) => y >= minYear);
+    }
+    if (maxYear !== undefined) {
+      list = list.filter((y) => y <= maxYear);
+    }
+    const lookup = bands.map((b) => new Map(b.points.map((p) => [p.year, p.count])));
+    // Normalise each year to 100%: the question is composition, not volume.
+    const cols = list.map((year) => {
+      const raw = lookup.map((m) => m.get(year) ?? 0);
+      const total = raw.reduce((a, b) => a + b, 0);
+      return total > 0 ? raw.map((v) => (v / total) * 100) : raw.map(() => 0);
+    });
+    return { years: list, stacks: cols };
+  }, [bands, minYear, maxYear]);
+
+  if (years.length < 2 || bands.length === 0) {
+    return null;
+  }
+
+  const plotW = Math.max(40, width - MARGIN.left - MARGIN.right);
+  const plotH = height - MARGIN.top - MARGIN.bottom;
+  const xOf = (i: number) => MARGIN.left + (i / (years.length - 1)) * plotW;
+  const yOf = (v: number) => MARGIN.top + plotH * (1 - v / 100);
+
+  // Cumulative offsets, band by band.
+  const offsets: number[][] = [];
+  const running = new Array(years.length).fill(0);
+  for (let b = 0; b < bands.length; b++) {
+    const lower = [...running];
+    for (let i = 0; i < years.length; i++) {
+      running[i] += stacks[i]?.[b] ?? 0;
+    }
+    offsets.push(lower);
+  }
+
+  const bandPath = (b: number) => {
+    const top: string[] = [];
+    const bottom: string[] = [];
+    for (let i = 0; i < years.length; i++) {
+      const lower = offsets[b][i];
+      const upper = lower + (stacks[i]?.[b] ?? 0);
+      top.push(`${xOf(i).toFixed(1)},${yOf(upper).toFixed(1)}`);
+      bottom.push(`${xOf(i).toFixed(1)},${yOf(lower).toFixed(1)}`);
+    }
+    return `M${top.join(" L")} L${bottom.reverse().join(" L")} Z`;
+  };
+
+  const xTicks = yearTicks(years[0], years.at(-1) ?? years[0]);
+  const hoverIndex = hover != null ? years.indexOf(hover.year) : -1;
+  const hoverRows =
+    hoverIndex >= 0
+      ? bands
+          .map((band, b) => ({
+            label: band.label,
+            slot: b,
+            value: stacks[hoverIndex]?.[b] ?? 0,
+          }))
+          .filter((r) => r.value > 0.05)
+          .sort((a, b) => b.value - a.value)
+      : [];
+
+  const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (!svgRef.current) {
+      return;
+    }
+    const rect = svgRef.current.getBoundingClientRect();
+    const t = (e.clientX - rect.left - MARGIN.left) / plotW;
+    const i = Math.round(t * (years.length - 1));
+    if (i >= 0 && i < years.length) {
+      setHover({ year: years[i], band: null });
+    }
+  };
+
+  return (
+    <div className={cn("relative", className)} ref={ref}>
+      <svg
+        aria-describedby={tableId}
+        className="block w-full"
+        height={height}
+        onPointerLeave={() => setHover(null)}
+        onPointerMove={onMove}
+        ref={svgRef}
+        role="img"
+        width={width}
+      >
+        {[0, 25, 50, 75, 100].map((t) => (
+          <g key={t}>
+            <line
+              className="stroke-border"
+              strokeWidth={1}
+              x1={MARGIN.left}
+              x2={width - MARGIN.right}
+              y1={yOf(t)}
+              y2={yOf(t)}
+            />
+            <text
+              className="fill-muted-foreground text-[10px] tabular-nums"
+              textAnchor="end"
+              x={MARGIN.left - 6}
+              y={yOf(t) + 3}
+            >
+              {t}%
+            </text>
+          </g>
+        ))}
+        {bands.map((band, b) => (
+          // Focusable and Enter-activatable, matching the bar chart's hit targets —
+          // clicking a band promotes it into the line chart, so it has to be
+          // reachable without a pointer.
+          <path
+            aria-label={`${band.label} — add to the trend chart`}
+            className={cn(
+              SERIES_SLOTS[b % SERIES_SLOTS.length].fill,
+              "transition-opacity focus:outline-none",
+              onBandClick && "cursor-pointer",
+              hover?.band && hover.band !== band.label
+                ? "opacity-45"
+                : "opacity-85"
+            )}
+            d={bandPath(b)}
+            key={band.label}
+            onClick={() => onBandClick?.(band.label)}
+            onFocus={() =>
+              setHover((h) => ({ year: h?.year ?? years[0], band: band.label }))
+            }
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                onBandClick?.(band.label);
+              }
+            }}
+            onPointerEnter={() =>
+              setHover((h) => ({ year: h?.year ?? years[0], band: band.label }))
+            }
+            role={onBandClick ? "button" : "img"}
+            tabIndex={onBandClick ? 0 : -1}
+          />
+        ))}
+        {xTicks.map((yr) => {
+          const i = years.indexOf(yr);
+          return i >= 0 ? (
+            <text
+              className="fill-muted-foreground text-[10px] tabular-nums"
+              key={yr}
+              textAnchor="middle"
+              x={xOf(i)}
+              y={height - 5}
+            >
+              {yr}
+            </text>
+          ) : null;
+        })}
+        {hoverIndex >= 0 && (
+          <line
+            className="stroke-foreground/40"
+            strokeWidth={1}
+            x1={xOf(hoverIndex)}
+            x2={xOf(hoverIndex)}
+            y1={MARGIN.top}
+            y2={MARGIN.top + plotH}
+          />
+        )}
+      </svg>
+
+      {hoverIndex >= 0 && hoverRows.length > 0 && (
+        <div
+          className="-translate-x-1/2 pointer-events-none absolute top-1 z-10 min-w-32 rounded-md border border-border bg-popover px-2.5 py-1.5 shadow-sm"
+          style={{
+            left: Math.min(Math.max(xOf(hoverIndex), 100), Math.max(100, width - 140)),
+          }}
+        >
+          <div className="mb-1 font-medium text-muted-foreground text-xs tabular-nums">
+            {hover?.year}
+          </div>
+          {hoverRows.slice(0, 8).map((r) => (
+            <div className="flex items-center gap-1.5 py-px" key={r.label}>
+              <span
+                className={cn(
+                  "size-2 shrink-0 rounded-[2px]",
+                  SERIES_SLOTS[r.slot % SERIES_SLOTS.length].bg
+                )}
+              />
+              <span className="font-semibold text-foreground text-xs tabular-nums">
+                {r.value.toFixed(1)}%
+              </span>
+              <span className="truncate text-muted-foreground text-xs">
+                {r.label}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <details className="mt-1">
+        <summary className="cursor-pointer text-muted-foreground text-xs hover:text-foreground">
+          Data table
+        </summary>
+        <div className="mt-1 max-h-56 overflow-auto rounded-md border border-border">
+          <table className="w-full text-xs" id={tableId}>
+            <thead>
+              <tr className="border-border border-b text-left text-muted-foreground">
+                <th className="px-2 py-1 font-medium">Year</th>
+                {bands.map((b) => (
+                  <th className="px-2 py-1 font-medium" key={b.label}>
+                    {b.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {years.map((yr, i) => (
+                <tr className="border-border/50 border-b" key={yr}>
+                  <td className="px-2 py-0.5 tabular-nums">{yr}</td>
+                  {bands.map((b, bi) => (
+                    <td className="px-2 py-0.5 tabular-nums" key={b.label}>
+                      {(stacks[i]?.[bi] ?? 0).toFixed(1)}%
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+  );
+}
+
 const MARGIN = { top: 8, right: 10, bottom: 20, left: 34 };
 
 /**

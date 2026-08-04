@@ -337,20 +337,78 @@ export async function similarPapers(params: {
 }
 
 // GET /trends — corpus-wide publication trends (papers per year + per-term-per-year
-// counts for the big facet dimensions), for the Trends dashboard.
+// counts across six facet dimensions, plus the derived scoring), for the Trends
+// dashboard. Every field past `years` and the four original dimensions is optional so
+// the page still renders against a query server that predates them.
+export type TrendStats = {
+  first: number;
+  last: number;
+  peak: number;
+  peakN: number;
+  median: number;
+};
+
 export type TrendTerm = {
   term: string;
   total: number;
   counts: Record<string, number>; // year → papers
+  stats?: TrendStats;
+  base?: number; // papers in the base window
+  recent?: number; // papers in the recent window
+  delta?: number; // change in share of corpus output, percentage points
 };
+
+export type TrendWindows = { base: [number, number]; recent: [number, number] };
+
+export type TrendNewcomer = {
+  term: string;
+  first: number;
+  total: number;
+  recent: number;
+};
+
+export type TrendBurst = {
+  term: string;
+  from: number;
+  to: number;
+  n: number;
+  expected: number;
+  z: number;
+};
+
+export type TrendLeadLag = {
+  lead: string;
+  follow: string;
+  lag: number;
+  r: number;
+  gain: number;
+};
+
+export const TREND_DIMS = [
+  "keywords",
+  "subjects",
+  "journals",
+  "authors",
+  "affiliations",
+  "types",
+] as const;
+
+export type TrendDim = (typeof TREND_DIMS)[number];
 
 export type TrendsData = {
   years: Record<string, number>;
-  keywords: TrendTerm[];
-  subjects: TrendTerm[];
-  journals: TrendTerm[];
-  authors: TrendTerm[];
-};
+  partialFrom?: number | null; // the current year is only partly collected
+  windows?: TrendWindows;
+  totals?: {
+    papers: number;
+    dated: number;
+    undated: number;
+    dims: Record<string, number>;
+  };
+  newcomers?: Partial<Record<TrendDim, TrendNewcomer[]>>;
+  bursts?: Partial<Record<TrendDim, TrendBurst[]>>;
+  leadlag?: TrendLeadLag[];
+} & Record<TrendDim, TrendTerm[]>;
 
 export async function getTrends(): Promise<TrendsData> {
   const res = await fetch(`${BASE_URL}/trends`, {
@@ -362,6 +420,45 @@ export async function getTrends(): Promise<TrendsData> {
     throw new Error(`AP-RAG /trends failed: ${res.status}`);
   }
   return (await res.json()) as TrendsData;
+}
+
+// GET /trend_detail — one term's co-occurrence neighbourhood, then-vs-now owners, and
+// papers. Answers *why* a line moved, which the overview payload deliberately leaves
+// out (it would be 300 terms' worth of context nobody asked for).
+export type TrendCount = { term: string; n: number };
+
+export type TrendDetail = {
+  dim: string;
+  term: string;
+  total: number;
+  windows: TrendWindows;
+  cooccur: { all: TrendCount[]; base: TrendCount[]; recent: TrendCount[] };
+  cross: Record<string, TrendCount[]>;
+  authors: { base: TrendCount[]; recent: TrendCount[] };
+  journals: { base: TrendCount[]; recent: TrendCount[] };
+  papers: {
+    filename: string;
+    title: string;
+    year: number | null;
+    journal: string;
+    authors: string[];
+  }[];
+};
+
+export async function getTrendDetail(
+  dim: string,
+  term: string
+): Promise<TrendDetail> {
+  const sp = new URLSearchParams({ dim, term });
+  const res = await fetch(`${BASE_URL}/trend_detail?${sp.toString()}`, {
+    headers: headers(),
+    cache: "no-store",
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    throw new Error(`AP-RAG /trend_detail failed: ${res.status}`);
+  }
+  return (await res.json()) as TrendDetail;
 }
 
 // ── PDF assets (GET /pdf, GET /pdf_page) ───────────────────────────────────────

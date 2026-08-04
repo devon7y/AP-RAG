@@ -17,6 +17,8 @@ Endpoints:
     POST /qsearch         — raw chunk-vector search over Qdrant (Atlas of Mind support)
     POST /vectors         — fetch stored chunk vectors by Qdrant point id (Atlas support)
     POST /paper_centroid  — unit-norm mean vector of one paper's chunks (Atlas support)
+    GET  /trends          — corpus trend aggregation (Research Trends dashboard)
+    GET  /trend_detail    — one term's co-occurrence / owners / papers
 """
 
 import asyncio
@@ -39,6 +41,7 @@ import apa_citations as apa     # APA7 rewriting of the answer LLM's numeric cit
 import aprag_graph as kg        # knowledge-graph explorer shaping (pure helpers)
 import aprag_pdf as pdfsrv      # PDF serving: path safety, cache identity, page raster
 import aprag_search as search   # metadata-filtered semantic search (pure helpers)
+import aprag_trends as trends_mod  # corpus trend aggregation (pure helpers)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -974,61 +977,46 @@ async def similar_papers(req: SimilarRequest):
             "papers": papers, "count": len(papers)}
 
 
-# Corpus trends: papers per year + per-term-per-year counts for the big facet
-# dimensions. One manifest pass, cached for the server lifetime (manifest is
-# read-mostly). Terms are aggregated case-insensitively; the first-seen casing is
-# the display name; each dimension is capped to its heaviest terms.
+# Corpus trends: papers per year, per-term-per-year counts across six facet
+# dimensions, plus the derived scoring (rising/fading, newcomers, bursts, lead/lag).
+# One manifest pass, cached for the server lifetime (the manifest is read-mostly).
+# All of the aggregation lives in aprag_trends; this is just the cache + routes.
 _TRENDS: dict = {"data": None}
-_TREND_CAPS = {"keywords": 300, "subjects": 200, "journals": 200, "authors": 300}
-
-
-def _compute_trends(manifest: dict) -> dict:
-    years: dict[int, int] = {}
-    dims: dict[str, dict[str, dict]] = {k: {} for k in _TREND_CAPS}
-
-    def bump(dim: str, term: str, year: int):
-        t = term.strip()
-        if not t:
-            return
-        key = t.lower()
-        entry = dims[dim].setdefault(key, {"term": t, "total": 0, "counts": {}})
-        entry["total"] += 1
-        entry["counts"][year] = entry["counts"].get(year, 0) + 1
-
-    for rec in (manifest or {}).values():
-        if not isinstance(rec, dict):
-            continue
-        y = search._record_year(rec)
-        if y is None or not (1800 <= y <= 2100):
-            continue
-        years[y] = years.get(y, 0) + 1
-        for kw in (rec.get("keywords") or []):
-            bump("keywords", str(kw), y)
-        for sub in (rec.get("subjects") or []):
-            bump("subjects", str(sub), y)
-        ct = rec.get("container_title") or ""
-        if ct:
-            bump("journals", str(ct), y)
-        for a in (rec.get("authors") or []):
-            fam = (a.get("family") or "").strip()
-            if fam:
-                bump("authors", fam, y)
-
-    out = {"years": {str(y): n for y, n in sorted(years.items())}}
-    for dim, cap in _TREND_CAPS.items():
-        ranked = sorted(dims[dim].values(), key=lambda e: -e["total"])[:cap]
-        out[dim] = [{"term": e["term"], "total": e["total"],
-                     "counts": {str(y): n for y, n in sorted(e["counts"].items())}}
-                    for e in ranked]
-    return out
+# Per-term detail is computed on demand and memoised per (dim, term) — a full
+# manifest scan each, but small and read-mostly, and the dashboard only asks for the
+# term the user actually opened.
+_TREND_DETAIL: dict = {}
+_TREND_DETAIL_MAX = 256
 
 
 @app.get("/trends", dependencies=[Depends(require_api_key)])
 def trends():
     """Corpus-wide publication trends for the web Trends dashboard."""
     if _TRENDS["data"] is None:
-        _TRENDS["data"] = _compute_trends(apa.load_manifest(APA_MANIFEST))
+        _TRENDS["data"] = trends_mod.compute_trends(apa.load_manifest(APA_MANIFEST))
     return _TRENDS["data"]
+
+
+@app.get("/trend_detail", dependencies=[Depends(require_api_key)])
+def trend_detail(dim: str = Query(...), term: str = Query(...)):
+    """One term's co-occurrence neighbourhood, then-vs-now owners, and papers.
+
+    The overview says a term rose; this says what it rose *with*, who was publishing
+    it in each window, and where it was published — the context the line chart raises
+    a question about but cannot answer.
+    """
+    key = f"{dim}::{term.strip().lower()}"
+    cached = _TREND_DETAIL.get(key)
+    if cached is not None:
+        return cached
+    try:
+        data = trends_mod.trend_detail(apa.load_manifest(APA_MANIFEST), dim, term)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if len(_TREND_DETAIL) >= _TREND_DETAIL_MAX:
+        _TREND_DETAIL.clear()
+    _TREND_DETAIL[key] = data
+    return data
 
 
 # ── PDF serving (the web app's in-app viewer) ────────────────────────────────
