@@ -171,8 +171,9 @@ interface WorldState {
   showSky: boolean;
   showWeb: boolean;
   showLabels: boolean;
-  /** the passage cloud is ~445k points — dense enough to bury the terrain,
-   *  so it is opt-in; paper beacons are the default reading of the map */
+  /** the ~445k-point passage cloud, on by default in both views as the texture
+   *  of the map. It is scenery only: passages do not answer the cursor, so the
+   *  paper beacons standing in front of it stay the things you click */
   showChunks: boolean;
   showPapers: boolean;
 
@@ -292,7 +293,7 @@ export const useWorld = create<WorldState>((set) => ({
   showSky: true,
   showWeb: true,
   showLabels: true,
-  showChunks: false,
+  showChunks: true,
   showPapers: true,
 
   autoRotate: true,

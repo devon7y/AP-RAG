@@ -131,18 +131,11 @@ export default function WorldPicker({
         );
       }
       }
-      if (st.showChunks) {
-      for (let i = 0; i < data.n; i++) {
-        if (!born(data.chunkYear[i])) continue;
-        const gx = data.chunkGround[i * 3];
-        const gy = groundY(gx, data.chunkGround[i * 3 + 2], data.chunkSize[i] * 0.35);
-        const gz = data.chunkGround[i * 3 + 2];
-        const x = gx + (data.chunkSpace[i * 3] - gx) * morph;
-        const y = gy + (data.chunkSpace[i * 3 + 1] - gy) * morph;
-        const z = gz + (data.chunkSpace[i * 3 + 2] - gz) * morph;
-        consider(x, y, z, data.chunkSize[i] * 0.8, () => ({ kind: "chunk", idx: i }));
-      }
-      }
+      // Passages are deliberately NOT pickable. The cloud is on by default and
+      // vastly outnumbers the beacons, so letting it answer the cursor meant
+      // papers — the thing worth clicking — were constantly stolen by whatever
+      // passage happened to sit nearer the ray. Chunks can still be selected
+      // programmatically (interpolation arcs, the Semantle pin, search).
       return best;
     };
 
@@ -237,23 +230,6 @@ export default function WorldPicker({
       } else if (hit.kind === "entity") {
         entityWorldPos(data, hit.idx, morph, tmp);
         st.requestWarp([tmp.x, tmp.y, tmp.z], 13, 1.7);
-      } else if (hit.kind === "chunk") {
-        const i = hit.idx;
-        const gx = data.chunkGround[i * 3];
-        const gz = data.chunkGround[i * 3 + 2];
-        // fly to where the passage is DRAWN in this era, not the present-day
-        // surface, or the camera lands short whenever time is scrubbed back
-        const gy =
-          sampleEraHeight(
-            data.eras,
-            st.year,
-            gx / WORLD_SIZE + 0.5,
-            gz / WORLD_SIZE + 0.5,
-          ) + data.chunkSize[i] * 0.35;
-        const x = gx + (data.chunkSpace[i * 3] - gx) * morph;
-        const y = gy + (data.chunkSpace[i * 3 + 1] - gy) * morph;
-        const z = gz + (data.chunkSpace[i * 3 + 2] - gz) * morph;
-        st.requestWarp([x, y, z], 6.5, 1.6);
       }
     };
 

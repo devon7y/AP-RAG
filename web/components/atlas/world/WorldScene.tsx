@@ -98,7 +98,9 @@ function HoverTooltip({ corpus }: { corpus: CorpusData }) {
     return () => window.removeEventListener("pointermove", onMove);
   }, []);
 
-  const show = hovered?.kind === "paper" || hovered?.kind === "chunk";
+  // passages are not pickable (see WorldPicker), so a paper is the only thing
+  // the cursor can land on that carries a tooltip
+  const show = hovered?.kind === "paper";
   let head = "";
   let body = "";
   let foot = "";
@@ -107,11 +109,6 @@ function HoverTooltip({ corpus }: { corpus: CorpusData }) {
     head = "paper";
     body = p.title;
     foot = `${shortCite(p)} · ${p.nChunks} passages · click to inspect`;
-  } else if (hovered?.kind === "chunk") {
-    const p = corpus.papers[corpus.atlas.paper[hovered.idx]];
-    head = "passage";
-    body = p?.title ?? "Unknown paper";
-    foot = `${shortCite(p)} · click to read`;
   }
 
   return (
