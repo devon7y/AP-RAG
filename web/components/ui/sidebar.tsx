@@ -191,26 +191,32 @@ function Sidebar({
       peekOut.current = null
     }
   }, [])
-  // Only the collapsed strip itself opens the sidebar. The pointer has to actually
-  // reach it: triggering anywhere in the wider element made the sidebar fly open while
-  // the cursor was still over the chat.
-  const onPeekEnter = (event: React.MouseEvent<HTMLElement>) => {
-    if (!peekOnHover || isMobile || state !== "collapsed") return
+  // Opens only once the pointer is genuinely over the collapsed strip.
+  //
+  // This tracks movement rather than mouseenter: the resize rail is a child of this
+  // element but sticks out past its right edge, so entering there fires mouseenter with
+  // the pointer still over the chat — and since the pointer is then already inside the
+  // subtree, no second mouseenter arrives when it finally reaches the strip.
+  const stripWidth = React.useRef<number | null>(null)
+  const onPeekMove = (event: React.MouseEvent<HTMLElement>) => {
+    if (!peekOnHover || isMobile || peek || state !== "collapsed") return
+    if (stripWidth.current === null) {
+      // --sidebar-width-icon is a custom property, so it reads back as authored
+      // ("3rem") rather than resolved pixels.
+      const raw = getComputedStyle(event.currentTarget)
+        .getPropertyValue("--sidebar-width-icon")
+        .trim()
+      const value = Number.parseFloat(raw)
+      const rootPx =
+        Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+      stripWidth.current = Number.isFinite(value)
+        ? raw.endsWith("px")
+          ? value
+          : value * rootPx
+        : 48
+    }
     const rect = event.currentTarget.getBoundingClientRect()
-    // --sidebar-width-icon is a custom property, so it comes back as authored ("3rem")
-    // rather than resolved pixels.
-    const raw = getComputedStyle(event.currentTarget)
-      .getPropertyValue("--sidebar-width-icon")
-      .trim()
-    const value = Number.parseFloat(raw)
-    const rootPx =
-      Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
-    const strip = Number.isFinite(value)
-      ? raw.endsWith("px")
-        ? value
-        : value * rootPx
-      : 48
-    if (event.clientX - rect.left > strip) return
+    if (event.clientX - rect.left > stripWidth.current) return
     cancelPeekOut()
     setPeek(true)
   }
@@ -292,8 +298,8 @@ function Sidebar({
       <div
         data-slot="sidebar-container"
         data-side={side}
-        onMouseEnter={onPeekEnter}
         onMouseLeave={onPeekLeave}
+        onMouseMove={onPeekMove}
         className={cn(
           "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] group-data-[peek=true]:z-50 group-data-[peek=true]:shadow-[var(--shadow-float)] data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex",
           variant === "floating" || variant === "inset"
