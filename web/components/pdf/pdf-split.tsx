@@ -1,5 +1,6 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useSidebar } from "@/components/ui/sidebar";
@@ -31,9 +32,27 @@ function useIsWide(min = SPLIT_MIN_WIDTH) {
   return wide;
 }
 
-export function PdfSplit({ children }: { children: React.ReactNode }) {
+export function PdfSplit({
+  children,
+  scope,
+}: {
+  children: React.ReactNode;
+  /** Which set of open papers this view owns — the chat id, or the page path.
+   *  Switching scope swaps the reader's tabs (and closes it when there are none). */
+  scope?: string;
+}) {
   const tabs = usePdfViewer((s) => s.tabs);
   const closeAll = usePdfViewer((s) => s.closeAll);
+  const setScope = usePdfViewer((s) => s.setScope);
+  const pathname = usePathname();
+  const effectiveScope = scope ?? `path:${pathname}`;
+
+  // Tabs follow the chat/page they were opened from, so navigating away closes the
+  // reader and coming back restores exactly the papers that were open.
+  useEffect(() => {
+    setScope(effectiveScope);
+  }, [effectiveScope, setScope]);
+
   const isOpen = tabs.length > 0;
   const isWide = useIsWide();
   const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();

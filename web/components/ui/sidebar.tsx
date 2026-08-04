@@ -39,6 +39,9 @@ type SidebarContextProps = {
   setOpenMobile: (open: boolean) => void
   isMobile: boolean
   toggleSidebar: () => void
+  /** Sidebar is hover-revealed: open visually, collapsed as far as layout cares. */
+  peek: boolean
+  setPeek: (peek: boolean) => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -84,6 +87,23 @@ function SidebarProvider({
     [setOpenProp, open]
   )
 
+  // "Peek": the sidebar is open visually but the layout still treats it as collapsed,
+  // so it floats over the content instead of pushing it. Used for hover-to-reveal while
+  // the PDF reader has the sidebar collapsed. Deliberately does NOT touch the cookie —
+  // a transient hover must not change what the sidebar does on the next page load.
+  const [peek, _setPeek] = React.useState(false)
+  const setPeek = React.useCallback(
+    (value: boolean) => {
+      _setPeek(value)
+      if (setOpenProp) {
+        setOpenProp(value)
+      } else {
+        _setOpen(value)
+      }
+    },
+    [setOpenProp]
+  )
+
   const toggleSidebar = React.useCallback(() => {
     return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile])
@@ -107,6 +127,8 @@ function SidebarProvider({
 
   const contextValue = React.useMemo<SidebarContextProps>(
     () => ({
+      peek,
+      setPeek,
       state,
       open,
       setOpen,
@@ -115,7 +137,7 @@ function SidebarProvider({
       setOpenMobile,
       toggleSidebar,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, peek, setPeek]
   )
 
   return (
@@ -148,13 +170,42 @@ function Sidebar({
   className,
   children,
   dir,
+  peekOnHover = false,
   ...props
 }: React.ComponentProps<"div"> & {
   side?: "left" | "right"
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
+  /** Reveal the collapsed sidebar on hover, floating it over the content. */
+  peekOnHover?: boolean
 }) {
-  const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
+  const { isMobile, state, openMobile, setOpenMobile, peek, setPeek } =
+    useSidebar()
+
+  // Hovering a collapsed sidebar opens it over the content; leaving re-collapses it.
+  // The exit delay keeps it from snapping shut as the pointer crosses a gap.
+  const peekOut = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cancelPeekOut = React.useCallback(() => {
+    if (peekOut.current) {
+      clearTimeout(peekOut.current)
+      peekOut.current = null
+    }
+  }, [])
+  const onPeekEnter = () => {
+    if (!peekOnHover || isMobile) return
+    cancelPeekOut()
+    if (state === "collapsed") setPeek(true)
+  }
+  const onPeekLeave = () => {
+    if (!peek) return
+    cancelPeekOut()
+    peekOut.current = setTimeout(() => setPeek(false), 180)
+  }
+  React.useEffect(() => cancelPeekOut, [cancelPeekOut])
+  // Stop peeking the moment the feature is switched off (e.g. the reader closed).
+  React.useEffect(() => {
+    if (!peekOnHover && peek) setPeek(false)
+  }, [peekOnHover, peek, setPeek])
 
   if (collapsible === "none") {
     return (
@@ -197,6 +248,7 @@ function Sidebar({
   return (
     <div
       className="group peer hidden text-sidebar-foreground md:block"
+      data-peek={peek ? "true" : undefined}
       data-state={state}
       data-collapsible={state === "collapsed" ? collapsible : ""}
       data-variant={variant}
@@ -211,14 +263,22 @@ function Sidebar({
           "group-data-[side=right]:rotate-180",
           variant === "floating" || variant === "inset"
             ? "group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"
-            : "group-data-[collapsible=icon]:w-(--sidebar-width-icon)"
+            : "group-data-[collapsible=icon]:w-(--sidebar-width-icon)",
+          // Peeking floats the sidebar: hold the layout at the collapsed width so the
+          // chat underneath never reflows.
+          variant === "floating" || variant === "inset"
+            ? "group-data-[peek=true]:w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"
+            : "group-data-[peek=true]:w-(--sidebar-width-icon)"
         )}
+        onMouseEnter={onPeekEnter}
       />
       <div
         data-slot="sidebar-container"
         data-side={side}
+        onMouseEnter={onPeekEnter}
+        onMouseLeave={onPeekLeave}
         className={cn(
-          "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex",
+          "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] group-data-[peek=true]:z-50 group-data-[peek=true]:shadow-[var(--shadow-float)] data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex",
           variant === "floating" || variant === "inset"
             ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
             : "group-data-[collapsible=icon]:w-(--sidebar-width-icon)",

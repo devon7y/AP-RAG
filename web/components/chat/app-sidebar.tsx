@@ -22,6 +22,7 @@ import {
   getChatHistoryPaginationKey,
   SidebarHistory,
 } from "@/components/chat/sidebar-history";
+import { usePdfViewer } from "@/lib/pdf/store";
 import { SidebarUserNav } from "@/components/chat/sidebar-user-nav";
 import {
   Sidebar,
@@ -53,6 +54,7 @@ import { TalkToAuthorDialog } from "./talk-to-author-dialog";
 export function AppSidebar({ user }: { user: User | undefined }) {
   const router = useRouter();
   const { setOpenMobile, toggleSidebar } = useSidebar();
+  const readerOpen = usePdfViewer((s) => s.tabs.length > 0);
   const { mutate } = useSWRConfig();
   const [showDeleteAllDialog, setShowDeleteAllDialog] = useState(false);
   const [showTalkToAuthor, setShowTalkToAuthor] = useState(false);
@@ -73,7 +75,9 @@ export function AppSidebar({ user }: { user: User | undefined }) {
 
   return (
     <>
-      <Sidebar collapsible="icon">
+      {/* peekOnHover: while the PDF reader has the sidebar collapsed, hovering it
+          reveals the full sidebar over the chat rather than resizing the layout. */}
+      <Sidebar collapsible="icon" peekOnHover={readerOpen}>
         <SidebarHeader className="pb-0 pt-3">
           <SidebarMenu>
             <SidebarMenuItem className="flex flex-row items-center justify-between">

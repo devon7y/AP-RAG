@@ -6,7 +6,7 @@ import { Toaster } from "sonner";
 import { AppSidebar } from "@/components/chat/app-sidebar";
 import { DataStreamProvider } from "@/components/chat/data-stream-provider";
 import { ChatShell } from "@/components/chat/shell";
-import { PdfSplit } from "@/components/pdf/pdf-split";
+import { ChatPdfSplit } from "@/components/pdf/chat-pdf-split";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { ActiveChatProvider } from "@/hooks/use-active-chat";
 import { auth } from "../(auth)/auth";
@@ -55,9 +55,9 @@ async function SidebarShell({ children }: { children: React.ReactNode }) {
             renders the chat. */}
         <Suspense fallback={<div className="flex h-dvh" />}>
           <ActiveChatProvider>
-            <PdfSplit>
+            <ChatPdfSplit>
               <ChatShell />
-            </PdfSplit>
+            </ChatPdfSplit>
           </ActiveChatProvider>
         </Suspense>
         {children}
