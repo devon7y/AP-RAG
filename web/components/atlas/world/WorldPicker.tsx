@@ -4,6 +4,7 @@ import { useEffect, useMemo } from "react";
 import { useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { WORLD_SIZE } from "@/lib/atlas/data";
+import { chunkLensed, paperLensed } from "./store";
 import { sampleEraHeight } from "./derive";
 import { paperWorldPos } from "./PaperBeacons";
 import type { WorldData } from "./derive";
@@ -115,7 +116,7 @@ export default function WorldPicker({
         ) + lift;
       if (st.showPapers) {
       for (let i = 0; i < data.nPapers; i++) {
-        if (!born(data.paperYear[i])) continue;
+        if (!born(data.paperYear[i]) || !paperLensed(i)) continue;
         paperWorldPos(data, i, morph, tmp);
         tmp.y =
           groundY(data.paperGround[i * 3], data.paperGround[i * 3 + 2], data.paperLift[i]) *

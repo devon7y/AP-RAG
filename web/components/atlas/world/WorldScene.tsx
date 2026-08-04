@@ -30,7 +30,13 @@ import PlaneHud from "./PlaneHud";
 import PlaneLayer, { type PlanePose } from "./PlaneLayer";
 import RoverLayer, { useRover } from "./RoverLayer";
 import SkyLayer from "./SkyLayer";
-import { OPENING_SHOT, setChunkToPaper, useWorld, type PlantedGhost } from "./store";
+import {
+  OPENING_SHOT,
+  setChunkToPaper,
+  setLensMasks,
+  useWorld,
+  type PlantedGhost,
+} from "./store";
 import Terrain from "./Terrain";
 import TrailsLayer from "./TrailsLayer";
 import { uMorph } from "./uniforms";
@@ -414,6 +420,11 @@ function World({
     }
     return { chunks, papers, gold };
   }, [corpus, authors, paperMeta, lens, data, instrument, ask]);
+
+  // picking follows the lens, not just the shader
+  useEffect(() => {
+    setLensMasks(masks.papers, masks.chunks);
+  }, [masks]);
 
   const roverPosRef = useMemo<{ current: THREE.Vector3 | null }>(
     () => ({ current: null }),

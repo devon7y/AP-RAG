@@ -264,6 +264,25 @@ let warpSeq = 0;
  *  redirecting here fixes all of them at once and keeps the passage card from
  *  ever appearing. */
 let chunkToPaper: Int32Array | null = null;
+
+/** The lens's dim masks (1 = stepped back), published so PICKING can agree with
+ *  what is drawn. A dimmed paper is not a target: the lens is a filter, and a
+ *  filter that still answers the cursor is just a lie about what is on screen. */
+let lensPaperMask: Float32Array | null = null;
+let lensChunkMask: Float32Array | null = null;
+export function setLensMasks(
+  papers: Float32Array | null,
+  chunks: Float32Array | null,
+): void {
+  lensPaperMask = papers;
+  lensChunkMask = chunks;
+}
+export function paperLensed(i: number): boolean {
+  return !lensPaperMask || lensPaperMask[i] < 0.5;
+}
+export function chunkLensed(i: number): boolean {
+  return !lensChunkMask || lensChunkMask[i] < 0.5;
+}
 export function setChunkToPaper(map: Int32Array): void {
   chunkToPaper = map;
 }
