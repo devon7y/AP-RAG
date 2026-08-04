@@ -283,34 +283,41 @@ function buildEraFields(
 
 /* ---------------- terrain tint field ---------------- */
 
-function buildColorTexture(corpus: CorpusData): THREE.DataTexture {
-  const { atlas } = corpus;
-  const r = new Float32Array(GRID * GRID);
-  const g = new Float32Array(GRID * GRID);
-  const b = new Float32Array(GRID * GRID);
+/** Terrain tint = PUBLICATION DATE of the papers on that ground.
+ *
+ *  It used to be cluster identity, but there are 75 clusters and no categorical
+ *  palette has 75 distinguishable hues — so colours repeated and two unrelated
+ *  regions on opposite sides of the map read as kin. Date is continuous, needs
+ *  no legend to interpret, and is the SAME encoding the galaxy view uses, so
+ *  morphing between the two no longer recolours the world for no visible reason.
+ *
+ *  Dates go through the same rank transform as the stars: the corpus spans
+ *  1904-2026 and a linear ramp would spend most of its range on a handful of
+ *  very old outliers.
+ */
+function buildColorTexture(
+  posX: Float32Array,
+  posY: Float32Array,
+  ageRank: Float32Array,
+): THREE.DataTexture {
+  const acc = new Float32Array(GRID * GRID);
   const w = new Float32Array(GRID * GRID);
-  const c = new THREE.Color();
-  for (let i = 0; i < atlas.n; i++) {
-    c.set(clusterColor(atlas.cluster[i]));
-    const x01 = atlas.pos2[i * 2];
-    const y01 = atlas.pos2[i * 2 + 1];
-    splat(r, x01, y01, c.r);
-    splat(g, x01, y01, c.g);
-    splat(b, x01, y01, c.b);
-    splat(w, x01, y01, 1);
+  for (let i = 0; i < posX.length; i++) {
+    if (ageRank[i] < 0) continue; // undated papers tint nothing
+    splat(acc, posX[i], posY[i], ageRank[i]);
+    splat(w, posX[i], posY[i], 1);
   }
-  const rb = blur(r, 2.2);
-  const gb = blur(g, 2.2);
-  const bb = blur(b, 2.2);
-  const wb = blur(w, 2.2);
+  const ab = blur(acc, 2.6);
+  const wb = blur(w, 2.6);
   const data = new Float32Array(GRID * GRID * 4);
   const fallback = new THREE.Color(INK.grid);
+  const c = new THREE.Color();
   for (let i = 0; i < GRID * GRID; i++) {
-    const ww = wb[i];
-    if (ww > 1e-4) {
-      data[i * 4] = rb[i] / ww;
-      data[i * 4 + 1] = gb[i] / ww;
-      data[i * 4 + 2] = bb[i] / ww;
+    if (wb[i] > 1e-4) {
+      ageColor(ab[i] / wb[i], c);
+      data[i * 4] = c.r;
+      data[i * 4 + 1] = c.g;
+      data[i * 4 + 2] = c.b;
     } else {
       data[i * 4] = fallback.r;
       data[i * 4 + 1] = fallback.g;
@@ -609,7 +616,11 @@ export function deriveWorld(
     paperDate[i] = paperMeta?.frac[i] || (p.year > 0 ? p.year + 0.5 : 0);
   });
   const eras = buildEraFields(paperX, paperY, paperDate, yearMin, yearMax);
-  const colorTex = buildColorTexture(corpus);
+  const paperAgeRank = new Float32Array(papers.length);
+  for (let i = 0; i < papers.length; i++) {
+    paperAgeRank[i] = paperDate[i] > 0 ? ageT(paperDate[i]) : -1;
+  }
+  const colorTex = buildColorTexture(paperX, paperY, paperAgeRank);
 
   // --- KG centrality per chunk (drives brightness in both frames) ---
   const sorted = [...constellations.entities].sort((a, b) => b.deg - a.deg);

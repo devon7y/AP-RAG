@@ -209,11 +209,12 @@ function NavigatePanel({ data, corpus }: { data: WorldData; corpus: CorpusData }
             Every passage of every paper is embedded by the language model, then
             flattened onto this map —{" "}
             <span className="text-ink-2">nearby means similar in meaning</span>.{" "}
-            <span className="text-ink-2">Height counts passages</span>:
-            mountains rise where many passages pile onto the same idea; empty
-            areas are unexplored.{" "}
-            <span className="text-ink-2">Color marks the semantic region</span>{" "}
-            — passages in the same topic cluster share a hue. The small lights
+            <span className="text-ink-2">Height counts papers</span>: mountains
+            rise where many papers crowd onto the same ground; empty areas are
+            unexplored.{" "}
+            <span className="text-ink-2">Color is publication date</span> — the
+            same scale the galaxy uses, so the two views agree; warm ground is
+            older literature, cool ground more recent. The small lights
             are individual passages (brighter = more connections in the
             knowledge graph); the haloed beacons are whole papers, placed at
             the center of their passages.{" "}
