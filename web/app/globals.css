@@ -522,7 +522,9 @@ textarea:focus-visible {
   --atlas-page: #0d0d0d;
   --atlas-ink: #ffffff;
   --atlas-ink-2: #c3c2b7;
-  --atlas-ink-3: #898781;
+  /* the dimmest tier still has to be readable over the scene, not just
+     present — 0x89 sat at ~53% grey and read as murky on a dark canvas */
+  --atlas-ink-3: #adaba3;
   --atlas-grid-line: #2c2c2a;
   --atlas-baseline: #383835;
   --atlas-hairline: rgba(255, 255, 255, 0.1);
