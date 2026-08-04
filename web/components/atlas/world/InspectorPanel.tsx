@@ -159,14 +159,23 @@ function PaperCard({
 }) {
   const p = corpus.papers[idx];
   const st = useWorld.getState();
-  const paperAuthors = useMemo(
-    () =>
-      authors
-        .map((a, i) => ({ a, i }))
-        .filter(({ a }) => a.papers.includes(idx))
-        .slice(0, 8),
-    [authors, idx],
-  );
+  const paperAuthors = useMemo(() => {
+    const on = authors.map((a, i) => ({ a, i })).filter(({ a }) => a.papers.includes(idx));
+    const order = new Map(
+      (corpus.papers[idx].authorsFull ?? []).map((n, i) => [
+        n.split(",")[0].trim().toLowerCase(),
+        i,
+      ]),
+    );
+    // byline order where the paper tells us it, the rest after
+    return on
+      .sort(
+        (x, y) =>
+          (order.get(x.a.family.toLowerCase()) ?? 999) -
+          (order.get(y.a.family.toLowerCase()) ?? 999),
+      )
+      .slice(0, 12);
+  }, [authors, idx, corpus]);
   const kws = paperMeta?.keywords[idx] ?? [];
   const subj = paperMeta?.subjects[idx] ?? [];
 
@@ -177,7 +186,9 @@ function PaperCard({
         {p.journal ? `· ${p.journal}` : ""}
       </p>
       <h2 className="font-display text-lg leading-snug text-ink">{p.title}</h2>
-      <p className="text-xs text-ink-2">{p.authors}</p>
+      <p className="text-xs text-ink-2">
+        {p.authorsFull?.length ? p.authorsFull.join(", ") : p.authors}
+      </p>
       {p.abstract && (
         <p className="line-clamp-[9] text-[11px] leading-relaxed text-ink-3">
           {p.abstract}

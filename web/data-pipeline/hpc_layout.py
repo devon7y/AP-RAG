@@ -294,11 +294,26 @@ def main() -> None:
     file_idx = {f: i for i, f in enumerate(files)}
     log(f"{n} chunks across {len(files)} papers")
 
+    def _author_list(rec) -> list:
+        """The manifest stores authors as a real LIST, not a repr of one.
+        ast.literal_eval threw on every record, so every paper silently fell back
+        to the first token of its filename — which is why bylines read as a bare
+        surname. Accept both shapes."""
+        v = rec.get("authors")
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            try:
+                return ast.literal_eval(v)
+            except Exception:
+                return []
+        return []
+
+    def _initials(given: str) -> str:
+        return " ".join(f"{x[0]}." for x in re.split(r"[\s\-]+", (given or "").strip()) if x)
+
     def short_authors(rec) -> str:
-        try:
-            au = ast.literal_eval(rec.get("authors", "[]"))
-        except Exception:
-            au = []
+        au = _author_list(rec)
         fams = [a.get("family", "") for a in au if isinstance(a, dict) and a.get("family")]
         if not fams:
             return ""
@@ -325,6 +340,12 @@ def main() -> None:
             "doi": rec.get("doi", ""),
             # trimmed vs the old pipeline: 10.4k abstracts ship to the browser
             "abstract": (rec.get("abstract") or "")[:320],
+            # ordered APA names so a card can print the byline as printed
+            "authorsFull": [
+                f"{a['family']}, {_initials(a.get('given'))}".strip().rstrip(",")
+                for a in _author_list(rec)
+                if isinstance(a, dict) and a.get("family")
+            ][:25],
         })
 
     paper_of = np.fromiter((file_idx[m["file_path"]] for m in meta), dtype=np.int32, count=n)

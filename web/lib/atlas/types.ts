@@ -6,6 +6,8 @@ export interface Paper {
   journal: string;
   doi: string;
   abstract: string;
+  /** ordered APA names ("Chau, G."), byline order as printed */
+  authorsFull?: string[];
   centroid: [number, number];
   centroid3: [number, number, number];
   nChunks: number;
@@ -78,6 +80,8 @@ export interface GhostPaper {
   fields: string;
   methods: string;
   abstract: string;
+  /** ordered APA names ("Chau, G."), byline order as printed */
+  authorsFull?: string[];
   marker: "GHOST";
 }
 

@@ -158,7 +158,9 @@ function FadingLabel({
     }
     oTarget.current = o;
     d.style.opacity = o.toFixed(3);
-    d.style.pointerEvents = o > 0.25 ? "auto" : "none";
+    // signage, not a control: never intercept the pointer, so hovering and
+    // clicking reach the beacons underneath
+    d.style.pointerEvents = "none";
   });
 
   return (
@@ -234,7 +236,7 @@ function PeakLabels({ data }: { data: WorldData }) {
         }
       }
       el.style.opacity = o.toFixed(3);
-      el.style.pointerEvents = o > 0.25 ? "auto" : "none";
+      el.style.pointerEvents = "none"; // see above — beacons stay reachable
 
       const g = glyphs[i];
       if (g) {
@@ -320,22 +322,17 @@ export default function Labels({ data }: { data: WorldData }) {
             return firstYear > 0 && firstYear > st.year + 0.01 ? 0 : 1;
           }}
         >
-          <button
-            type="button"
-            className="cursor-pointer select-none text-center"
+          <span
+            className="select-none text-center"
             // shrink-to-fit up to the same lane the glyph wraps in, so the
             // ghost's measured box matches the drawn text on both axes
-            style={{ maxWidth: REGION_LANE }}
-            onClick={() => {
-              const p = ground.clone().lerp(space, uMorph.value);
-              requestWarp([p.x, p.y, p.z], 34, 2.0);
-            }}
+            style={{ maxWidth: REGION_LANE, display: "inline-block" }}
             title={cluster.flavor}
           >
             <span className="map-label map-label--ghost font-display block text-[15px] tracking-[0.14em]">
               {cluster.name}
             </span>
-          </button>
+          </span>
         </FadingLabel>
       ))}
 
