@@ -25,9 +25,7 @@ import { AIRCRAFT_LIST, MISSION_GOAL } from "./aircraft";
 import { primePlaneAudio } from "./planeAudio";
 import { primeVoices } from "./tts";
 import {
-  AGE_MID,
-  AGE_NEW,
-  AGE_OLD,
+  AGE_STOPS,
   sampleField,
   toWorldXZ,
   type WorldData,
@@ -162,6 +160,33 @@ export default function LeftPane({
   );
 }
 
+/** The year colourbar. Ticks come from the ramp's own rank scale, so the
+ *  labels sit where those years actually fall — the corpus is overwhelmingly
+ *  post-1950, and an evenly-spaced axis would misreport that badly. */
+function AgeLegend({ data }: { data: WorldData }) {
+  const ticks = data.ageTicks;
+  return (
+    <div className="mt-2.5">
+      <div
+        className="h-1.5 rounded-full"
+        style={{ background: `linear-gradient(90deg, ${AGE_STOPS.join(", ")})` }}
+      />
+      <div className="relative mt-1 h-3">
+        {ticks.map((t: { year: number; at: number }) => (
+          <span
+            key={t.year}
+            className="absolute -translate-x-1/2 text-[10px] text-ink-3 tabular-nums"
+            style={{ left: `${Math.min(96, Math.max(4, t.at * 100))}%` }}
+          >
+            {t.year}
+          </span>
+        ))}
+      </div>
+      <p className="mt-0.5 text-center text-[10px] text-ink-3">publication year</p>
+    </div>
+  );
+}
+
 function H({ children }: { children: React.ReactNode }) {
   return (
     <p className="text-[10px] tracking-[0.3em] text-ink-3 uppercase">{children}</p>
@@ -239,19 +264,7 @@ function NavigatePanel({ data, corpus }: { data: WorldData; corpus: CorpusData }
               tags are those entities' names, exactly as the knowledge graph
               recorded them while reading the papers.
             </p>
-            <div className="mt-2.5">
-              <div
-                className="h-1.5 rounded-full"
-                style={{
-                  background: `linear-gradient(90deg, ${AGE_OLD}, ${AGE_MID}, ${AGE_NEW})`,
-                }}
-              />
-              <div className="mt-1 flex justify-between text-[10px] text-ink-3">
-                <span>{data.yearMin}</span>
-                <span>publication year</span>
-                <span>{data.yearMax}</span>
-              </div>
-            </div>
+            <AgeLegend data={data} />
           </>
         )}
       </div>

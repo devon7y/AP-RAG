@@ -109,6 +109,8 @@ export interface WorldData {
     space: THREE.Vector3;
   }[];
   labelPapers: number[];
+  /** legend ticks: where round years land on the RANK ramp (0..1) */
+  ageTicks: { year: number; at: number }[];
   /** lowercased title+abstract+keywords+subjects per paper. The keyword lens
    *  runs on every keystroke; at 10k papers rebuilding these strings each time
    *  is what makes typing lag, so they are built once here. */
@@ -121,20 +123,38 @@ const WEB_EDGES = 150;
 
 /* ---------------- age ramp + name filters (from the retired observatory) --- */
 
-/** Age ramp poles (diverging warm↔cool through a warm white, like star temperature). */
-export const AGE_OLD = "#e66767";
-export const AGE_MID = "#f2e5cf";
-export const AGE_NEW = "#9ec5f4";
+/** Age ramp: a pastel ROYGBIV, oldest red through to newest violet.
+ *
+ *  Seven stops rather than three because two poles through a neutral middle
+ *  wastes most of its range on colours that read as "not quite white" — with a
+ *  corpus this size that made whole decades indistinguishable. Pastel keeps it
+ *  legible against the dark terrain without the sting of full-saturation hues.
+ *
+ *  Position along the ramp is a RANK, not a year (see ageT): the corpus runs
+ *  1904-2026 but the papers are overwhelmingly post-1950, so equal-area-per-
+ *  paper spends the rainbow where the literature actually is.
+ */
+export const AGE_STOPS = [
+  "#ff9aa2", // R
+  "#ffb480", // O
+  "#ffe28a", // Y
+  "#a8e6a1", // G
+  "#8fd3f4", // B
+  "#9aa7f0", // I
+  "#c9a0e9", // V
+];
+const AGE_C = AGE_STOPS.map((h) => new THREE.Color(h));
 
-const OLD_C = new THREE.Color(AGE_OLD);
-const MID_C = new THREE.Color(AGE_MID);
-const NEW_C = new THREE.Color(AGE_NEW);
+/** Kept for the legend copy; the poles of the ramp above. */
+export const AGE_OLD = AGE_STOPS[0];
+export const AGE_MID = AGE_STOPS[3];
+export const AGE_NEW = AGE_STOPS[AGE_STOPS.length - 1];
 
 /** t=0 oldest → t=1 newest. */
 export function ageColor(t: number, out = new THREE.Color()): THREE.Color {
-  const x = Math.min(1, Math.max(0, t));
-  if (x < 0.5) return out.copy(OLD_C).lerp(MID_C, x * 2);
-  return out.copy(MID_C).lerp(NEW_C, (x - 0.5) * 2);
+  const x = Math.min(1, Math.max(0, t)) * (AGE_C.length - 1);
+  const i = Math.min(AGE_C.length - 2, Math.floor(x));
+  return out.copy(AGE_C[i]).lerp(AGE_C[i + 1], x - i);
 }
 
 /** Paper-furniture entity names (Table 3, Study 1…) — noise as sky labels. */
@@ -684,11 +704,13 @@ export function deriveWorld(
     chunkSpace[i * 3 + 2] = sz;
 
     const lum = 0.3 + 0.7 * Math.pow(centrality[i], 0.8);
-    c.set(clusterColor(atlas.cluster[i]));
+    const d = chunkDate[i];
+    // ground and galaxy share the year ramp, so the morph does not recolour
+    if (d > 0) ageColor(ageT(d), c);
+    else c.set(INK.muted);
     chunkColorGround[i * 3] = c.r * lum;
     chunkColorGround[i * 3 + 1] = c.g * lum;
     chunkColorGround[i * 3 + 2] = c.b * lum;
-    const d = chunkDate[i];
     if (d > 0) ageColor(ageT(d), cAge);
     else cAge.set(INK.muted);
     chunkColorSpace[i * 3] = cAge.r * lum;
@@ -745,11 +767,12 @@ export function deriveWorld(
     }
     paperCluster[i] = bestCl;
     const lum = 0.55 + 0.45 * (Math.log1p(p.nChunks) / Math.log1p(maxChunks));
-    c.set(clusterColor(bestCl));
+    const pd = paperMeta?.frac[i] || (p.year > 0 ? p.year + 0.5 : 0);
+    if (pd > 0) ageColor(ageT(pd), c);
+    else c.set(INK.muted);
     paperColorGround[i * 3] = c.r * lum;
     paperColorGround[i * 3 + 1] = c.g * lum;
     paperColorGround[i * 3 + 2] = c.b * lum;
-    const pd = paperMeta?.frac[i] || (p.year > 0 ? p.year + 0.5 : 0);
     if (pd > 0) ageColor(ageT(pd), cAge);
     else cAge.set(INK.muted);
     paperColorSpace[i * 3] = cAge.r * lum;
@@ -966,6 +989,18 @@ export function deriveWorld(
       .toLowerCase(),
   );
 
+  // legend ticks: place round years at their rank, which is where the ramp
+  // actually puts them — the corpus is overwhelmingly post-1950, so an evenly
+  // spaced axis would claim colour is spread over decades that hold almost
+  // nothing
+  const ageTicks: { year: number; at: number }[] = [];
+  for (const y of [1950, 1980, 2000, 2010, 2020]) {
+    if (y >= yearMin && y <= yearMax + 1) ageTicks.push({ year: y, at: ageT(y) });
+  }
+  if (!ageTicks.length || ageTicks[0].at > 0.08) {
+    ageTicks.unshift({ year: yearMin, at: 0 });
+  }
+
   const peaks = buildPeakLabels(corpus, entities, eras.final);
 
   return {
@@ -1004,6 +1039,7 @@ export function deriveWorld(
     clusterById,
     labelClusters,
     labelPapers,
+    ageTicks,
     paperHaystack,
     labelEntities,
   };
