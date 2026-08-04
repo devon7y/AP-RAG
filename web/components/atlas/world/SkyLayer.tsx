@@ -57,11 +57,7 @@ function MorphLines({
     const mat = new LineBasicNodeMaterial();
     mat.transparent = true;
     mat.depthWrite = false;
-    // Additive blending is what produced the orange mass: ~600 entity sprites
-    // sum wherever they crowd, and a dense cluster of one type saturates into a
-    // single blob no matter how the per-sprite gain is tuned. Normal blending
-    // makes a star cost the same whether it is alone or in a crowd.
-    mat.blending = THREE.NormalBlending;
+    mat.blending = THREE.AdditiveBlending;
     mat.positionNode = mix(positionLocal, attribute<"vec3">("aSpace", "vec3"), uMorph);
     const c = new THREE.Color(color);
     mat.colorNode = vec3(c.r, c.g, c.b).mul(uCalm);
@@ -141,7 +137,7 @@ function EntityStars({ data }: { data: WorldData }) {
     mat.transparent = true;
     mat.depthWrite = false;
     mat.depthTest = true;
-    mat.blending = THREE.NormalBlending;
+    mat.blending = THREE.AdditiveBlending;
     mat.sizeAttenuation = true;
 
     mat.positionNode = mix(aG, aS, uMorph);
@@ -161,8 +157,8 @@ function EntityStars({ data }: { data: WorldData }) {
       .clamp(0, 1)
       .pow(2.2)
       .mul(smoothstep(1.0, 0.25, d))
-      .mul(0.32);
-    const core = smoothstep(0.0, 0.45, d).oneMinus().pow(2.4).mul(1.0).add(spike);
+      .mul(0.5);
+    const core = smoothstep(0.0, 0.45, d).oneMinus().pow(2.4).mul(2.2).add(spike);
 
     mat.colorNode = aCol
       .mul(twinkle)
@@ -262,7 +258,7 @@ function EntityRing({ data, idx, color }: { data: WorldData; idx: number; color:
       transparent: true,
       depthWrite: false,
       depthTest: false,
-      blending: THREE.NormalBlending,
+      blending: THREE.AdditiveBlending,
     });
     m.color.set(color);
     const s = new THREE.Sprite(m);
@@ -283,7 +279,18 @@ function EntityRing({ data, idx, color }: { data: WorldData; idx: number; color:
   return <primitive object={sprite} />;
 }
 
-/* ---------------- nebulae (space frame) ---------------- */
+/* ---------------- nebulae (space frame) — NOT RENDERED ----------------
+ *
+ * These are the diffuse red and violet washes that hung over the galaxy: 28
+ * cluster-tinted glow sprites scaled 10 + sqrt(size)*0.55, which for the
+ * largest cluster is over 100 world units of soft colour sitting on top of
+ * everything. They read as a rendering artifact rather than as data — nothing
+ * about a region is legible from them — so they are no longer mounted.
+ *
+ * Kept here rather than deleted because the shape is worth reusing if the
+ * galaxy ever wants an honest density wash: bind it to a measured field and
+ * scale it to the cluster's real extent instead of a sqrt of its size.
+ */
 
 function Nebulae({ corpus }: { corpus: CorpusData }) {
   const group = useMemo(() => {
@@ -296,7 +303,7 @@ function Nebulae({ corpus }: { corpus: CorpusData }) {
         transparent: true,
         depthWrite: false,
         depthTest: false,
-        blending: THREE.NormalBlending,
+        blending: THREE.AdditiveBlending,
         opacity: 0,
       });
       m.color.set(clusterColor(cl.id)).multiplyScalar(0.55);
@@ -345,7 +352,6 @@ export default function SkyLayer({
   if (!showSky)
     return (
       <group>
-        <Nebulae corpus={corpus} />
       </group>
     );
 
@@ -369,7 +375,6 @@ export default function SkyLayer({
         />
       )}
       <FocusEntity data={data} />
-      <Nebulae corpus={corpus} />
     </group>
   );
 }
