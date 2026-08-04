@@ -220,6 +220,79 @@ def test_render_answer_end_to_end():
     assert all("apa" in m and "hades_path" in m for m in models)
 
 
+# ── year letters are per-answer, not per-file ────────────────────────────────
+
+def _chen(letter: str, title: str) -> dict:
+    """A record as the manifest stores it: the letter comes from the filename."""
+    return {"type": "article", "year": "2014", "disambig": letter, "title": title,
+            "container_title": "Experimental Brain Research",
+            "authors": [{"family": "Chen", "given": "Y. Y."},
+                        {"family": "Caplan", "given": "J. B."}]}
+
+
+CHEN_MANIFEST = {
+    "Chen_Etal_2014a.pdf": _chen("a", "Encoding and retrieval"),
+    "Chen_Etal_2014b.pdf": _chen("b", "Is what goes in what comes out?"),
+}
+
+
+def test_year_letter_dropped_when_only_one_paper_of_that_year_is_cited():
+    """The letter is a filing device for the PDFs; it tells a reader nothing unless the
+    answer cites two works that would otherwise cite identically."""
+    answer, models = apa.render_answer(
+        "Words were shown for 1,500 ms [17].",
+        [{"reference_id": "17", "file_path": "Chen_Etal_2014b.pdf"}],
+        CHEN_MANIFEST, hades_base="")
+    assert "(Chen & Caplan, 2014)" in answer
+    assert models[0]["intext"] == "Chen & Caplan, 2014"
+    assert "(2014)." in models[0]["apa"]
+    # ...and nowhere a letter can still reach the reader (the *filename* in the
+    # reference's path legitimately keeps its "2014b").
+    assert "2014b" not in models[0]["intext"] + models[0]["apa"]
+
+
+def test_year_letters_kept_when_two_same_author_year_papers_are_cited():
+    answer, models = apa.render_answer(
+        "Shown for 1,500 ms [17] and recalled later [18].",
+        [{"reference_id": "17", "file_path": "Chen_Etal_2014b.pdf"},
+         {"reference_id": "18", "file_path": "Chen_Etal_2014a.pdf"}],
+        CHEN_MANIFEST, hades_base="")
+    assert "(Chen & Caplan, 2014b)" in answer
+    assert "(Chen & Caplan, 2014a)" in answer
+    # The stored letters match the filenames a reader sees in the PDF reader, so they
+    # are kept rather than reassigned.
+    assert {m["filename"]: m["intext"] for m in models} == {
+        "Chen_Etal_2014a.pdf": "Chen & Caplan, 2014a",
+        "Chen_Etal_2014b.pdf": "Chen & Caplan, 2014b"}
+
+
+def test_retrieved_but_uncited_sibling_does_not_force_a_letter():
+    """Only what the answer cites counts — a sibling that was merely retrieved must not
+    put a letter on the one paper actually used."""
+    answer, models = apa.render_answer(
+        "Words were shown for 1,500 ms [17].",
+        [{"reference_id": "17", "file_path": "Chen_Etal_2014b.pdf"},
+         {"reference_id": "18", "file_path": "Chen_Etal_2014a.pdf"}],
+        CHEN_MANIFEST, hades_base="")
+    assert "(Chen & Caplan, 2014)" in answer
+    assert [m["intext"] for m in models] == ["Chen & Caplan, 2014"]
+
+
+def test_assign_disambiguation_falls_back_to_title_order():
+    """Same author+year with no usable stored letters → a, b… by title, as APA does."""
+    records = {"X_2014.pdf": _chen("", "Zebra findings"),
+               "Y_2014.pdf": _chen("", "Alpha findings")}
+    assert apa.assign_disambiguation(records) == {"Y_2014.pdf": "a", "X_2014.pdf": "b"}
+
+
+def test_assign_disambiguation_leaves_distinct_years_alone():
+    records = {"Chen_Etal_2014b.pdf": _chen("b", "One"),
+               "Other_1999.pdf": {"type": "article", "year": "1999", "disambig": "a",
+                                  "authors": [{"family": "Other", "given": "A."}]}}
+    assert apa.assign_disambiguation(records) == {"Chen_Etal_2014b.pdf": "",
+                                                  "Other_1999.pdf": ""}
+
+
 def test_format_pages():
     assert apa.format_pages([12]) == "p. 12"
     assert apa.format_pages([12, 3, 19]) == "pp. 3, 12, 19"   # sorted

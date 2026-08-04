@@ -154,6 +154,79 @@ const CLUSTER = `\\([ \\t]*(${RUN})[ \\t]*\\)|(${RUN})`;
 // reference_id + APA in-text label for a cited passage number.
 export type CiteRef = { referenceId: string; intext: string };
 
+// ── Year letters (2014a / 2014b) ─────────────────────────────────────────────
+// Every same-author-same-year PDF in the corpus carries a letter in its filename so the
+// files sort unambiguously, and the server stamps it onto the citation. But the letter
+// means nothing to a reader unless the answer in front of them cites two works that
+// would otherwise look identical, so it is decided per answer — and only the browser
+// knows which papers the answer ended up citing.
+
+/** "Chen et al., 2014b" → the citation without its letter, plus the letter. */
+const INTEXT_YEAR_LETTER = /^(.*\b\d{4})([a-z])$/;
+/** The year in a formatted APA entry: "… (2014b). Title …". */
+const APA_YEAR_LETTER = /\((\d{4})([a-z])?\)/;
+
+export function splitYearLetter(intext: string): {
+  base: string;
+  letter: string;
+} {
+  const m = INTEXT_YEAR_LETTER.exec((intext ?? "").trim());
+  return m
+    ? { base: m[1], letter: m[2] }
+    : { base: (intext ?? "").trim(), letter: "" };
+}
+
+export function setIntextLetter(intext: string, letter: string): string {
+  return `${splitYearLetter(intext).base}${letter}`;
+}
+
+export function setApaLetter(apa: string, letter: string): string {
+  return (apa ?? "").replace(APA_YEAR_LETTER, `($1${letter})`);
+}
+
+type DisambigRef = { reference_id: string; intext: string; filename?: string };
+
+/**
+ * reference_id → the year letter it should show, decided across the papers an answer
+ * actually cites. Works that stand alone lose their letter; genuine collisions keep the
+ * stored letters when those already tell them apart (so the citation still matches the
+ * filename in the reader), and otherwise get a, b, c… in citation order.
+ */
+export function disambiguationLetters(refs: DisambigRef[]): Map<string, string> {
+  const groups = new Map<string, DisambigRef[]>();
+  for (const ref of refs) {
+    const key = splitYearLetter(ref.intext).base.toLowerCase();
+    const group = groups.get(key);
+    if (group) {
+      group.push(ref);
+    } else {
+      groups.set(key, [ref]);
+    }
+  }
+
+  const out = new Map<string, string>();
+  for (const group of groups.values()) {
+    // Two references to the SAME paper are not a collision.
+    const papers = new Set(group.map((r) => r.filename || r.reference_id));
+    if (papers.size < 2) {
+      for (const ref of group) {
+        out.set(ref.reference_id, "");
+      }
+      continue;
+    }
+    const stored = group.map((r) => splitYearLetter(r.intext).letter);
+    const distinct = new Set(stored);
+    if (stored.every(Boolean) && distinct.size === stored.length) {
+      group.forEach((ref, i) => out.set(ref.reference_id, stored[i]));
+      continue;
+    }
+    group.forEach((ref, i) =>
+      out.set(ref.reference_id, i < 26 ? String.fromCharCode(97 + i) : "")
+    );
+  }
+  return out;
+}
+
 /** The reference_ids (papers) the answer cites, via the passage numbers it used. */
 export function citedReferenceIds(
   text: string,

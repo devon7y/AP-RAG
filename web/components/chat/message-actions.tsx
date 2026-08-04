@@ -2,6 +2,8 @@ import equal from "fast-deep-equal";
 import { memo } from "react";
 import { toast } from "sonner";
 import { useCopyToClipboard } from "usehooks-ts";
+import { answerToPlainText } from "@/lib/aprag/plain-text";
+import type { RagRetrieval } from "@/lib/aprag/types";
 import type { Vote } from "@/lib/db/schema";
 import type { ChatMessage } from "@/lib/types";
 import {
@@ -35,13 +37,26 @@ export function PureMessageActions({
     .join("\n")
     .trim();
 
+  // Copy what the reader is looking at, not the wire format: the raw text still carries
+  // markdown and the model's internal passage numbers ("**1,500 ms** … [17][18]"), which
+  // are meaningless outside this page.
+  const retrieval = (
+    message.parts?.find((part) => part.type === "data-retrieval") as
+      | { data?: RagRetrieval }
+      | undefined
+  )?.data;
+
   const handleCopy = async () => {
     if (!textFromParts) {
       toast.error("There's no text to copy!");
       return;
     }
 
-    await copyToClipboard(textFromParts);
+    await copyToClipboard(
+      message.role === "assistant"
+        ? answerToPlainText(textFromParts, retrieval)
+        : textFromParts
+    );
     toast.success("Copied to clipboard!");
   };
 

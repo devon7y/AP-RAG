@@ -4,8 +4,11 @@ import {
   type CiteRef,
   citedReferenceIds,
   citationsInsideSentence,
+  disambiguationLetters,
   normalizeMath,
   rewriteIntext,
+  setApaLetter,
+  setIntextLetter,
   stripReferencesSection,
 } from "@/lib/aprag/citations";
 import type { RagChunk, RagReference, RagRetrieval } from "@/lib/aprag/types";
@@ -115,9 +118,33 @@ const PurePreviewMessage = ({
   const cited =
     isAssistant && retrieval ? citedReferenceIds(cleanedAnswer, byCiteIndex) : null;
   // Only list references the answer actually cites (matches the CLI).
-  const citedReferences = retrieval
+  const rawCitedReferences = retrieval
     ? retrieval.references.filter((r) => !cited || cited.has(r.reference_id))
     : [];
+
+  // A paper's filename carries a year letter (Chen_Etal_2014b.pdf) so the corpus files
+  // sort unambiguously; it belongs in the citation only when this answer cites two works
+  // that would otherwise read identically. That is decided here, where the cited set is
+  // finally known, and applied to both the reference list and the in-text cites.
+  const letters = disambiguationLetters(rawCitedReferences);
+  const citedReferences = rawCitedReferences.map((r) => {
+    const letter = letters.get(r.reference_id) ?? "";
+    return {
+      ...r,
+      intext: setIntextLetter(r.intext, letter),
+      apa: setApaLetter(r.apa, letter),
+    };
+  });
+  for (const [idx, ref] of byCiteIndex) {
+    byCiteIndex.set(idx, {
+      ...ref,
+      intext: setIntextLetter(ref.intext, letters.get(ref.referenceId) ?? ""),
+    });
+  }
+  // The chunk cards and citation popovers read the same references through context.
+  for (const ref of citedReferences) {
+    refByReferenceId.set(ref.reference_id, ref);
+  }
 
   const hasText = message.parts?.some(
     (part) => part.type === "text" && part.text?.trim().length > 0

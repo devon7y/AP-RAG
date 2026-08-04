@@ -35,6 +35,7 @@ __all__ = [
     "load_drive_map",
     "format_apa7",
     "format_intext",
+    "assign_disambiguation",
     "build_ref_model",
     "rewrite_intext",
     "strip_references_section",
@@ -322,20 +323,61 @@ def _fallback_record(filename: str) -> dict:
 # ── Reference models + answer rewriting ───────────────────────────────────────
 
 
+def assign_disambiguation(records_by_file: dict[str, dict]) -> dict[str, str]:
+    """filename → the year letter each reference should actually show, for ONE list.
+
+    Every same-author-same-year file in the corpus carries a letter in its name
+    (``Chen_Etal_2014b.pdf``) so the PDFs sort unambiguously, and the manifest stamps it
+    onto the record. That letter is a filing device: it means nothing to a reader unless
+    the list in front of them holds two works that would otherwise cite identically. So
+    it is assigned per answer, not per file — a lone Chen 2014 cites as "Chen et al.,
+    2014" even though its file is named ``…2014b.pdf``.
+
+    Where two works do collide, their stored letters are kept if they already tell them
+    apart, so the citation still matches the filename the reader sees in the PDF reader;
+    otherwise letters are assigned a, b, c… by title, as APA does.
+    """
+    groups: dict[str, list[str]] = {}
+    for filename, record in records_by_file.items():
+        key = format_intext({**(record or {}), "disambig": ""}).lower()
+        groups.setdefault(key, []).append(filename)
+
+    letters: dict[str, str] = {}
+    for filenames in groups.values():
+        if len(filenames) < 2:
+            letters[filenames[0]] = ""
+            continue
+        stored = [str((records_by_file[f] or {}).get("disambig") or "") for f in filenames]
+        if all(stored) and len(set(stored)) == len(stored):
+            letters.update(zip(filenames, stored))
+            continue
+        ordered = sorted(filenames, key=lambda f: (
+            _clean_title((records_by_file[f] or {}).get("title")).lower(), f.lower()))
+        for i, f in enumerate(ordered):
+            letters[f] = chr(ord("a") + i) if i < 26 else ""
+    return letters
+
+
 def build_ref_model(reference_id, file_path: str, manifest: dict,
                     hades_base: str = DEFAULT_HADES_BASE,
-                    pages=None, drive_map: dict | None = None) -> dict:
+                    pages=None, drive_map: dict | None = None,
+                    disambig: str | None = None) -> dict:
     """One structured reference: {n, filename, apa, intext, drive_url, hades_path, pages}.
 
     ``pages`` is the list of PDF pages the cited passages came from (empty if
     unknown, e.g. a store ingested before page-tracking). ``drive_map`` (filename →
     Google Drive URL) supplies ``drive_url`` — the preferred fallback when a reader has
     no local copy. ``hades_path`` is empty when ``hades_base`` is falsy (drop hades).
+    ``disambig`` overrides the record's stored year letter — pass the value from
+    :func:`assign_disambiguation` so the letter appears only where it disambiguates
+    something, and ``""`` to drop it entirely.
     """
     filename = _basename(file_path)
     record = manifest.get(filename)
     if not isinstance(record, dict):
         record = _fallback_record(filename)
+    if disambig is not None:
+        record = {**record, "disambig": disambig}
     page_nums = sorted({int(p) for p in (pages or [])
                         if str(p).strip() not in ("", "None")})
     return {
@@ -521,14 +563,25 @@ def render_answer(content: str, references: list[dict], manifest: dict,
     cited_ids = {n for m in re.finditer(_BRACKET, body_src)
                  for n in _NUM_RE.findall(m.group(0))}
 
+    cited = [(str(ref.get("reference_id") or "").strip(), ref.get("file_path") or "")
+             for ref in references or []]
+    cited = [(rid, path) for rid, path in cited if rid and rid in cited_ids]
+
+    # Year letters are decided across the papers this answer actually cites, so a lone
+    # Chen 2014 is "Chen et al., 2014" even though its file is Chen_Etal_2014b.pdf.
+    records = {}
+    for _rid, path in cited:
+        filename = _basename(path)
+        record = manifest.get(filename)
+        records[filename] = record if isinstance(record, dict) else _fallback_record(filename)
+    letters = assign_disambiguation(records)
+
     ref_models: list[dict] = []
     id_to_intext: dict[str, str] = {}
-    for ref in references or []:
-        rid = str(ref.get("reference_id") or "").strip()
-        if not rid or rid not in cited_ids:
-            continue
-        model = build_ref_model(rid, ref.get("file_path") or "", manifest,
-                                hades_base, pages=id_to_pages.get(rid), drive_map=drive_map)
+    for rid, path in cited:
+        model = build_ref_model(rid, path, manifest, hades_base,
+                                pages=id_to_pages.get(rid), drive_map=drive_map,
+                                disambig=letters.get(_basename(path), ""))
         ref_models.append(model)
         id_to_intext[rid] = model["intext"]
 
