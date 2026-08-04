@@ -16,10 +16,15 @@ interface AtlasStore {
   setSelectedPaper: (i: number | null) => void;
 }
 
+/** hdrBoost on a true-HDR canvas; 1.0 everywhere else. Exported so scenes can
+ *  express their own overshoot as an absolute multiplier rather than guessing
+ *  what fraction of this to take. */
+export const HDR_BOOST = 2.2;
+
 export const useAtlasStore = create<AtlasStore>((set) => ({
   canvasMode: "webgl",
   setCanvasMode: (m) =>
-    set({ canvasMode: m, hdrBoost: m === "webgpu-hdr" ? 2.2 : 1.0 }),
+    set({ canvasMode: m, hdrBoost: m === "webgpu-hdr" ? HDR_BOOST : 1.0 }),
   hdrBoost: 1.0,
   selectedChunk: null,
   setSelectedChunk: (i) => set({ selectedChunk: i }),

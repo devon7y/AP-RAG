@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import * as THREE from "three";
+import { HDR_BOOST } from "@/lib/atlas/store";
 
 /**
  * In-scene label glyphs. DOM text composites in SDR and clamps at white, so
@@ -225,9 +226,8 @@ export function disposeLabelGlyph(g: LabelGlyph): void {
 }
 
 /**
- * Label luminance from the canvas' hdrBoost. The gain applies only to the
- * headroom ABOVE 1.0, so an SDR canvas (boost 1) always lands on exactly 1
- * and the glyph can never blow out there.
+ * White-fill multiplier for the labels on a true-HDR canvas — THE brightness
+ * knob. 1.0 is plain SDR white; the beacons run at HDR_BOOST (2.2).
  *
  * Text wants FAR less overshoot than the beacons, for two compounding
  * reasons: a glyph holds its peak value across every pixel of every stroke
@@ -235,12 +235,15 @@ export function disposeLabelGlyph(g: LabelGlyph): void {
  * the glyph is white, whose luminance is roughly triple that of a saturated
  * cluster hue at the same component value. So a label matched to the beacon
  * multiplier reads several times brighter than the beacons it sits among.
- * At the stock boost of 2.2 this lands on ~1.25 — a visible lift into the
- * headroom without the glare.
  */
-const HDR_TEXT_GAIN = 0.2;
+const HDR_TEXT_PEAK = 1.4;
+
+/** Scale HDR_TEXT_PEAK by however much headroom the canvas actually has. The
+ *  interpolation runs on the headroom ABOVE 1.0, so an SDR canvas (boost 1)
+ *  always lands on exactly 1 and the glyph can never blow out there. */
 export function labelBoost(hdrBoost: number): number {
-  return 1 + Math.max(hdrBoost - 1, 0) * HDR_TEXT_GAIN;
+  const headroom = Math.max(hdrBoost - 1, 0) / (HDR_BOOST - 1);
+  return 1 + headroom * (HDR_TEXT_PEAK - 1);
 }
 
 /** Scale the sprite so the glyph occupies its CSS-pixel box on screen,
