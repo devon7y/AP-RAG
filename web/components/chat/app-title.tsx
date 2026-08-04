@@ -6,13 +6,26 @@ import { cn, fetcher } from "@/lib/utils";
 // Header title — "AP-RAG — Academic Paper Retrieval-Augmented Generation" with each
 // acronym letter bold. The expansion collapses on small screens. `showBackend` hides the
 // paper-count + status badges (author chats drop them to make room for the persona label).
-export function AppTitle({ showBackend = true }: { showBackend?: boolean }) {
+export function AppTitle({
+  showBackend = true,
+  showExpansion = true,
+}: {
+  showBackend?: boolean;
+  /** The acronym's expansion is decoration; it goes first when width is scarce
+   *  (the PDF reader takes half the header). */
+  showExpansion?: boolean;
+}) {
   return (
     <div className="flex min-w-0 items-center gap-2">
       <span className="shrink-0 font-semibold text-sm tracking-tight">
         AP-RAG
       </span>
-      <span className="hidden truncate font-light text-foreground/75 text-sm md:inline">
+      <span
+        className={cn(
+          "truncate font-light text-foreground/75 text-sm",
+          showExpansion ? "hidden md:inline" : "hidden"
+        )}
+      >
         <span className="text-foreground/45">— </span>
         <b className="font-semibold text-foreground">A</b>cademic{" "}
         <b className="font-semibold text-foreground">P</b>aper{" "}

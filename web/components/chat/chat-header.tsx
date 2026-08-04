@@ -48,7 +48,10 @@ function PureChatHeader({
         <PanelLeftIcon className="size-4" />
       </Button>
 
-      <AppTitle showBackend={!(isAuthorChat || isDigestChat)} />
+      <AppTitle
+        showBackend={!(isAuthorChat || isDigestChat)}
+        showExpansion={!readerOpen}
+      />
 
       {/* Persona / digest pill sits centered between the title and the right controls. */}
       <div className="flex flex-1 justify-center">

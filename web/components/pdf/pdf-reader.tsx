@@ -284,21 +284,32 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage, active]);
 
+  // Pages move whenever the pane is resized or zoomed, because every page's offset is a
+  // multiple of its height. Holding scrollTop still would slide the reader onto a
+  // different page mid-drag, so the position is re-anchored on the viewport centre
+  // whenever the page pitch changes. (This covers zoom too, hence applyZoom below only
+  // sets the factor.)
+  const previousStride = useRef(0);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const previous = previousStride.current;
+    previousStride.current = strideY;
+    if (!(el && previous > 0 && strideY > 0)) {
+      return;
+    }
+    if (Math.abs(strideY - previous) < 0.01) {
+      return;
+    }
+    const centre = el.scrollTop + el.clientHeight / 2;
+    el.scrollTop = Math.max(
+      0,
+      (centre * strideY) / previous - el.clientHeight / 2
+    );
+  }, [strideY]);
+
   // ── Trackpad pinch zooms the PDF, not the page ────────────────────────────
   const applyZoom = useCallback((factor: number) => {
-    setZoom((z) => {
-      const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor));
-      const el = scrollRef.current;
-      if (el && next !== z) {
-        // Keep roughly the same content under the viewport centre.
-        const ratio = next / z;
-        const centre = el.scrollTop + el.clientHeight / 2;
-        requestAnimationFrame(() => {
-          el.scrollTop = centre * ratio - el.clientHeight / 2;
-        });
-      }
-      return next;
-    });
+    setZoom((z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor)));
   }, []);
 
   useEffect(() => {
