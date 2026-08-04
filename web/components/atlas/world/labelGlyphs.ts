@@ -39,21 +39,31 @@ export interface LabelGlyph {
 
 /* ---- display font ------------------------------------------------------- */
 
-let familyCache: string | null = null;
-
-/** Resolve the atlas display font (--font-display via next/font) for canvas. */
-function displayFontFamily(): string {
-  if (familyCache) return familyCache;
+/** A hidden span carrying the real label styling, so both the font resolution
+ *  and the line breaking come from the browser rather than from canvas
+ *  approximations of it. */
+function withProbe<T>(style: LabelStyle, fn: (probe: HTMLSpanElement) => T): T {
   const host = document.querySelector(".atlas-app") ?? document.body;
   const probe = document.createElement("span");
-  probe.className = "font-display";
-  probe.style.position = "absolute";
-  probe.style.visibility = "hidden";
+  probe.className = "map-label font-display";
+  probe.style.cssText =
+    "position:absolute;left:-9999px;top:0;visibility:hidden;white-space:nowrap;" +
+    `font-size:${style.fontPx}px;letter-spacing:${style.trackingEm ?? 0}em;` +
+    `font-style:${style.italic ? "italic" : "normal"};`;
   host.appendChild(probe);
-  const fam = getComputedStyle(probe).fontFamily || "Georgia, serif";
-  probe.remove();
-  familyCache = fam;
-  return fam;
+  try {
+    return fn(probe);
+  } finally {
+    probe.remove();
+  }
+}
+
+/** Canvas font shorthand matching the DOM label (weight and style included —
+ *  Fraunces is variable, so guessing "400" would measure the wrong face). */
+function canvasFont(probe: HTMLSpanElement, pxSize: number): string {
+  const cs = getComputedStyle(probe);
+  const family = cs.fontFamily || "Georgia, serif";
+  return `${cs.fontStyle || "normal"} ${cs.fontWeight || "400"} ${pxSize}px ${family}`;
 }
 
 /** Flips once when document.fonts settles, so glyphs re-rasterize with the
@@ -85,12 +95,40 @@ export function makeLabelGlyph(text: string, style: LabelStyle): LabelGlyph {
   const { fontPx, trackingEm = 0, italic = false, maxWidth } = style;
   // supersample over DPR so the constant-screen-size sprite stays crisp
   const ss = Math.min(window.devicePixelRatio || 1, 2) * 2;
-  const font = `${italic ? "italic " : ""}${fontPx * ss}px ${displayFontFamily()}`;
+
+  // Break the text exactly where the browser would in the label's own lane —
+  // canvas metrics run a little narrow against a variable font with optical
+  // sizing, which silently collapsed every wrapped summit name onto one line.
+  const { lines, domWidth, font } = withProbe(style, (probe) => {
+    const measure = (s: string) => {
+      probe.textContent = s;
+      return probe.getBoundingClientRect().width;
+    };
+    const out: string[] = [];
+    if (maxWidth) {
+      let cur = "";
+      for (const word of text.split(/\s+/)) {
+        const trial = cur ? `${cur} ${word}` : word;
+        if (cur && measure(trial) > maxWidth) {
+          out.push(cur);
+          cur = word;
+        } else cur = trial;
+      }
+      if (cur) out.push(cur);
+    } else out.push(text);
+    let w = 0;
+    for (const l of out) w = Math.max(w, measure(l));
+    return { lines: out, domWidth: w, font: canvasFont(probe, fontPx * ss) };
+  });
 
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d")!;
   const setup = () => {
     ctx.font = font;
+    // an unparseable shorthand leaves the context on 10px sans-serif, which
+    // would silently render every label as a tiny scaled-up smudge
+    if (!ctx.font.includes(`${fontPx * ss}px`))
+      ctx.font = `${italic ? "italic " : ""}${fontPx * ss}px Georgia, serif`;
     (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing =
       `${trackingEm * fontPx * ss}px`;
     ctx.textAlign = "center";
@@ -99,22 +137,10 @@ export function makeLabelGlyph(text: string, style: LabelStyle): LabelGlyph {
   };
   setup();
 
-  const lines: string[] = [];
-  if (maxWidth) {
-    const limit = maxWidth * ss;
-    let cur = "";
-    for (const word of text.split(/\s+/)) {
-      const trial = cur ? `${cur} ${word}` : word;
-      if (cur && ctx.measureText(trial).width > limit) {
-        lines.push(cur);
-        cur = word;
-      } else cur = trial;
-    }
-    if (cur) lines.push(cur);
-  } else lines.push(text);
-
   const lineH = fontPx * LINE_HEIGHT * ss;
-  let textW = 0;
+  // the canvas may still draw a hair wider than the DOM measured; size the
+  // texture to whichever is larger so no glyph is clipped
+  let textW = domWidth * ss;
   for (const l of lines) textW = Math.max(textW, ctx.measureText(l).width);
   canvas.width = Math.ceil(textW + PAD * 2 * ss);
   canvas.height = Math.ceil(lines.length * lineH + PAD * 2 * ss);
@@ -168,13 +194,15 @@ export function disposeLabelGlyph(g: LabelGlyph): void {
   g.texture.dispose();
 }
 
-/** Label luminance from the canvas' hdrBoost. Text gets extra gain over the
- *  shared boost so the thin glyphs read as bright as the fat emissive beacons
- *  (equal multipliers leave small text looking dimmer); on SDR canvases
- *  (boost 1) this is exactly 1 and the glyph never blows out. */
-const HDR_TEXT_GAIN = 2.0;
+/** Label luminance from the canvas' hdrBoost. The gain applies only to the
+ *  headroom ABOVE 1.0, so an SDR canvas (boost 1) always lands on exactly 1
+ *  and the glyph can never blow out there. Text wants far less overshoot than
+ *  the beacons: a solid white glyph carries much more area at full luminance
+ *  than a beacon's falloff does, so matching their multiplier made the labels
+ *  glare. At the stock boost of 2.2 this lands on ~1.7. */
+const HDR_TEXT_GAIN = 0.6;
 export function labelBoost(hdrBoost: number): number {
-  return 1 + (hdrBoost - 1) * HDR_TEXT_GAIN;
+  return 1 + Math.max(hdrBoost - 1, 0) * HDR_TEXT_GAIN;
 }
 
 /** Scale the sprite so the glyph occupies its CSS-pixel box on screen,
