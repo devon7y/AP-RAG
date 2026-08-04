@@ -652,16 +652,32 @@ export function deriveWorld(
   const sortedDates = Float32Array.from(
     Array.from(chunkDate).filter((d) => d >= AGE_FLOOR),
   ).sort();
-  const ageT = (d: number): number => {
-    if (d <= AGE_FLOOR || sortedDates.length === 0) return 0;
+  // Pre-floor work gets its OWN compressed band rather than one flat value.
+  // Clamping everything <= AGE_FLOOR to a single red made half of a long-running
+  // region identically coloured — a 1911 paper and a 1985 one were the same
+  // pixel, so regions with deep histories rendered as flat blocks and lost the
+  // era structure they actually have on the map.
+  const oldDates = Float32Array.from(
+    Array.from(chunkDate).filter((d) => d > 0 && d < AGE_FLOOR),
+  ).sort();
+  const OLD_BAND = 0.1; // share of the ramp reserved for everything pre-floor
+
+  const rankIn = (arr: Float32Array, d: number): number => {
+    if (arr.length === 0) return 0;
     let lo = 0;
-    let hi = sortedDates.length;
+    let hi = arr.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (sortedDates[mid] < d) lo = mid + 1;
+      if (arr[mid] < d) lo = mid + 1;
       else hi = mid;
     }
-    return lo / sortedDates.length;
+    return lo / arr.length;
+  };
+
+  const ageT = (d: number): number => {
+    if (d <= 0) return 0;
+    if (d < AGE_FLOOR) return rankIn(oldDates, d) * OLD_BAND;
+    return OLD_BAND + (1 - OLD_BAND) * rankIn(sortedDates, d);
   };
 
   // Terrain height is PAPER density. Splatting passages let one long document
@@ -676,6 +692,7 @@ export function deriveWorld(
     paperY[i] = p.centroid[1];
     paperDate[i] = paperMeta?.frac[i] || (p.year > 0 ? p.year + 0.5 : 0);
   });
+
   const eras = buildEraFields(paperX, paperY, paperDate, yearMin, yearMax);
   const paperAgeRank = new Float32Array(papers.length);
   for (let i = 0; i < papers.length; i++) {
