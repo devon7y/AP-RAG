@@ -23,6 +23,10 @@ import { Textarea } from "../ui/textarea";
 
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
+// Month pickers have to fit their longest value — "December 2026" — alongside the native
+// picker icon, inside the input's own padding. w-36 cut the year off mid-digit.
+const MONTH_INPUT_CLASS = "h-8 w-44 text-sm";
+
 type DigestRow = {
   chatId: string;
   title: string;
@@ -224,7 +228,7 @@ export function DigestLibrary() {
               <div className="flex flex-wrap items-center gap-2">
                 <Input
                   aria-label="From month"
-                  className="h-8 w-36 text-sm"
+                  className={MONTH_INPUT_CLASS}
                   onChange={(e) => setCustomFrom(e.target.value)}
                   type="month"
                   value={customFrom}
@@ -235,7 +239,7 @@ export function DigestLibrary() {
                 ) : (
                   <Input
                     aria-label="To month"
-                    className="h-8 w-36 text-sm"
+                    className={MONTH_INPUT_CLASS}
                     onChange={(e) => setCustomTo(e.target.value)}
                     type="month"
                     value={customTo}

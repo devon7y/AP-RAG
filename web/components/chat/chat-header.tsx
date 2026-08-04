@@ -53,8 +53,14 @@ function PureChatHeader({
         showExpansion={!readerOpen}
       />
 
-      {/* Persona / digest pill sits centered between the title and the right controls. */}
-      <div className="flex flex-1 justify-center">
+      {/* Persona / digest pill sits centered between the title and the right controls.
+          `min-w-0` is load-bearing: without it this wrapper's automatic minimum size is
+          the pill's min-content width (the topic is nowrap), so it refuses to shrink —
+          and since `flex-1` also gives it a zero basis, it can't shrink either, leaving
+          the title to absorb every pixel. The title would collapse under the pill while
+          its shrink-0 "AP-RAG" kept its width, which is how the two came to overlap once
+          the reader took half the header. */}
+      <div className="flex min-w-0 flex-1 justify-center">
         <PersonaIndicator />
         <DigestIndicator />
       </div>

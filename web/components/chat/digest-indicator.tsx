@@ -47,13 +47,20 @@ export function DigestIndicator() {
   if (!digest) {
     return null;
   }
+  const windowLabel = formatDigestWindow(digest);
   return (
-    <div className="flex min-w-0 items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 py-1 pr-2.5 pl-2 text-xs">
+    // The topic gives way first (it is the long part); `overflow-hidden` keeps the
+    // shrink-0 label and window from spilling over the title if the header gets narrower
+    // than even that. Truncation hides the topic, so the full text lives in the tooltip.
+    <div
+      className="flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-full border border-primary/30 bg-primary/10 py-1 pr-2.5 pl-2 text-xs"
+      title={`Digest: ${digest.topic} · ${windowLabel}`}
+    >
       <CalendarClockIcon className="size-3.5 shrink-0 text-primary/80" />
       <span className="shrink-0 font-semibold text-foreground">Digest:</span>
       <span className="truncate font-medium text-foreground">{digest.topic}</span>
       <span className="hidden shrink-0 text-muted-foreground sm:inline">
-        · {formatDigestWindow(digest)}
+        · {windowLabel}
       </span>
     </div>
   );
