@@ -65,7 +65,7 @@ export function parsePapersQuery(sp: ParamsLike): PapersQuery {
       filters[k] = values;
     }
   }
-  for (const k of ["year_from", "year_to"] as const) {
+  for (const k of ["year", "year_from", "year_to"] as const) {
     const v = Number(sp.get(k));
     if (Number.isInteger(v) && v > 0) {
       filters[k] = v;
@@ -96,6 +96,9 @@ function appendFilters(sp: URLSearchParams, filters: RagFilters | null): void {
     for (const v of filters[k] ?? []) {
       sp.append(k, v);
     }
+  }
+  if (filters.year != null) {
+    sp.set("year", String(filters.year));
   }
   if (filters.year_from != null) {
     sp.set("year_from", String(filters.year_from));
@@ -158,10 +161,39 @@ export function countActiveFilters(filters: RagFilters | null): number {
   for (const k of LIST_FILTER_KEYS) {
     n += (filters[k] ?? []).length;
   }
+  if (filters.year != null) {
+    n += 1;
+  }
   if (filters.year_from != null || filters.year_to != null) {
     n += 1;
   }
   return n;
+}
+
+// Toggle one value of a list filter dimension (adding is what the table's chips do;
+// clicking an already-active value removes it again).
+export function toggleListFilter(
+  filters: RagFilters | null,
+  dim: ListFilterKey,
+  value: string
+): RagFilters | null {
+  const { [dim]: current = [], ...rest } = filters ?? {};
+  const after = current.includes(value)
+    ? current.filter((v) => v !== value)
+    : [...current, value];
+  const next: RagFilters =
+    after.length > 0 ? { ...rest, [dim]: after } : (rest as RagFilters);
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+// Same toggle for the single-year filter (the Year column's chips).
+export function toggleYearFilter(
+  filters: RagFilters | null,
+  year: number
+): RagFilters | null {
+  const { year: current, ...rest } = filters ?? {};
+  const next: RagFilters = current === year ? rest : { ...rest, year };
+  return Object.keys(next).length > 0 ? next : null;
 }
 
 // ── Display helpers ───────────────────────────────────────────────────────────
@@ -170,6 +202,11 @@ export function displayTitle(
   row: Pick<PaperRow, "title" | "filename">
 ): string {
   return row.title.trim() || row.filename.replace(/\.pdf$/i, "");
+}
+
+// "Chris Westbury" from a bib author record (either part may be missing).
+export function authorName(a: PaperAuthor): string {
+  return [a.given, a.family].filter(Boolean).join(" ").trim();
 }
 
 export function fullAuthorList(authors: PaperAuthor[]): string {

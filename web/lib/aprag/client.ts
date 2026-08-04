@@ -510,6 +510,36 @@ export function searchGraphEntities(params: {
   return graphGet("/graph/entities", sp);
 }
 
+// POST /graph/entities_by_file — the top entities of several papers at once, keyed by
+// filename. One round trip fills the Papers Database's knowledge-graph column for a
+// whole page (per-paper lookups are label scans, so the server caches them).
+export type GraphFileEntity = { name: string; type: string; degree: number };
+
+export async function getGraphEntitiesByFile(params: {
+  files: string[];
+  limit?: number;
+}): Promise<{ entities: Record<string, GraphFileEntity[]> }> {
+  const res = await fetch(`${BASE_URL}/graph/entities_by_file`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ files: params.files, limit: params.limit ?? 8 }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) {
+    throw Object.assign(
+      new Error(
+        `AP-RAG /graph/entities_by_file failed: ${res.status} ${await safeText(res)}`
+      ),
+      { status: res.status }
+    );
+  }
+  const json = (await res.json()) as {
+    entities?: Record<string, GraphFileEntity[]>;
+  };
+  return { entities: json.entities ?? {} };
+}
+
 export function getGraphEntity(name: string): Promise<GraphEntityDetail> {
   return graphGet<GraphEntityDetail>(
     "/graph/entity",

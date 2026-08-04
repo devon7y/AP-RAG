@@ -7,10 +7,10 @@ import { toast } from "sonner";
 import useSWR from "swr";
 import { useLocalStorage } from "usehooks-ts";
 import { SidebarToggle } from "@/components/chat/sidebar-toggle";
+import type { GraphFileEntity } from "@/lib/aprag/client";
 import type {
   PaperListResponse,
   PaperRow,
-  RagFilters,
   RankedPaper,
 } from "@/lib/aprag/types";
 import { Button } from "../ui/button";
@@ -31,6 +31,8 @@ import {
   papersQueryString,
   parsePapersQuery,
   postJson,
+  toggleListFilter,
+  toggleYearFilter,
 } from "./lib";
 import { PaperDrawer } from "./paper-drawer";
 import {
@@ -52,16 +54,25 @@ export function PapersBrowser() {
   const searchParams = useSearchParams();
   const query = useMemo(() => parsePapersQuery(searchParams), [searchParams]);
 
+  // View changes push a history entry, so the browser's back/forward arrows step back
+  // through filters, sorts, and pages rather than leaving the Papers Database. The one
+  // exception is the debounced search box, which replaces (a history entry per typed
+  // word would make Back useless).
   const navigate = useCallback(
-    (next: PapersQuery) => {
+    (next: PapersQuery, opts?: { replace?: boolean }) => {
       const qs = papersQueryString(next);
-      router.replace(`${BASE}/papers${qs ? `?${qs}` : ""}`, { scroll: false });
+      const href = `${BASE}/papers${qs ? `?${qs}` : ""}`;
+      if (opts?.replace) {
+        router.replace(href, { scroll: false });
+      } else {
+        router.push(href, { scroll: false });
+      }
     },
     [router]
   );
   // Any change other than explicit paging returns to the first page.
-  const update = (patch: Partial<PapersQuery>) =>
-    navigate({ ...query, page: 0, ...patch });
+  const update = (patch: Partial<PapersQuery>, opts?: { replace?: boolean }) =>
+    navigate({ ...query, page: 0, ...patch }, opts);
 
   // Browse tier: server-paginated listing.
   const browseKey =
@@ -134,17 +145,15 @@ export function PapersBrowser() {
     update({ sort: key, order: numeric ? "desc" : "asc" });
   };
 
-  const onAddFilter = (dim: ListFilterKey, value: string) => {
-    const current = query.filters?.[dim] ?? [];
-    if (current.includes(value)) {
-      return;
-    }
-    const filters: RagFilters = {
-      ...(query.filters ?? {}),
-      [dim]: [...current, value],
-    };
-    update({ filters });
-    setOpenFilename(null); // adding from the drawer should reveal the filtered table
+  // Clicking a chip (author, keyword, subject, affiliation) toggles that filter.
+  const onToggleFilter = (dim: ListFilterKey, value: string) => {
+    update({ filters: toggleListFilter(query.filters, dim, value) });
+    setOpenFilename(null); // filtering from the drawer should reveal the filtered table
+  };
+
+  const onToggleYear = (year: number) => {
+    update({ filters: toggleYearFilter(query.filters, year) });
+    setOpenFilename(null);
   };
 
   const onExport = async (format: "csv" | "bibtex") => {
@@ -195,6 +204,23 @@ export function PapersBrowser() {
       ? similarLoading
       : listLoading;
 
+  // Knowledge-graph column: one batched lookup for the page's papers, fired only when
+  // the column is on (each paper's entities cost a graph scan; the server caches them).
+  const graphFiles = visible.graph ? rows.map((r) => r.filename) : [];
+  const { data: graph } = useSWR<{
+    entities: Record<string, GraphFileEntity[]>;
+  }>(
+    graphFiles.length > 0
+      ? [`${BASE}/api/graph/entities-by-file`, graphFiles.join("|")]
+      : null,
+    ([url]: [string, string]) =>
+      postJson<{ entities: Record<string, GraphFileEntity[]> }>(url, {
+        files: graphFiles,
+        limit: 8,
+      }),
+    { keepPreviousData: false, revalidateOnFocus: false }
+  );
+
   return (
     <div className="flex h-dvh min-w-0 flex-col bg-background">
       <header className="flex items-center gap-2 px-3 py-2 md:px-4">
@@ -223,7 +249,7 @@ export function PapersBrowser() {
         }
         onExport={onExport}
         onFiltersChange={(filters) => update({ filters })}
-        onQChange={(q) => update({ q })}
+        onQChange={(q) => update({ q }, { replace: true })}
         onToggleColumn={(id) =>
           setStoredColumns((prev) => ({ ...prev, [id]: !visible[id] }))
         }
@@ -241,13 +267,16 @@ export function PapersBrowser() {
 
       <PapersTable
         deepMode={rankedMode}
+        filters={query.filters}
+        graphEntities={graph?.entities}
         isLoading={isLoading}
-        onAddFilter={onAddFilter}
         onOpen={setOpenFilename}
         onResizeColumn={(id, px) =>
           setColWidths((prev) => ({ ...prev, [id]: px }))
         }
         onSort={onSort}
+        onToggleFilter={onToggleFilter}
+        onToggleYear={onToggleYear}
         order={query.order}
         rows={rows}
         sort={query.sort}
@@ -322,7 +351,7 @@ export function PapersBrowser() {
 
       <PaperDrawer
         filename={openFilename}
-        onAddFilter={onAddFilter}
+        onAddFilter={onToggleFilter}
         onClose={() => setOpenFilename(null)}
         onOpenPaper={setOpenFilename}
       />

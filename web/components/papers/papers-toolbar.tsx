@@ -31,6 +31,7 @@ import {
   FILTER_LABEL,
   LIST_FILTER_KEYS,
   type ListFilterKey,
+  toggleYearFilter,
 } from "./lib";
 import { COLUMNS, type ColumnId } from "./papers-table";
 
@@ -407,6 +408,14 @@ function FilterChips({
         },
       });
     }
+  }
+  if (filters?.year != null) {
+    chips.push({
+      id: "year",
+      label: `Year: ${filters.year}`,
+      onRemove: () =>
+        onFiltersChange(toggleYearFilter(filters, filters.year ?? 0)),
+    });
   }
   if (filters?.year_from != null || filters?.year_to != null) {
     chips.push({

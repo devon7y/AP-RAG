@@ -1372,6 +1372,91 @@ async def graph_entities(
     }
 
 
+class GraphFilesRequest(BaseModel):
+    """The graph entities extracted from each of several papers (one round trip)."""
+    files: list[str]
+    limit: int = 8  # entities per paper
+
+
+#: Per-paper entity cache for /graph/entities_by_file. The Papers Database asks for a
+#: whole page of rows at once, and each lookup is a label scan (file_path is not
+#: indexed), so caching is what makes paging back and forth cheap.
+_KG_FILE_ENTS: dict[str, list] = {}
+KG_FILE_ENTS_TOP = 12          # entities fetched (and cached) per paper
+KG_FILE_ENTS_CONCURRENCY = 8   # simultaneous per-paper lookups
+KG_FILE_ENTS_MAX_FILES = 250   # per request
+KG_FILE_ENTS_CACHE_MAX = 50_000
+
+
+@app.post("/graph/entities_by_file", dependencies=[Depends(require_api_key)])
+async def graph_entities_by_file(req: GraphFilesRequest):
+    """The top entities extracted from each of the given papers, keyed by filename.
+
+    The per-paper equivalent of /graph/entities?file=…, batched so the Papers Database
+    can fill a knowledge-graph column for a whole page in one request. Missing/unknown
+    papers simply come back with an empty list."""
+    if _rag is None:
+        raise HTTPException(status_code=503, detail="RAG not initialized")
+    backend, store = _kg_store()
+
+    names = []
+    seen = set()
+    for f in (req.files or [])[:KG_FILE_ENTS_MAX_FILES]:
+        base = apa._basename(str(f or ""))
+        if base and base not in seen:
+            seen.add(base)
+            names.append(base)
+
+    todo = [n for n in names if n not in _KG_FILE_ENTS]
+    _t0 = time.perf_counter()
+
+    if backend == "networkx":
+        index = _kg_index()
+        if _KG["file_map"] is None:
+            _KG["file_map"] = kg.build_file_map(index, store._graph)
+        for base in todo:
+            hits = set(_KG["file_map"].get(base.lower(), []))
+            _total, page = kg.search_entities(index, names=hits, limit=KG_FILE_ENTS_TOP)
+            _KG_FILE_ENTS[base] = [
+                {k: s[k] for k in ("name", "type", "degree")}
+                for s in (kg.entity_summary(store._graph, r) for r in page)
+            ]
+    elif todo:
+        label = _kg_label(store)
+        sem = asyncio.Semaphore(KG_FILE_ENTS_CONCURRENCY)
+
+        async def one(base: str) -> None:
+            async with sem:
+                try:
+                    rows = await _neo4j(
+                        store,
+                        f"MATCH (n:`{label}`) WHERE n.file_path CONTAINS $f "
+                        "RETURN n.entity_id AS id, n.entity_type AS type, "
+                        "COUNT{(n)--()} AS degree "
+                        "ORDER BY degree DESC LIMIT $lim",
+                        f=base, lim=KG_FILE_ENTS_TOP)
+                except Exception as exc:  # one bad paper must not fail the page
+                    print(f"kg entities_by_file {base!r} failed ({exc!r})", flush=True)
+                    return
+                _KG_FILE_ENTS[base] = [
+                    {"name": r.get("id") or "",
+                     "type": kg.clean_type(r.get("type")) or "unknown",
+                     "degree": int(r.get("degree") or 0)}
+                    for r in rows if r.get("id")
+                ]
+
+        await asyncio.gather(*(one(b) for b in todo))
+
+    if len(_KG_FILE_ENTS) > KG_FILE_ENTS_CACHE_MAX:
+        _KG_FILE_ENTS.clear()  # crude but bounded; refills a page at a time
+
+    if todo:
+        print(f"[TIMING] kg entities_by_file {time.perf_counter()-_t0:.2f}s "
+              f"({len(todo)} uncached of {len(names)})", flush=True)
+    per = max(1, min(int(req.limit or 8), KG_FILE_ENTS_TOP))
+    return {"entities": {n: _KG_FILE_ENTS.get(n, [])[:per] for n in names}}
+
+
 @app.get("/graph/entity", dependencies=[Depends(require_api_key)])
 async def graph_entity(name: str):
     """One entity's full card: consolidated description, strongest connections, and

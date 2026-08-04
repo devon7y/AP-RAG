@@ -256,18 +256,22 @@ def rank_papers(chunks: list[dict], manifest: dict, hades_base: str,
 #: Sort dimensions accepted by ``list_papers`` (anything else falls back to "year").
 LIST_SORT_KEYS = ("title", "first_author", "year", "date", "journal")
 
-#: Manifest fields carried on a slim table row (abstract/affiliations/editors/flags
-#: stay in the detail view — the abstract alone would triple the page payload).
+#: Manifest fields carried on a slim table row (abstract/editors/flags stay in the
+#: detail view — the abstract alone would triple the page payload). Affiliations ride
+#: along because the Papers Database shows them as a (filterable) column.
 _SLIM_FIELDS = ("title", "authors", "year", "date", "date_precision",
                 "container_title", "volume", "issue", "pages", "doi",
-                "type", "publisher", "keywords", "subjects", "source")
+                "type", "publisher", "keywords", "subjects", "affiliations", "source")
+
+#: Slim fields that are lists (their empty value is [] rather than "").
+_SLIM_LIST_FIELDS = ("authors", "keywords", "subjects", "affiliations")
 
 
 def slim_paper_row(filename: str, record: dict) -> dict:
     """One table row for ``/papers`` (the caller adds apa/intext/drive_url)."""
     row = {"filename": filename}
     for f in _SLIM_FIELDS:
-        row[f] = record.get(f) or ("" if f not in ("authors", "keywords", "subjects") else [])
+        row[f] = record.get(f) or ([] if f in _SLIM_LIST_FIELDS else "")
     return row
 
 

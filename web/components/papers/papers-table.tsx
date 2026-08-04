@@ -6,12 +6,20 @@ import {
   ArrowUpIcon,
   ExternalLinkIcon,
 } from "lucide-react";
+import Link from "next/link";
 import type React from "react";
-import type { PaperRow, RankedPaper } from "@/lib/aprag/types";
+import type { GraphFileEntity } from "@/lib/aprag/client";
+import type {
+  PaperAuthor,
+  PaperRow,
+  RagFilters,
+  RankedPaper,
+} from "@/lib/aprag/types";
 import { cn } from "@/lib/utils";
 import { Badge } from "../ui/badge";
+import { Skeleton } from "../ui/skeleton";
 import {
-  compactAuthors,
+  authorName,
   displayTitle,
   fullAuthorList,
   type ListFilterKey,
@@ -36,6 +44,8 @@ export type ColumnId =
   | "publisher"
   | "keywords"
   | "subjects"
+  | "affiliations"
+  | "graph"
   | "source";
 
 export const COLUMNS: {
@@ -50,16 +60,16 @@ export const COLUMNS: {
     label: "Title",
     sort: "title",
     defaultVisible: true,
-    width: 340,
+    width: 510,
   },
   {
     id: "authors",
     label: "Authors",
     sort: "first_author",
     defaultVisible: true,
-    width: 150,
+    width: 260,
   },
-  { id: "year", label: "Year", sort: "year", defaultVisible: true, width: 64 },
+  { id: "year", label: "Year", sort: "year", defaultVisible: true, width: 72 },
   {
     id: "date",
     label: "Date",
@@ -80,10 +90,20 @@ export const COLUMNS: {
   { id: "publisher", label: "Publisher", defaultVisible: false, width: 160 },
   { id: "keywords", label: "Keywords", defaultVisible: false, width: 240 },
   { id: "subjects", label: "Subjects", defaultVisible: false, width: 240 },
+  {
+    id: "affiliations",
+    label: "Affiliations",
+    defaultVisible: true,
+    width: 260,
+  },
+  // On by default, but the priciest column: each paper's entities cost a graph lookup,
+  // so turning it off in the Columns menu also stops the per-page batch request.
+  { id: "graph", label: "Knowledge graph", defaultVisible: true, width: 280 },
   { id: "source", label: "Source", defaultVisible: false, width: 90 },
 ];
 
 const MIN_COL_WIDTH = 56;
+const MATCH_COL_WIDTH = 80; // the deep-search "Match" column (not user-resizable)
 
 export function defaultColumnVisibility(): Record<ColumnId, boolean> {
   return Object.fromEntries(
@@ -91,40 +111,68 @@ export function defaultColumnVisibility(): Record<ColumnId, boolean> {
   ) as Record<ColumnId, boolean>;
 }
 
+// One clickable chip that toggles a filter. Chips never open the row drawer (they stop
+// propagation) — hover:bg-muted-foreground/30 rather than accent, which is ~invisible
+// against the background in light mode.
+function FilterChip({
+  label,
+  title,
+  active,
+  onClick,
+}: {
+  label: string;
+  title: string;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Badge
+      asChild
+      className={cn(
+        "max-w-full cursor-pointer font-normal transition-colors hover:border-muted-foreground/50 hover:bg-muted-foreground/30",
+        active && "border-primary/50 bg-primary/15"
+      )}
+      variant="outline"
+    >
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick();
+        }}
+        title={title}
+        type="button"
+      >
+        <span className="truncate">{label}</span>
+      </button>
+    </Badge>
+  );
+}
+
 function ChipList({
   values,
   dim,
-  onAddFilter,
+  active,
+  onToggleFilter,
 }: {
   values: string[];
   dim: ListFilterKey;
-  onAddFilter: (dim: ListFilterKey, value: string) => void;
+  active: RagFilters | null;
+  onToggleFilter: (dim: ListFilterKey, value: string) => void;
 }) {
   if (values.length === 0) {
     return null;
   }
+  const on = active?.[dim] ?? [];
   return (
     <span className="flex flex-wrap gap-1">
       {values.map((v) => (
-        <Badge
-          asChild
-          // hover:bg-muted-foreground/30 (not accent — accent is ~invisible against the
-          // background in light mode): a clearly visible lighten/darken in both themes.
-          className="max-w-[14rem] cursor-pointer font-normal transition-colors hover:border-muted-foreground/50 hover:bg-muted-foreground/30"
+        <FilterChip
+          active={on.includes(v)}
           key={v}
-          variant="outline"
-        >
-          <button
-            onClick={(e) => {
-              e.stopPropagation(); // add a filter without opening the row drawer
-              onAddFilter(dim, v);
-            }}
-            title={`Filter by ${v}`}
-            type="button"
-          >
-            <span className="truncate">{v}</span>
-          </button>
-        </Badge>
+          label={v}
+          onClick={() => onToggleFilter(dim, v)}
+          title={`Filter by ${v}`}
+        />
       ))}
     </span>
   );
@@ -151,13 +199,15 @@ function HeaderCell({
 }) {
   // Window-level listeners (not element capture): the header cell re-renders on every
   // width update, so listeners must outlive it; window always sees the drag through.
-  const startResize = (e: React.PointerEvent<HTMLButtonElement>) => {
+  const startResize = (e: React.PointerEvent<HTMLElement>) => {
     e.preventDefault();
     e.stopPropagation();
     const startX = e.clientX;
     const startWidth = width;
     const prevCursor = document.body.style.cursor;
+    const prevSelect = document.body.style.userSelect;
     document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
     const move = (ev: PointerEvent) => {
       onResize(
         columnId,
@@ -166,6 +216,7 @@ function HeaderCell({
     };
     const up = () => {
       document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevSelect;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
@@ -175,7 +226,9 @@ function HeaderCell({
     window.addEventListener("pointercancel", up);
   };
 
-  let sortControl: React.ReactNode = label;
+  let sortControl: React.ReactNode = (
+    <span className="block truncate">{label}</span>
+  );
   if (sortKey) {
     const isActive = activeSort === sortKey;
     let Icon = ArrowUpDownIcon;
@@ -199,13 +252,15 @@ function HeaderCell({
 
   return (
     <th
-      className="relative overflow-hidden px-3 py-2 text-left font-medium"
-      style={{ width }}
+      className="relative px-3 py-2 text-left font-medium"
+      style={{ width, minWidth: width, maxWidth: width }}
     >
       {sortControl}
+      {/* The grab handle straddles the column edge (translate-x-1/2) so it is reachable
+          from either side, and sits above the sticky header's stacking context. */}
       <button
         aria-label={`Resize ${label} column`}
-        className="absolute inset-y-0 right-0 w-1.5 cursor-col-resize touch-none border-0 bg-transparent p-0 hover:bg-primary/30 active:bg-primary/40"
+        className="absolute inset-y-0 right-0 z-20 w-3 translate-x-1/2 cursor-col-resize touch-none select-none border-0 bg-transparent p-0 hover:bg-primary/30 active:bg-primary/40"
         onClick={(e) => e.stopPropagation()}
         onPointerDown={startResize}
         type="button"
@@ -223,7 +278,10 @@ export function PapersTable({
   onSort,
   onResizeColumn,
   onOpen,
-  onAddFilter,
+  onToggleFilter,
+  onToggleYear,
+  filters,
+  graphEntities,
   deepMode,
   isLoading,
 }: {
@@ -235,21 +293,35 @@ export function PapersTable({
   onSort: (key: string) => void;
   onResizeColumn: (id: ColumnId, px: number) => void;
   onOpen: (filename: string) => void;
-  onAddFilter: (dim: ListFilterKey, value: string) => void;
+  onToggleFilter: (dim: ListFilterKey, value: string) => void;
+  onToggleYear: (year: number) => void;
+  filters: RagFilters | null;
+  // filename → its knowledge-graph entities (undefined while the batch is in flight).
+  graphEntities: Record<string, GraphFileEntity[]> | undefined;
   deepMode: boolean;
   isLoading: boolean;
 }) {
   const columns = COLUMNS.filter((c) => c.id === "title" || visible[c.id]);
+  // An explicit table width is what makes `table-layout: fixed` honor each column's
+  // width exactly (with width:auto the engine falls back to content-driven sizing, and
+  // dragging a header edge appears to do nothing). The width-less filler column then
+  // absorbs any slack when the columns don't fill the viewport.
+  const totalWidth =
+    columns.reduce((sum, c) => sum + (widths[c.id] ?? c.width), 0) +
+    (deepMode ? MATCH_COL_WIDTH : 0);
 
   return (
     <div className="min-h-0 flex-1 overflow-auto">
-      <table className="min-w-full table-fixed border-collapse text-[13px]">
+      <table
+        className="table-fixed border-collapse text-[13px]"
+        style={{ width: totalWidth, minWidth: "100%" }}
+      >
         <thead className="sticky top-0 z-10 bg-background shadow-[inset_0_-1px_0_0_var(--border)]">
           <tr>
             {deepMode && (
               <th
                 className="px-3 py-2 text-left font-medium"
-                style={{ width: 80 }}
+                style={{ width: MATCH_COL_WIDTH }}
               >
                 Match
               </th>
@@ -300,7 +372,10 @@ export function PapersTable({
                     <Cell
                       column={c.id}
                       deepMode={deepMode}
-                      onAddFilter={onAddFilter}
+                      filters={filters}
+                      graphEntities={graphEntities?.[row.filename]}
+                      onToggleFilter={onToggleFilter}
+                      onToggleYear={onToggleYear}
                       row={row}
                     />
                   </td>
@@ -324,16 +399,77 @@ export function PapersTable({
   );
 }
 
+// The paper's authors that have a printable name, each with a stable React key (a
+// repeated name gets a suffix — the array index alone would reorder badly).
+function namedAuthors(
+  authors: PaperAuthor[] | undefined
+): { key: string; name: string; family: string }[] {
+  const seen = new Map<string, number>();
+  const out: { key: string; name: string; family: string }[] = [];
+  for (const a of authors ?? []) {
+    const name = authorName(a);
+    if (!name) {
+      continue;
+    }
+    const n = (seen.get(name) ?? 0) + 1;
+    seen.set(name, n);
+    out.push({
+      key: n > 1 ? `${name}#${n}` : name,
+      name,
+      family: (a.family ?? "").trim(),
+    });
+  }
+  return out;
+}
+
+// The entities the ingest model extracted from this paper — each opens that entity in
+// the Knowledge Graph explorer. `undefined` means the page's batch lookup is still in
+// flight (per-paper graph lookups are scans, so they load after the table).
+function GraphCell({ entities }: { entities: GraphFileEntity[] | undefined }) {
+  if (entities === undefined) {
+    return <Skeleton className="h-4 w-24" />;
+  }
+  if (entities.length === 0) {
+    return <span className="text-muted-foreground text-xs">—</span>;
+  }
+  return (
+    <span className="flex flex-wrap gap-1">
+      {entities.map((e) => (
+        <Badge
+          asChild
+          className="max-w-full cursor-pointer font-normal transition-colors hover:border-muted-foreground/50 hover:bg-muted-foreground/30"
+          key={e.name}
+          variant="outline"
+        >
+          <Link
+            href={`/graph/entity?name=${encodeURIComponent(e.name)}`}
+            onClick={(event) => event.stopPropagation()} // don't open the row drawer
+            title={`${e.type} · ${e.degree} connections — open in the knowledge graph`}
+          >
+            <span className="truncate">{e.name}</span>
+          </Link>
+        </Badge>
+      ))}
+    </span>
+  );
+}
+
 function Cell({
   row,
   column,
   deepMode,
-  onAddFilter,
+  filters,
+  graphEntities,
+  onToggleFilter,
+  onToggleYear,
 }: {
   row: PaperRow | RankedPaper;
   column: ColumnId;
   deepMode: boolean;
-  onAddFilter: (dim: ListFilterKey, value: string) => void;
+  filters: RagFilters | null;
+  graphEntities: GraphFileEntity[] | undefined;
+  onToggleFilter: (dim: ListFilterKey, value: string) => void;
+  onToggleYear: (year: number) => void;
 }) {
   switch (column) {
     case "title": {
@@ -341,9 +477,10 @@ function Cell({
       const snippet = deepMode ? (row as RankedPaper).snippet : "";
       return (
         <div>
+          {/* Titles wrap in full — never truncated, however many lines they take. */}
           <div
             className={cn(
-              "line-clamp-2 font-medium",
+              "whitespace-normal break-words font-medium",
               !row.title.trim() && "text-muted-foreground italic"
             )}
           >
@@ -357,14 +494,53 @@ function Cell({
         </div>
       );
     }
-    case "authors":
+    case "authors": {
+      // Every author, each a chip that filters the table. The filter dimension is the
+      // family name (that is the vocabulary the manifest matches on), while the chip
+      // shows the full name.
+      const authors = namedAuthors(row.authors);
+      if (authors.length === 0) {
+        return null;
+      }
+      const on = filters?.authors ?? [];
       return (
-        <span className="block truncate" title={fullAuthorList(row.authors)}>
-          {compactAuthors(row.authors)}
+        <span
+          className="flex flex-wrap gap-1"
+          title={fullAuthorList(row.authors)}
+        >
+          {authors.map(({ key, name, family }) =>
+            family ? (
+              <FilterChip
+                active={on.includes(family)}
+                key={key}
+                label={name}
+                onClick={() => onToggleFilter("authors", family)}
+                title={`Filter by ${family}`}
+              />
+            ) : (
+              // No family name to filter on (a corporate author, say) — plain text.
+              <span className="text-muted-foreground" key={key}>
+                {name}
+              </span>
+            )
+          )}
         </span>
       );
-    case "year":
-      return <span className="tabular-nums">{row.year}</span>;
+    }
+    case "year": {
+      const year = Number.parseInt(row.year, 10);
+      if (!Number.isFinite(year)) {
+        return <span className="tabular-nums">{row.year}</span>;
+      }
+      return (
+        <FilterChip
+          active={filters?.year === year}
+          label={String(year)}
+          onClick={() => onToggleYear(year)}
+          title={`Filter by ${year}`}
+        />
+      );
+    }
     case "date":
       return <span className="tabular-nums">{row.date}</span>;
     case "journal":
@@ -398,19 +574,32 @@ function Cell({
     case "keywords":
       return (
         <ChipList
+          active={filters}
           dim="keywords"
-          onAddFilter={onAddFilter}
-          values={row.keywords}
+          onToggleFilter={onToggleFilter}
+          values={row.keywords ?? []}
         />
       );
     case "subjects":
       return (
         <ChipList
+          active={filters}
           dim="subjects"
-          onAddFilter={onAddFilter}
-          values={row.subjects}
+          onToggleFilter={onToggleFilter}
+          values={row.subjects ?? []}
         />
       );
+    case "affiliations":
+      return (
+        <ChipList
+          active={filters}
+          dim="affiliations"
+          onToggleFilter={onToggleFilter}
+          values={row.affiliations ?? []}
+        />
+      );
+    case "graph":
+      return <GraphCell entities={graphEntities} />;
     case "source":
       return (
         <Badge className="font-normal" variant="outline">

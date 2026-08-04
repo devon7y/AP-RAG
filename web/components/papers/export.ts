@@ -53,6 +53,7 @@ export function rowsToCsv(rows: PaperRow[]): string {
       publisher: r.publisher,
       keywords: r.keywords.join("; "),
       subjects: r.subjects.join("; "),
+      affiliations: (r.affiliations ?? []).join("; "),
       source: r.source,
     }))
   );

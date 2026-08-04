@@ -59,8 +59,8 @@ export type RagFilters = {
 
 export type PaperAuthor = { family?: string; given?: string };
 
-// One slim table row from the query server's GET /papers (abstract & affiliations
-// stay in the detail record). `pages` here is the bib record's page range string.
+// One slim table row from the query server's GET /papers (the abstract stays in the
+// detail record). `pages` here is the bib record's page range string.
 export type PaperRow = {
   filename: string;
   title: string;
@@ -77,6 +77,7 @@ export type PaperRow = {
   publisher: string;
   keywords: string[];
   subjects: string[];
+  affiliations: string[];
   source: string;
   apa: string;
   intext: string;
@@ -101,7 +102,6 @@ export type RankedPaper = PaperRow & {
 // heavyweight/provenance ones.
 export type PaperDetail = PaperRow & {
   abstract?: string;
-  affiliations?: string[];
   editors?: PaperAuthor[];
   hades_path?: string;
   date_source?: string;
