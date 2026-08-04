@@ -48,6 +48,11 @@ export interface LabelRect {
 }
 const occupancy: { frame: number; rects: LabelRect[] } = { frame: -1, rects: [] };
 
+/** Wrap lanes in CSS px. The glyph and its DOM ghost MUST share these, or the
+ *  occupancy box stops matching the text that is actually drawn. */
+const PEAK_LANE = 230;
+const REGION_LANE = 260;
+
 export function beginLabelFrame(frame: number): void {
   if (occupancy.frame !== frame) {
     occupancy.frame = frame;
@@ -192,7 +197,7 @@ function PeakLabels({ data }: { data: WorldData }) {
           fontPx: 9,
           trackingEm: 0.12,
           italic: peak.kind === "paper",
-          maxWidth: 230, // same wrap lane as the DOM box
+          maxWidth: PEAK_LANE, // same wrap lane as the DOM box
         }),
       ),
     // fontsReady: re-rasterize once the display font settles
@@ -260,7 +265,7 @@ function PeakLabels({ data }: { data: WorldData }) {
                 willChange: "opacity",
                 // fixed lane so text wraps naturally onto multiple lines
                 // instead of being clipped or squeezed into a vertical stack
-                width: 230,
+                width: PEAK_LANE,
                 textAlign: "center",
               }}
             >
@@ -302,7 +307,12 @@ export default function Labels({ data }: { data: WorldData }) {
           key={`cl-${cluster.id}`}
           near={40}
           far={230}
-          glyph={{ text: cluster.name, fontPx: 15, trackingEm: 0.14 }}
+          glyph={{
+            text: cluster.name,
+            fontPx: 15,
+            trackingEm: 0.14,
+            maxWidth: REGION_LANE,
+          }}
           getPos={(out) => out.copy(ground).lerp(space, uMorph.value)}
           alpha={() => {
             // a region has no name before the papers that earned it
@@ -313,6 +323,9 @@ export default function Labels({ data }: { data: WorldData }) {
           <button
             type="button"
             className="cursor-pointer select-none text-center"
+            // shrink-to-fit up to the same lane the glyph wraps in, so the
+            // ghost's measured box matches the drawn text on both axes
+            style={{ maxWidth: REGION_LANE }}
             onClick={() => {
               const p = ground.clone().lerp(space, uMorph.value);
               requestWarp([p.x, p.y, p.z], 34, 2.0);
