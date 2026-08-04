@@ -959,7 +959,14 @@ export function deriveWorld(
   // often had nothing to do with it. Placing it at the cluster's DENSEST cell
   // instead puts the name over ground that region actually occupies.
   const LG = 64; // coarse grid for locating each cluster's densest patch
+  const LG3 = 24; // ditto in the embedding cube (sparse — 24^3 per cluster is not)
   const clusterGrids = new Map<number, Float32Array>();
+  // The galaxy needs the same treatment as the ground: cl.center3 is the MEAN
+  // of a cluster's 3D positions, and for a non-convex cluster the mean sits in
+  // empty space away from the mass it names. Sparse because a dense 24^3 grid
+  // per cluster would be 75 x 13,824 cells for a few hundred occupied ones.
+  const clusterGrids3 = new Map<number, Map<number, number>>();
+  const cell3 = (v: number) => Math.min(LG3 - 1, Math.max(0, Math.floor(v * LG3)));
   for (let i = 0; i < n; i++) {
     const c = atlas.cluster[i];
     let g = clusterGrids.get(c);
@@ -970,6 +977,16 @@ export function deriveWorld(
     const gx = Math.min(LG - 1, Math.max(0, Math.floor(atlas.pos2[i * 2] * LG)));
     const gy = Math.min(LG - 1, Math.max(0, Math.floor(atlas.pos2[i * 2 + 1] * LG)));
     g[gy * LG + gx] += 1;
+
+    let g3 = clusterGrids3.get(c);
+    if (!g3) {
+      g3 = new Map();
+      clusterGrids3.set(c, g3);
+    }
+    const k3 =
+      (cell3(atlas.pos3[i * 3]) * LG3 + cell3(atlas.pos3[i * 3 + 1])) * LG3 +
+      cell3(atlas.pos3[i * 3 + 2]);
+    g3.set(k3, (g3.get(k3) ?? 0) + 1);
   }
   // a handful of papers is not a "region" — labelling 2-paper clusters as
   // peers of 1,600-paper ones is what made the map's naming look arbitrary
@@ -1016,11 +1033,32 @@ export function deriveWorld(
           sampleField(eras.final, cx, cy) * HEIGHT_SCALE + 3.2,
           wz,
         ),
-        space: new THREE.Vector3(
-          (cl.center3[0] - 0.5) * WORLD_SIZE,
-          (cl.center3[1] - 0.5) * WORLD_SIZE,
-          (cl.center3[2] - 0.5) * WORLD_SIZE,
-        ),
+        space: (() => {
+          const g3 = clusterGrids3.get(cl.id);
+          let c3x = cl.center3[0];
+          let c3y = cl.center3[1];
+          let c3z = cl.center3[2];
+          if (g3 && g3.size) {
+            let bestK = -1;
+            let bestV = -1;
+            for (const [k, v] of g3) {
+              if (v > bestV) {
+                bestV = v;
+                bestK = k;
+              }
+            }
+            if (bestK >= 0) {
+              c3z = ((bestK % LG3) + 0.5) / LG3;
+              c3y = ((Math.floor(bestK / LG3) % LG3) + 0.5) / LG3;
+              c3x = (Math.floor(bestK / (LG3 * LG3)) + 0.5) / LG3;
+            }
+          }
+          return new THREE.Vector3(
+            (c3x - 0.5) * WORLD_SIZE,
+            (c3y - 0.5) * WORLD_SIZE,
+            (c3z - 0.5) * WORLD_SIZE,
+          );
+        })(),
       };
     });
 
