@@ -5,10 +5,11 @@ import { useFrame } from "@react-three/fiber";
 import { Html } from "@react-three/drei";
 import * as THREE from "three";
 import { LineBasicNodeMaterial } from "three/webgpu";
-import { attribute, mix, positionLocal, vec3 } from "three/tsl";
+import { attribute, mix, positionLocal, uniform, vec3 } from "three/tsl";
 import { tempRGB } from "./temperature";
 import type { AuthorRec, CorpusData } from "@/lib/atlas/types";
 import { WORLD_SIZE } from "@/lib/atlas/data";
+import { useAtlasStore } from "@/lib/atlas/store";
 import { glowTexture, sampleField, type WorldData } from "./derive";
 import { paperWorldPos } from "./PaperBeacons";
 import { authorAnchors } from "./derive";
@@ -177,6 +178,12 @@ function AuthorTrail({
     return { gCurve, sCurve, pos, spc, col, waypoints };
   }, [data, corpus, author]);
 
+  const hdrBoost = useAtlasStore((s) => s.hdrBoost);
+  const uTrailHdr = useMemo(() => uniform(1), []);
+  useEffect(() => {
+    uTrailHdr.value = hdrBoost;
+  }, [hdrBoost, uTrailHdr]);
+
   const { line, geo, mat } = useMemo(() => {
     const geo = new THREE.BufferGeometry();
     const mat = new LineBasicNodeMaterial();
@@ -184,7 +191,14 @@ function AuthorTrail({
     mat.depthWrite = false;
     mat.blending = THREE.AdditiveBlending;
     mat.positionNode = mix(positionLocal, attribute<"vec3">("aSpace", "vec3"), uMorph);
-    mat.colorNode = vec3(attribute<"vec3">("aCol", "vec3")).mul(uCalm.mul(1.3));
+    // The trail is a SCENE object, so unlike the DOM labels it can genuinely
+    // overshoot: pushing gold past 1.0 on an extended-tone-mapped canvas lights
+    // the display's HDR headroom, and the line already blends additively. The
+    // uniform carries hdrBoost (2.2 on a true-HDR canvas, 1.0 otherwise) so SDR
+    // and WebGL2 keep the old look instead of clipping to a flat yellow.
+    mat.colorNode = vec3(attribute<"vec3">("aCol", "vec3"))
+      .mul(uCalm.mul(1.6))
+      .mul(uTrailHdr);
     mat.opacityNode = uCalm.mul(0.75);
     const line = new THREE.Line(geo, mat);
     line.frustumCulled = false;
