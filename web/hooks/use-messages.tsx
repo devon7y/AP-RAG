@@ -12,6 +12,7 @@ export function useMessages({
     containerRef,
     endRef,
     isAtBottom,
+    pinPrompt,
     scrollToBottom,
     onViewportEnter,
     onViewportLeave,
@@ -23,8 +24,12 @@ export function useMessages({
   useEffect(() => {
     if (status === "submitted") {
       setHasSentMessage(true);
+      // Anchor the view on the question just asked and hold it there for the whole
+      // generation. Following the stream instead would leave the reader at the bottom of
+      // the reference list the moment it renders — past the answer they meant to read.
+      pinPrompt();
     }
-  }, [status]);
+  }, [status, pinPrompt]);
 
   return {
     containerRef,
