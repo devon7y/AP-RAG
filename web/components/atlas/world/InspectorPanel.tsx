@@ -13,6 +13,7 @@ import type {
   GhostPaper,
   PaperMeta,
 } from "@/lib/atlas/types";
+import { fitAuthorTrail } from "./fit";
 import { paperWorldPos } from "./PaperBeacons";
 import { entityColor, shortCite, type WorldData } from "./derive";
 import type { WorldEndpoint } from "./engineBridge";
@@ -279,7 +280,15 @@ function PaperCard({
                 <button
                   type="button"
                   className="w-full rounded px-2 py-1 text-left text-xs text-ink-2 hover:bg-white/5 hover:text-ink"
-                  onClick={() => st.select({ kind: "author", idx: i })}
+                  onClick={() => {
+                    // Opening an author has to LENS them, not just select them:
+                    // the gold trail alone leaves the whole corpus lit, so their
+                    // oeuvre does not stand out. Matches the lenses panel.
+                    st.setLens({ author: i });
+                    st.setInstrument("lenses");
+                    st.select({ kind: "author", idx: i });
+                    fitAuthorTrail(data, authors[i]);
+                  }}
                 >
                   {a.name} <span className="text-ink-3">· {a.papers.length}</span>
                 </button>
