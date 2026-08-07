@@ -2,6 +2,7 @@ import { auth } from "@/app/(auth)/auth";
 import {
   getChatActivity,
   getChatParticipants,
+  getTypingUsers,
   resolveChatAccess,
 } from "@/lib/db/queries";
 import { ChatbotError } from "@/lib/errors";
@@ -39,14 +40,18 @@ export async function GET(
     return new ChatbotError("forbidden:chat").toResponse();
   }
 
-  const [activity, participants] = await Promise.all([
+  const [activity, participants, typing] = await Promise.all([
     getChatActivity({ chatId: id }),
     getChatParticipants({ chatId: id }),
+    getTypingUsers({ chatId: id, excludeUserId: session.user.id }),
   ]);
 
   if (!activity) {
     return Response.json({ exists: false });
   }
+
+  const busyByOther =
+    Boolean(activity.activeUserId) && activity.activeUserId !== session.user.id;
 
   return Response.json({
     exists: true,
@@ -54,8 +59,10 @@ export async function GET(
     participants,
     isOwner: access.isOwner,
     // True when the turn is held by SOMEONE ELSE — the flag the composer disables on.
-    busyByOther:
-      Boolean(activity.activeUserId) &&
-      activity.activeUserId !== session.user.id,
+    busyByOther,
+    // Other people with text in their composer right now. Suppressed while a turn is
+    // running: the composer is already blocked on that, and "asking…" is the more
+    // urgent of the two states to report.
+    typing: busyByOther ? [] : typing,
   });
 }

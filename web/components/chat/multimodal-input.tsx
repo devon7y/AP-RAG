@@ -9,6 +9,7 @@ import {
   EyeIcon,
   LockIcon,
   WrenchIcon,
+  XIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
@@ -37,12 +38,21 @@ import {
   ModelSelectorName,
   ModelSelectorTrigger,
 } from "@/components/ai-elements/model-selector";
+import { useActiveChat } from "@/hooks/use-active-chat";
 import {
   type ChatModel,
   chatModels,
   DEFAULT_CHAT_MODEL,
   type ModelCapabilities,
 } from "@/lib/ai/models";
+import { detectFilters } from "@/lib/aprag/detect";
+import {
+  DIGEST_WINDOW_DISMISS_KEY,
+  type FilterListKey,
+  hasAnyFilter,
+  mergeFilters,
+} from "@/lib/aprag/filters";
+import type { RagFilters } from "@/lib/aprag/types";
 import type { Attachment, ChatMessage } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
@@ -52,18 +62,8 @@ import {
   PromptInputTextarea,
   PromptInputTools,
 } from "../ai-elements/prompt-input";
-import { Button } from "../ui/button";
-import { XIcon } from "lucide-react";
-import { useActiveChat } from "@/hooks/use-active-chat";
-import { detectFilters } from "@/lib/aprag/detect";
-import {
-  DIGEST_WINDOW_DISMISS_KEY,
-  type FilterListKey,
-  hasAnyFilter,
-  mergeFilters,
-} from "@/lib/aprag/filters";
-import type { RagFilters } from "@/lib/aprag/types";
 import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
 import { ActiveFilters } from "./active-filters";
 import { formatDigestWindow } from "./digest-indicator";
 import { useFacets, usePapersIndex } from "./facet-input";
@@ -236,8 +236,44 @@ function PureMultimodalInput({
   // show them as cancellable "will filter" chips before sending. On send these are
   // applied; cancelled ones are reported to the server so its second-pass LLM
   // extraction won't re-add them.
-  const { filters, setFilters, digest, busyByOther, activeParticipantName } =
-    useActiveChat();
+  const {
+    filters,
+    setFilters,
+    digest,
+    busyByOther,
+    activeParticipantName,
+    typingNames,
+    sendTyping,
+  } = useActiveChat();
+
+  const isComposing = input.trim().length > 0;
+
+  // Someone else is mid-sentence. Their question is coming, and this chat answers one at
+  // a time, so hold this composer rather than letting two questions collide at send.
+  //
+  // Unless we're already writing: if BOTH boxes were held on the other being non-empty,
+  // two people starting together would deadlock — each waiting for the other, each still
+  // holding text and so still heartbeating "typing", forever. Whoever started first
+  // simply keeps going, and the rare true tie is settled at send by the turn lock.
+  const otherTyping = typingNames.length > 0 ? typingNames[0] : null;
+  const blocked = busyByOther || Boolean(otherTyping && !isComposing);
+
+  // Announce our own composing state. Keyed on "is there text" rather than on the text
+  // itself, so this fires on the first keystroke and on emptying the box — not on every
+  // character — and re-beats while the box stays non-empty so the marker doesn't age out
+  // mid-sentence. Clearing on unmount covers navigating away with a half-written question.
+  useEffect(() => {
+    if (!isComposing) {
+      sendTyping(false);
+      return;
+    }
+    sendTyping(true);
+    const beat = setInterval(() => sendTyping(true), 3000);
+    return () => {
+      clearInterval(beat);
+      sendTyping(false);
+    };
+  }, [isComposing, sendTyping]);
   const facets = useFacets(input.trim().length > 0);
   const papersIndex = usePapersIndex(input.trim().length > 0);
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
@@ -268,13 +304,20 @@ function PureMultimodalInput({
       value: string | number;
       label: string;
     }[] = [];
-    for (const dim of ["papers", "authors", "journals", "affiliations"] as const) {
+    for (const dim of [
+      "papers",
+      "authors",
+      "journals",
+      "affiliations",
+    ] as const) {
       for (const v of detected[dim] ?? []) {
         const key = `${dim}:${v.toLowerCase()}`;
         if (dismissedKeys.has(key)) {
           continue;
         }
-        if ((active[dim] ?? []).some((a) => a.toLowerCase() === v.toLowerCase())) {
+        if (
+          (active[dim] ?? []).some((a) => a.toLowerCase() === v.toLowerCase())
+        ) {
           continue;
         }
         const display = dim === "papers" ? v.replace(/\.pdf$/i, "") : v;
@@ -286,12 +329,14 @@ function PureMultimodalInput({
         });
       }
     }
-    const yearLabels: Record<"year" | "year_from" | "year_to", (v: number) => string> =
-      {
-        year: (v) => `Year: ${v}`,
-        year_from: (v) => `Year ≥ ${v}`,
-        year_to: (v) => `Year ≤ ${v}`,
-      };
+    const yearLabels: Record<
+      "year" | "year_from" | "year_to",
+      (v: number) => string
+    > = {
+      year: (v) => `Year: ${v}`,
+      year_from: (v) => `Year ≥ ${v}`,
+      year_to: (v) => `Year ≤ ${v}`,
+    };
     for (const dim of ["year", "year_from", "year_to"] as const) {
       const v = detected[dim];
       if (v == null || active[dim] === v) {
@@ -581,6 +626,10 @@ function PureMultimodalInput({
             );
             return;
           }
+          if (blocked) {
+            toast.error(`Wait for ${otherTyping} to finish typing.`);
+            return;
+          }
           if (status === "ready" || status === "error") {
             submitForm();
           } else {
@@ -669,6 +718,9 @@ function PureMultimodalInput({
         <PromptInputTextarea
           className="min-h-0 text-[13px] leading-relaxed px-4 pt-3.5 pb-1.5 placeholder:text-muted-foreground/35"
           data-testid="multimodal-input"
+          // Held while someone else is composing or their answer is running, so the
+          // placeholder is the whole explanation of why nothing types.
+          disabled={blocked}
           onChange={handleInput}
           onKeyDown={(e) => {
             if (slashOpen) {
@@ -705,10 +757,12 @@ function PureMultimodalInput({
           }}
           placeholder={
             busyByOther
-              ? `${activeParticipantName ?? "Someone"} is asking…`
-              : editingMessage
-                ? "Edit your message..."
-                : "Ask anything..."
+              ? "Checking the database…"
+              : blocked
+                ? `Wait for ${otherTyping} to finish typing...`
+                : editingMessage
+                  ? "Edit your message..."
+                  : "Ask anything..."
           }
           ref={textareaRef}
           value={input}
@@ -729,7 +783,7 @@ function PureMultimodalInput({
                   : "bg-muted text-muted-foreground/25 cursor-not-allowed"
               )}
               data-testid="send-button"
-              disabled={!input.trim() || uploadQueue.length > 0 || busyByOther}
+              disabled={!input.trim() || uploadQueue.length > 0 || blocked}
               status={status}
               variant="secondary"
             >

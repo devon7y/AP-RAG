@@ -1,13 +1,14 @@
 import type { UseChatHelpers } from "@ai-sdk/react";
 import { ArrowDownIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { useActiveChat } from "@/hooks/use-active-chat";
 import { useMessages } from "@/hooks/use-messages";
 import type { Vote } from "@/lib/db/schema";
 import type { ChatMessage } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useDataStream } from "./data-stream-provider";
 import { Greeting } from "./greeting";
-import { PreviewMessage, ThinkingMessage } from "./message";
+import { PreviewMessage, ThinkingMessage, TypingMessage } from "./message";
 
 type MessagesProps = {
   addToolApprovalResponse: UseChatHelpers<ChatMessage>["addToolApprovalResponse"];
@@ -50,6 +51,9 @@ function PureMessages({
   });
 
   useDataStream();
+
+  // Group-chat presence: who is writing, and whether somebody else's turn is running.
+  const { busyByOther, typingNames } = useActiveChat();
 
   const prevChatIdRef = useRef(chatId);
   useEffect(() => {
@@ -99,8 +103,16 @@ function PureMessages({
             />
           ))}
 
-          {status === "submitted" && messages.at(-1)?.role !== "assistant" && (
-            <ThinkingMessage />
+          {/* "Checking the database…" — shown to the asker while their own turn runs
+              (status "submitted") AND to every other participant while somebody else's
+              does, since from their side nothing else marks the wait. */}
+          {(status === "submitted" || busyByOther) &&
+            messages.at(-1)?.role !== "assistant" && <ThinkingMessage />}
+
+          {/* Somebody is writing a question. Suppressed once a turn starts — the line
+              above is the more informative of the two. */}
+          {!busyByOther && typingNames.length > 0 && (
+            <TypingMessage name={typingNames[0]} />
           )}
 
           <div

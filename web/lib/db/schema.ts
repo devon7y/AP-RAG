@@ -88,6 +88,30 @@ export const chatMember = pgTable(
 
 export type ChatMember = InferSelectModel<typeof chatMember>;
 
+// Who is composing a message right now, so the other participants see "devon7y is
+// typing…" and know not to start their own question. A row is a heartbeat, not a flag:
+// the client re-stamps `updatedAt` every few seconds while the composer has text, and a
+// row goes stale on its own if that client closes the tab mid-sentence. Kept in Postgres
+// rather than Redis because this deployment has no REDIS_URL — the writes are one small
+// upsert per typing user per heartbeat, which is nothing at lab scale.
+export const chatTyping = pgTable(
+  "ChatTyping",
+  {
+    chatId: uuid("chatId")
+      .notNull()
+      .references(() => chat.id),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => user.id),
+    updatedAt: timestamp("updatedAt").notNull().defaultNow(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.chatId, table.userId] }),
+  })
+);
+
+export type ChatTyping = InferSelectModel<typeof chatTyping>;
+
 export const message = pgTable("Message_v2", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
   chatId: uuid("chatId")

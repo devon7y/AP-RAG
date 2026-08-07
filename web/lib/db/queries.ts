@@ -28,6 +28,7 @@ import {
   type Chat,
   chat,
   chatMember,
+  chatTyping,
   type DBMessage,
   document,
   message,
@@ -166,6 +167,7 @@ export async function deleteChatById({ id }: { id: string }) {
     await db.delete(message).where(eq(message.chatId, id));
     await db.delete(stream).where(eq(stream.chatId, id));
     await db.delete(chatMember).where(eq(chatMember.chatId, id));
+    await db.delete(chatTyping).where(eq(chatTyping.chatId, id));
 
     const [chatsDeleted] = await db
       .delete(chat)
@@ -197,6 +199,7 @@ export async function deleteAllChatsByUserId({ userId }: { userId: string }) {
     await db.delete(message).where(inArray(message.chatId, chatIds));
     await db.delete(stream).where(inArray(stream.chatId, chatIds));
     await db.delete(chatMember).where(inArray(chatMember.chatId, chatIds));
+    await db.delete(chatTyping).where(inArray(chatTyping.chatId, chatIds));
     // Chats OTHERS shared with this user survive — deleting your own history shouldn't
     // delete someone else's conversation. Just drop the membership rows.
     await db.delete(chatMember).where(eq(chatMember.userId, userId));
@@ -400,37 +403,113 @@ export type ChatParticipant = {
   isOwner: boolean;
 };
 
-// Owner first, then members in the order they were added. Used both by the share dialog
-// and by the transcript, which labels each message with its sender.
+// Owner first, then members in the order they were added, then anyone else who has
+// actually posted. That last group matters for PUBLIC chats, where a poster needs no
+// membership row — without them the transcript would show unattributed messages from
+// people who are plainly in the conversation.
 export async function getChatParticipants({
   chatId,
 }: {
   chatId: string;
 }): Promise<ChatParticipant[]> {
   try {
-    const [owner] = await db
-      .select({ id: user.id, email: user.email, name: user.name })
-      .from(chat)
-      .innerJoin(user, eq(user.id, chat.userId))
-      .where(eq(chat.id, chatId))
-      .limit(1);
+    const [[owner], members, senders] = await Promise.all([
+      db
+        .select({ id: user.id, email: user.email, name: user.name })
+        .from(chat)
+        .innerJoin(user, eq(user.id, chat.userId))
+        .where(eq(chat.id, chatId))
+        .limit(1),
+      db
+        .select({ id: user.id, email: user.email, name: user.name })
+        .from(chatMember)
+        .innerJoin(user, eq(user.id, chatMember.userId))
+        .where(eq(chatMember.chatId, chatId))
+        .orderBy(asc(chatMember.createdAt)),
+      db
+        .selectDistinct({ id: user.id, email: user.email, name: user.name })
+        .from(message)
+        .innerJoin(user, eq(user.id, message.userId))
+        .where(eq(message.chatId, chatId)),
+    ]);
 
-    const members = await db
-      .select({ id: user.id, email: user.email, name: user.name })
-      .from(chatMember)
-      .innerJoin(user, eq(user.id, chatMember.userId))
-      .where(eq(chatMember.chatId, chatId))
-      .orderBy(asc(chatMember.createdAt));
-
-    return [
-      ...(owner ? [{ ...owner, isOwner: true }] : []),
-      ...members.map((m) => ({ ...m, isOwner: false })),
-    ];
+    const out: ChatParticipant[] = owner ? [{ ...owner, isOwner: true }] : [];
+    const seen = new Set(out.map((p) => p.id));
+    for (const person of [...members, ...senders]) {
+      if (seen.has(person.id)) {
+        continue;
+      }
+      seen.add(person.id);
+      out.push({ ...person, isOwner: false });
+    }
+    return out;
   } catch (_error) {
     throw new ChatbotError(
       "bad_request:database",
       "Failed to get chat participants"
     );
+  }
+}
+
+// A composer is considered live for this long after its last heartbeat. Comfortably more
+// than the client's heartbeat interval, so a slow request doesn't make the indicator
+// flicker off between beats.
+const TYPING_TTL_MS = 8000;
+
+// Heartbeat (or clear) this user's "I'm composing" marker.
+export async function setChatTyping({
+  chatId,
+  userId,
+  typing,
+}: {
+  chatId: string;
+  userId: string;
+  typing: boolean;
+}) {
+  try {
+    if (!typing) {
+      await db
+        .delete(chatTyping)
+        .where(
+          and(eq(chatTyping.chatId, chatId), eq(chatTyping.userId, userId))
+        );
+      return;
+    }
+    await db
+      .insert(chatTyping)
+      .values({ chatId, userId, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: [chatTyping.chatId, chatTyping.userId],
+        set: { updatedAt: new Date() },
+      });
+  } catch (_error) {
+    /* presence is decoration — never fail a request over it */
+  }
+}
+
+// Who is composing right now, other than the asker. Stale rows are filtered by time
+// rather than deleted, so a client that vanished mid-sentence simply ages out.
+export async function getTypingUsers({
+  chatId,
+  excludeUserId,
+}: {
+  chatId: string;
+  excludeUserId: string;
+}): Promise<{ id: string; email: string }[]> {
+  try {
+    return await db
+      .select({ id: user.id, email: user.email })
+      .from(chatTyping)
+      .innerJoin(user, eq(user.id, chatTyping.userId))
+      .where(
+        and(
+          eq(chatTyping.chatId, chatId),
+          ne(chatTyping.userId, excludeUserId),
+          gt(chatTyping.updatedAt, new Date(Date.now() - TYPING_TTL_MS))
+        )
+      );
+  } catch (_error) {
+    return [];
   }
 }
 
@@ -586,6 +665,9 @@ export async function releaseChatTurn({
 export type ChatActivity = {
   activeStreamId: string | null;
   activeUserId: string | null;
+  // The asker's email, resolved server-side. In a PUBLIC chat they need not be in the
+  // participant list, so the client can't always look them up by id.
+  activeUserEmail: string | null;
   activeSince: string | null;
   lastMessageId: string | null;
   lastMessageAt: string | null;
@@ -607,11 +689,14 @@ export async function getChatActivity({
       .select({
         activeStreamId: chat.activeStreamId,
         activeUserId: chat.activeUserId,
+        activeUserEmail: user.email,
         activeSince: chat.activeSince,
         title: chat.title,
         visibility: chat.visibility,
       })
       .from(chat)
+      // Left join: most of the time nobody holds the turn and activeUserId is null.
+      .leftJoin(user, eq(user.id, chat.activeUserId))
       .where(eq(chat.id, chatId))
       .limit(1);
 
@@ -641,6 +726,7 @@ export async function getChatActivity({
     return {
       activeStreamId: stale ? null : row.activeStreamId,
       activeUserId: stale ? null : row.activeUserId,
+      activeUserEmail: stale ? null : (row.activeUserEmail ?? null),
       activeSince: stale ? null : (row.activeSince?.toISOString() ?? null),
       lastMessageId: latest?.id ?? null,
       lastMessageAt: latest?.createdAt.toISOString() ?? null,

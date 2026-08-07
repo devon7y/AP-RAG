@@ -62,6 +62,7 @@ import {
   saveChat,
   saveMessages,
   setChatActiveStream,
+  setChatTyping,
   updateChatDigest,
   updateChatTitleById,
   updateMessage,
@@ -242,6 +243,14 @@ export async function POST(request: Request) {
             userId: session.user.id,
           },
         ],
+      });
+      // The question is sent, so this composer is no longer "typing". The client clears
+      // this too when its box empties; doing it here means the indicator can't linger if
+      // that request is lost.
+      await setChatTyping({
+        chatId: id,
+        userId: session.user.id,
+        typing: false,
       });
     }
 

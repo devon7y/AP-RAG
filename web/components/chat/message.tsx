@@ -1,7 +1,6 @@
 "use client";
 import type { UseChatHelpers } from "@ai-sdk/react";
 import { useActiveChat } from "@/hooks/use-active-chat";
-import { displayName } from "@/hooks/use-chat-participants";
 import {
   type CiteRef,
   citationsInsideSentence,
@@ -70,16 +69,16 @@ const PurePreviewMessage = ({
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
 
-  // Group chat: label a question with the participant who asked it. Skipped for your own
-  // messages, and for chats with nobody else in them (every byline would read the same).
-  const { participants, viewerId } = useActiveChat();
+  // Group chat: label every question with the username of whoever asked it — your own
+  // included, so a transcript reads consistently rather than leaving you to infer that
+  // the unlabelled ones are yours. Private chats have nobody to disambiguate, so they
+  // stay clean.
+  const { participants, visibilityType } = useActiveChat();
   const senderId = message.metadata?.senderId;
   const senderLabel =
-    isUser && senderId && senderId !== viewerId && participants.length > 1
-      ? (() => {
-          const sender = participants.find((p) => p.id === senderId);
-          return sender ? displayName(sender) : null;
-        })()
+    isUser && senderId && visibilityType !== "private"
+      ? (participants.find((p) => p.id === senderId)?.email.split("@")[0] ??
+        null)
       : null;
 
   // AP-RAG retrieval payload attached to this assistant message (references + chunks).
@@ -543,8 +542,7 @@ const PurePreviewMessage = ({
           <div className="flex min-w-0 flex-1 flex-col gap-2">{content}</div>
         ) : (
           <>
-            {/* In a shared chat, say who asked. Only for other people's questions — your
-                own are already on your side of the thread. */}
+            {/* In a shared chat, every question is signed with its asker's username. */}
             {senderLabel && (
               <span className="-mb-1 px-1 text-[11px] text-muted-foreground">
                 {senderLabel}
@@ -559,6 +557,20 @@ const PurePreviewMessage = ({
 };
 
 export const PreviewMessage = PurePreviewMessage;
+
+// Somebody else in a shared chat has started writing. Sits where their message will
+// land (user messages are right-aligned) so the thread visibly makes room for it.
+export const TypingMessage = ({ name }: { name: string }) => {
+  return (
+    <div className="group/message w-full" data-role="user-typing">
+      <div className="flex flex-col items-end gap-2">
+        <div className="flex h-[calc(13px*1.65)] items-center pr-1 text-[11px] text-muted-foreground leading-[1.65]">
+          <Shimmer duration={1}>{`${name} is typing…`}</Shimmer>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export const ThinkingMessage = () => {
   return (

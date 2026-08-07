@@ -9,6 +9,7 @@ import {
   type Dispatch,
   type ReactNode,
   type SetStateAction,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -22,7 +23,7 @@ import { getChatHistoryPaginationKey } from "@/components/chat/sidebar-history";
 import { toast } from "@/components/chat/toast";
 import type { VisibilityType } from "@/components/chat/visibility-selector";
 import { useAutoResume } from "@/hooks/use-auto-resume";
-import { displayName, type Participant } from "@/hooks/use-chat-participants";
+import { type Participant, username } from "@/hooks/use-chat-participants";
 import {
   DEFAULT_CHAT_MODEL,
   DEFAULT_REASONING_EFFORT,
@@ -76,6 +77,10 @@ type ActiveChatContextValue = {
   viewerId: string | null;
   busyByOther: boolean;
   activeParticipantName: string | null;
+  // Other people with text in their composer right now (usernames), and the heartbeat
+  // this client posts while ITS composer has text.
+  typingNames: string[];
+  sendTyping: (typing: boolean) => void;
 };
 
 // The digest config carried in the URL / persisted on the chat row (bucket is derived
@@ -205,6 +210,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
   //   * somebody posted, or an answer landed  -> refetch the transcript
   //   * somebody is answering RIGHT NOW       -> attach to their stream and watch the
   //                                              tokens arrive, same as if we'd asked
+  //   * somebody is TYPING right now          -> say so, and block this composer
   //
   // Private chats never poll (nobody else can write to them), and SWR pauses polling
   // while the tab is hidden, so an idle background tab costs nothing.
@@ -213,29 +219,61 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
     exists: boolean;
     activeStreamId: string | null;
     activeUserId: string | null;
+    activeUserEmail: string | null;
     lastMessageId: string | null;
     messageCount: number;
     participants: Participant[];
     busyByOther: boolean;
+    typing: { id: string; email: string }[];
   }>(
     isShared
       ? `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/chat/${chatId}/state`
       : null,
     fetcher,
-    { refreshInterval: 3000, revalidateOnFocus: true, dedupingInterval: 1000 }
+    // 2s: this poll now carries presence ("…is typing"), which reads as broken if it
+    // lags far behind the keystrokes it is reporting.
+    { refreshInterval: 2000, revalidateOnFocus: true, dedupingInterval: 1000 }
   );
 
   const participants: Participant[] =
     chatState?.participants ?? chatData?.participants ?? [];
   const viewerId: string | null = chatData?.viewerId ?? null;
   const busyByOther = Boolean(chatState?.busyByOther);
-  const activeParticipantName = useMemo(() => {
-    if (!(busyByOther && chatState?.activeUserId)) {
-      return null;
-    }
-    const who = participants.find((p) => p.id === chatState.activeUserId);
-    return who ? displayName(who) : "Someone";
-  }, [busyByOther, chatState?.activeUserId, participants]);
+  // Resolved from the email the state endpoint returns rather than by looking the id up
+  // in `participants`: in a PUBLIC chat the asker needn't be a listed participant.
+  const activeParticipantName = busyByOther
+    ? chatState?.activeUserEmail
+      ? username({ email: chatState.activeUserEmail })
+      : "Someone"
+    : null;
+
+  const typingNames = useMemo(
+    () => (chatState?.typing ?? []).map((t) => username(t)),
+    [chatState?.typing]
+  );
+
+  // Announce that this client's composer has (or no longer has) text in it. Fire and
+  // forget — presence is decoration, and a dropped beat ages out on its own.
+  const sendTyping = useCallback(
+    (typing: boolean) => {
+      if (!isShared) {
+        return;
+      }
+      fetch(
+        `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/chat/${chatId}/typing`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ typing }),
+          // Lets the "I stopped typing" beat survive the page being closed.
+          keepalive: true,
+        }
+      ).catch(() => {
+        /* best-effort */
+      });
+    },
+    [chatId, isShared]
+  );
 
   const {
     messages,
@@ -687,6 +725,8 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       viewerId,
       busyByOther,
       activeParticipantName,
+      typingNames,
+      sendTyping,
     }),
     [
       chatId,
@@ -715,6 +755,8 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       viewerId,
       busyByOther,
       activeParticipantName,
+      typingNames,
+      sendTyping,
     ]
   );
 
