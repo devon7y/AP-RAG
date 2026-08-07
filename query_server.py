@@ -245,6 +245,71 @@ async def _sample_page_aware() -> bool | None:
         return None
 
 
+# Per-collection Qdrant search params, applied by wrapping the storage objects
+# AFTER LightRAG builds them. LightRAG's QdrantVectorDBStorage.query() sends no
+# search_params at all, so Qdrant falls back to its defaults -- and for scalar
+# quantization the default is rescore=true, which reads the int8 copy AND the
+# fp32 originals. That configuration measured 10.6s on entities, slower than no
+# quantization at all (7.4s).
+#
+# Measured recall vs the fp32 ranking with rescore OFF (24 real queries, on Ror
+# where both stores could be mounted together):
+#     chunks 0.979 | entities 0.983 | relationships 0.996  (recall@10)
+# So rescore can be dropped for int8 -- unlike binary, where it fell to 0.79.
+#
+# This is a runtime wrapper, not an edit inside LightRAG/, so it survives an
+# upstream upgrade. Set QDRANT_NO_RESCORE="" to disable entirely.
+# OFF by default -- measured on entities with fresh queries (n=8, disjoint sets):
+#   binary + rescore    p50 7120 ms
+#   int8, rescore OFF   p50 5988 ms   <- this wrapper
+#   int8, rescore ON    p50 4516 ms   <- qdrant's DEFAULT, fastest
+# int8 traversal is disk-bound at 14.7 GB on a 31 GB box, so skipping the bounded
+# ~40-vector fp32 rescore does not pay for itself. Kept for a future config where
+# the quantised data IS resident. Opt in with QDRANT_NO_RESCORE=<collection,...>.
+#
+# NB: do NOT try to disable this from a .bat with `set QDRANT_NO_RESCORE=` --
+# Windows DELETES the variable, so os.environ.get() falls back to its default.
+QDRANT_NO_RESCORE = os.environ.get("QDRANT_NO_RESCORE", "").strip()
+
+
+def _apply_qdrant_search_params(rag) -> None:
+    if not QDRANT_NO_RESCORE:
+        print("[qdrant] rescore override disabled", flush=True)
+        return
+    # qdrant_client is imported lazily elsewhere in this module; do the same here
+    # rather than adding a hard module-level dependency.
+    from qdrant_client import models
+    targets = {c.strip() for c in QDRANT_NO_RESCORE.split(",") if c.strip()}
+
+    # Wrap each distinct client's query_points ONCE, at startup, and decide by
+    # collection_name inside. An earlier version wrapped per query() call and
+    # restored in `finally` -- that mutates shared client state, so two
+    # concurrent searches (hybrid issues entities+relationships together, and
+    # requests overlap) would race and one could run unpatched or leave the
+    # patch installed. Patch-once has no shared mutable state at query time.
+    seen_clients: dict[int, bool] = {}
+    for attr in ("chunks_vdb", "entities_vdb", "relationships_vdb"):
+        store = getattr(rag, attr, None)
+        client = getattr(store, "_client", None)
+        if client is None or id(client) in seen_clients:
+            continue
+        seen_clients[id(client)] = True
+        real = client.query_points
+
+        def make(real_qp):
+            def query_points(*a, **kw):
+                if kw.get("collection_name") in targets:
+                    kw.setdefault("search_params", models.SearchParams(
+                        quantization=models.QuantizationSearchParams(
+                            rescore=False)))
+                return real_qp(*a, **kw)
+            return query_points
+
+        client.query_points = make(real)
+    print(f"[qdrant] rescore=False for: {', '.join(sorted(targets))} "
+          f"({len(seen_clients)} client(s) wrapped)", flush=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _rag, _PAGE_AWARE
@@ -267,6 +332,7 @@ async def lifespan(app: FastAPI):
         graph_storage=GRAPH_STORAGE,
     )
     await _rag.initialize_storages()
+    _apply_qdrant_search_params(_rag)
     await _load_corpus_files()
     _PAGE_AWARE = await _sample_page_aware()
     print(f"Knowledge graph ready. (page_aware={_PAGE_AWARE})", flush=True)
@@ -297,6 +363,13 @@ class Filters(BaseModel):
     types: list[str] | None = None         # record types (article/book/chapter/…), exact
 
 
+# Callers may supply the retrieval keywords themselves. LightRAG's
+# get_keywords_from_query (operate.py) returns pre-supplied keywords WITHOUT
+# calling the LLM, so passing them here removes a ~1.0-1.5s round-trip from every
+# KG-mode query. The web app's router already makes one LLM call to condense the
+# question, pick a mode and extract filters — asking it for keywords in the same
+# call measured at +0.18s, so this is a net ~0.9s saving. Omit them and the
+# behaviour is unchanged (LightRAG extracts them as before).
 class QueryRequest(BaseModel):
     question: str
     mode: str = "hybrid"
@@ -305,6 +378,8 @@ class QueryRequest(BaseModel):
     user_prompt: str | None = None
     reasoning: str | None = None    # answer-synthesis reasoning: none|low|medium|high|xhigh (default none)
     filters: Filters | None = None
+    hl_keywords: list[str] | None = None   # high-level: overarching concepts/themes
+    ll_keywords: list[str] | None = None   # low-level: specific entities/methods/measures
 
 
 class RetrieveRequest(BaseModel):
@@ -313,6 +388,8 @@ class RetrieveRequest(BaseModel):
     top_k: int | None = None
     chunk_top_k: int | None = None
     filters: Filters | None = None
+    hl_keywords: list[str] | None = None
+    ll_keywords: list[str] | None = None
 
 
 class SearchRequest(BaseModel):
@@ -344,6 +421,14 @@ def _build_query_param(req) -> QueryParam:
         kwargs["top_k"] = req.top_k
     if req.chunk_top_k is not None:
         kwargs["chunk_top_k"] = req.chunk_top_k
+    # Caller-supplied keywords short-circuit LightRAG's keyword-extraction LLM call
+    # (get_keywords_from_query returns them directly when either list is non-empty).
+    # naive mode never extracts keywords, so this only affects local/global/hybrid/mix.
+    hl = [k for k in (getattr(req, "hl_keywords", None) or []) if k and k.strip()]
+    ll = [k for k in (getattr(req, "ll_keywords", None) or []) if k and k.strip()]
+    if hl or ll:
+        kwargs["hl_keywords"] = hl
+        kwargs["ll_keywords"] = ll
     # Always apply the citation style. Fold the reasoning level into user_prompt too:
     # LightRAG's answer cache keys on query_param.user_prompt (operate.py), so this makes
     # the cache distinguish effort levels without patching LightRAG — a `high` answer

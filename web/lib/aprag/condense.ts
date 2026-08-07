@@ -39,6 +39,35 @@ const EXTRACT_SYSTEM =
   'frequency across the lab?"); "hybrid" = needs both specific facts and broader context ' +
   "(the safe default for most questions); \"naive\" = a simple keyword lookup where the " +
   'graph adds nothing. Prefer "hybrid" when unsure. ' +
+  // Retrieval keywords, so LightRAG can skip its OWN keyword-extraction LLM call on
+  // the query server (~1.0-1.5s per KG-mode query; measured net saving +1.07s).
+  // get_keywords_from_query returns pre-supplied keywords without calling the LLM.
+  //
+  // The block below is lifted almost verbatim from LightRAG's own
+  // PROMPTS["keywords_extraction"] (lightrag/prompt.py) — its Goal definitions and
+  // Instructions 4-7 — so this call reproduces its behaviour as closely as possible.
+  // Only the JSON-shape rules are dropped, since they are covered above.
+  //
+  // Why verbatim matters: a loosely-worded version produced ~14 low-level keywords
+  // to LightRAG's ~1.4, and since kg_query joins each list with ", " and embeds it as
+  // ONE string, that verbosity moved the query vector enough to cut chunk overlap
+  // with current behaviour to 37%. Matching the prompt brought it to ~68%.
+  //
+  // NB: this is a COPY. If LightRAG's keywords_extraction prompt changes on upgrade,
+  // re-sync this text or the two paths will drift apart silently.
+  "ALSO extract two types of keywords from the standalone query for a retrieval " +
+  'system. "high_level_keywords": for overarching concepts or themes, capturing the ' +
+  "core intent, the subject area, or the type of question being asked. " +
+  '"low_level_keywords": for specific entities or details — the specific entities, ' +
+  "proper nouns, technical jargon, or concrete items. Constraints: (a) Source of " +
+  "Truth — all keywords must be explicitly derived only from the query; do not infer " +
+  "unsupported facts, and do not invent entities, organizations, dates or technical " +
+  "terms that are not grounded in it. (b) Concise & Meaningful — keywords should be " +
+  "concise words or meaningful phrases; prioritize multi-word phrases when they " +
+  "represent a single concept instead of splitting them into isolated words. " +
+  "(c) Edge Cases — for a query that is too simple, vague or nonsensical, return " +
+  "empty arrays for both. (d) No Duplicates — do not repeat a keyword within a list; " +
+  "keep the lists short and high-signal. " +
   "Omit keys you have no value for. Respond with the JSON object only — no " +
   "prose, no code fences.";
 
@@ -89,6 +118,8 @@ export async function condenseAndExtract(
   query: string;
   filters: RagFilters;
   mode?: ConcreteRetrievalMode;
+  hlKeywords?: string[];
+  llKeywords?: string[];
 }> {
   const convo = history
     .filter((t) => t.content.trim().length > 0)
@@ -129,8 +160,16 @@ export async function condenseAndExtract(
       }
     }
     const mode = CONCRETE_RETRIEVAL_MODES.find((m) => m === obj.mode);
-    return { query, filters: await validateInferredFilters(raw), mode };
+    return {
+      query,
+      filters: await validateInferredFilters(raw),
+      mode,
+      hlKeywords: asStrings(obj.high_level_keywords),
+      llKeywords: asStrings(obj.low_level_keywords),
+    };
   } catch {
+    // On any failure the keywords are simply absent and LightRAG extracts its own,
+    // so a bad router response costs latency but never correctness.
     return { query: question, filters: {} };
   }
 }

@@ -41,6 +41,10 @@ export type RetrieveParams = {
   topK?: number;
   chunkTopK?: number;
   filters?: RagFilters | null;
+  // Supplying these skips LightRAG's own keyword-extraction LLM call on the query
+  // server (~1.0-1.5s per KG-mode query). The router already produces them.
+  hlKeywords?: string[];
+  llKeywords?: string[];
 };
 
 export type RetrieveResult = {
@@ -68,6 +72,12 @@ export async function retrieve(
   }
   if (params.filters) {
     body.filters = params.filters;
+  }
+  if (params.hlKeywords?.length) {
+    body.hl_keywords = params.hlKeywords;
+  }
+  if (params.llKeywords?.length) {
+    body.ll_keywords = params.llKeywords;
   }
 
   const res = await fetch(`${BASE_URL}/retrieve`, {
