@@ -75,6 +75,9 @@ export function convertToUIMessages(messages: DBMessage[]): ChatMessage[] {
     parts: message.parts as UIMessagePart<CustomUIDataTypes, ChatTools>[],
     metadata: {
       createdAt: formatISO(message.createdAt),
+      // Group chat attribution. Null on assistant messages and on anything written
+      // before attribution existed; the transcript renders those unlabelled.
+      senderId: message.userId ?? undefined,
     },
   }));
 }

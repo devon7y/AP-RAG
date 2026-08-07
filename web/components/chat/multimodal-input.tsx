@@ -236,7 +236,8 @@ function PureMultimodalInput({
   // show them as cancellable "will filter" chips before sending. On send these are
   // applied; cancelled ones are reported to the server so its second-pass LLM
   // extraction won't re-add them.
-  const { filters, setFilters, digest } = useActiveChat();
+  const { filters, setFilters, digest, busyByOther, activeParticipantName } =
+    useActiveChat();
   const facets = useFacets(input.trim().length > 0);
   const papersIndex = usePapersIndex(input.trim().length > 0);
   const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
@@ -572,6 +573,14 @@ function PureMultimodalInput({
           if (!input.trim() && attachments.length === 0) {
             return;
           }
+          // A shared chat answers one question at a time — the server would refuse this
+          // with a 409 anyway, so say who has the floor instead of bouncing off it.
+          if (busyByOther) {
+            toast.error(
+              `${activeParticipantName ?? "Someone"} is asking a question — their answer will appear here in a moment.`
+            );
+            return;
+          }
           if (status === "ready" || status === "error") {
             submitForm();
           } else {
@@ -695,7 +704,11 @@ function PureMultimodalInput({
             }
           }}
           placeholder={
-            editingMessage ? "Edit your message..." : "Ask anything..."
+            busyByOther
+              ? `${activeParticipantName ?? "Someone"} is asking…`
+              : editingMessage
+                ? "Edit your message..."
+                : "Ask anything..."
           }
           ref={textareaRef}
           value={input}
@@ -716,7 +729,7 @@ function PureMultimodalInput({
                   : "bg-muted text-muted-foreground/25 cursor-not-allowed"
               )}
               data-testid="send-button"
-              disabled={!input.trim() || uploadQueue.length > 0}
+              disabled={!input.trim() || uploadQueue.length > 0 || busyByOther}
               status={status}
               variant="secondary"
             >

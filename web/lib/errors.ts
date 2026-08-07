@@ -3,6 +3,7 @@ export type ErrorType =
   | "unauthorized"
   | "forbidden"
   | "not_found"
+  | "conflict"
   | "rate_limit"
   | "offline";
 
@@ -96,6 +97,8 @@ export function getMessageByErrorCode(errorCode: ErrorCode): string {
       return "You've reached the message limit. Come back in 1 hour to continue chatting.";
     case "not_found:chat":
       return "The requested chat was not found. Please check the chat ID and try again.";
+    case "conflict:chat":
+      return "Someone else in this chat is asking a question. Their answer will appear here in a moment.";
     case "forbidden:chat":
       return "This chat belongs to another user. Please check the chat ID and try again.";
     case "unauthorized:chat":
@@ -127,6 +130,8 @@ function getStatusCodeByType(type: ErrorType) {
       return 403;
     case "not_found":
       return 404;
+    case "conflict":
+      return 409;
     case "rate_limit":
       return 429;
     case "offline":

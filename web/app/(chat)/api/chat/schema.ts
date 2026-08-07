@@ -45,7 +45,7 @@ export const postRequestBodySchema = z.object({
   message: userMessageSchema.optional(),
   messages: z.array(toolApprovalMessageSchema).optional(),
   selectedChatModel: z.string(),
-  selectedVisibilityType: z.enum(["public", "private"]),
+  selectedVisibilityType: z.enum(["public", "private", "shared"]),
   // AP-RAG controls (mirror the CLI flags).
   reasoning: z.enum(["none", "low", "medium", "high", "xhigh"]).optional(),
   mode: z.enum(["auto", "hybrid", "local", "global", "mix", "naive"]).optional(),

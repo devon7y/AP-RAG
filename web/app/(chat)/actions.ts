@@ -11,6 +11,8 @@ import {
   deleteMessagesByChatIdAfterTimestamp,
   getChatById,
   getMessageById,
+  removeAllChatMembers,
+  resolveChatAccess,
   updateChatVisibilityById,
 } from "@/lib/db/queries";
 import { getTextFromMessage } from "@/lib/utils";
@@ -50,7 +52,18 @@ export async function deleteTrailingMessages({ id }: { id: string }) {
   }
 
   const chat = await getChatById({ id: message.chatId });
-  if (!chat || chat.userId !== session.user.id) {
+  if (!chat) {
+    throw new Error("Unauthorized");
+  }
+
+  // Editing a message discards everything after it, so in a shared chat this is NOT open
+  // to every participant — only the person who sent that message, or the chat's owner.
+  // Otherwise anyone could truncate someone else's thread. Messages predating attribution
+  // carry no sender, so they're owner-only.
+  const isSender =
+    message.userId !== null && message.userId === session.user.id;
+  const isOwner = chat.userId === session.user.id;
+  if (!(isSender || isOwner)) {
     throw new Error("Unauthorized");
   }
 
@@ -72,10 +85,17 @@ export async function updateChatVisibility({
     throw new Error("Unauthorized");
   }
 
-  const chat = await getChatById({ id: chatId });
-  if (!chat || chat.userId !== session.user.id) {
+  const access = await resolveChatAccess({ chatId, userId: session.user.id });
+  if (!access?.isOwner) {
     throw new Error("Unauthorized");
   }
 
   await updateChatVisibilityById({ chatId, visibility });
+
+  // Going private is an explicit revoke: drop the member rows rather than leaving them
+  // dormant, so flipping back to shared later doesn't silently re-grant access to people
+  // the owner meant to remove.
+  if (visibility === "private") {
+    await removeAllChatMembers({ chatId });
+  }
 }

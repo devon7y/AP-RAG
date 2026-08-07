@@ -22,24 +22,24 @@ export function useChatVisibility({
     `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/history`
   )?.data;
 
-  const { data: localVisibility, mutate: setLocalVisibility } = useSWR(
-    `${chatId}-visibility`,
-    null,
-    {
+  const { data: localVisibility, mutate: setLocalVisibility } =
+    useSWR<VisibilityType>(`${chatId}-visibility`, null, {
       fallbackData: initialVisibilityType,
-    }
-  );
+    });
 
-  const visibilityType = useMemo(() => {
+  const visibilityType: VisibilityType = useMemo(() => {
     if (!history) {
-      return localVisibility;
+      return localVisibility ?? initialVisibilityType;
     }
     const chat = history.chats.find((currentChat) => currentChat.id === chatId);
+    // Absent from history isn't "private" — a public chat opened by link, or one shared
+    // with you that hasn't paged in yet, simply isn't in the loaded window. Trust the
+    // value the server sent for this chat instead of mislabelling it.
     if (!chat) {
-      return "private";
+      return localVisibility ?? initialVisibilityType;
     }
     return chat.visibility;
-  }, [history, chatId, localVisibility]);
+  }, [history, chatId, localVisibility, initialVisibilityType]);
 
   const setVisibilityType = (updatedVisibilityType: VisibilityType) => {
     setLocalVisibility(updatedVisibilityType);

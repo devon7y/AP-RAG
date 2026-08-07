@@ -28,22 +28,26 @@ import { fetcher } from "@/lib/utils";
 import { LoaderIcon } from "./icons";
 import { ChatItem } from "./sidebar-history-item";
 
+// The history endpoint returns chats you own AND chats shared with you; `isOwner` tells
+// them apart so the sidebar can section them and offer "Leave" rather than "Delete".
+export type HistoryChat = Chat & { isOwner?: boolean };
+
 type GroupedChats = {
-  today: Chat[];
-  yesterday: Chat[];
-  lastWeek: Chat[];
-  lastMonth: Chat[];
-  older: Chat[];
+  today: HistoryChat[];
+  yesterday: HistoryChat[];
+  lastWeek: HistoryChat[];
+  lastMonth: HistoryChat[];
+  older: HistoryChat[];
 };
 
 export type ChatHistory = {
-  chats: Chat[];
+  chats: HistoryChat[];
   hasMore: boolean;
 };
 
 const PAGE_SIZE = 20;
 
-const groupChatsByDate = (chats: Chat[]): GroupedChats => {
+const groupChatsByDate = (chats: HistoryChat[]): GroupedChats => {
   const now = new Date();
   const oneWeekAgo = subWeeks(now, 1);
   const oneMonthAgo = subMonths(now, 1);
@@ -111,7 +115,9 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
   } = useSWRInfinite<ChatHistory>(
     user ? getChatHistoryPaginationKey : () => null,
     fetcher,
-    { fallbackData: [], revalidateOnFocus: false }
+    // Revalidate on focus so a chat someone shares with you turns up in "Shared with me"
+    // when you next look at the tab, rather than only after a reload.
+    { fallbackData: [], revalidateOnFocus: true }
   );
 
   const router = useRouter();
@@ -125,6 +131,32 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
   const hasEmptyChatHistory = paginatedChatHistories
     ? paginatedChatHistories.every((page) => page.chats.length === 0)
     : false;
+
+  // Leaving a chat someone shared with you: drop your membership, not the conversation.
+  const handleLeave = (chatId: string) => {
+    const isCurrentChat = pathname === `/chat/${chatId}`;
+    if (isCurrentChat) {
+      router.replace("/");
+    }
+
+    mutate((chatHistories) =>
+      chatHistories?.map((chatHistory) => ({
+        ...chatHistory,
+        chats: chatHistory.chats.filter((chat) => chat.id !== chatId),
+      }))
+    );
+
+    fetch(
+      `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/chat/${chatId}/members`,
+      {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: (user as { id?: string })?.id }),
+      }
+    );
+
+    toast.success("You left the chat");
+  };
 
   const handleDelete = () => {
     const chatToDelete = deleteId;
@@ -214,10 +246,41 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
                   (paginatedChatHistory) => paginatedChatHistory.chats
                 );
 
-                const groupedChats = groupChatsByDate(chatsFromHistory);
+                // Chats other people shared with you get their own section rather than
+                // being scattered through your own by date — you look for them by "who
+                // sent me this", not by when they happened to be created.
+                const sharedWithMe = chatsFromHistory.filter(
+                  (chat) => chat.isOwner === false
+                );
+                const ownChats = chatsFromHistory.filter(
+                  (chat) => chat.isOwner !== false
+                );
+
+                const groupedChats = groupChatsByDate(ownChats);
 
                 return (
                   <div className="flex flex-col gap-4">
+                    {sharedWithMe.length > 0 && (
+                      <div>
+                        <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-sidebar-foreground/70">
+                          Shared with me
+                        </div>
+                        {sharedWithMe.map((chat) => (
+                          <ChatItem
+                            chat={chat}
+                            isActive={chat.id === id}
+                            key={chat.id}
+                            onDelete={(chatId) => {
+                              setDeleteId(chatId);
+                              setShowDeleteDialog(true);
+                            }}
+                            onLeave={handleLeave}
+                            setOpenMobile={setOpenMobile}
+                          />
+                        ))}
+                      </div>
+                    )}
+
                     {groupedChats.today.length > 0 && (
                       <div>
                         <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-sidebar-foreground/70">

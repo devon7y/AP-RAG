@@ -29,12 +29,25 @@ export const chat = pgTable("Chat", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
   createdAt: timestamp("createdAt").notNull(),
   title: text("title").notNull(),
+  // The creator. Owners alone can delete a chat and manage its member list; everyone
+  // in `chatMember` (plus everyone, when visibility is "public") can read and post.
   userId: uuid("userId")
     .notNull()
     .references(() => user.id),
-  visibility: varchar("visibility", { enum: ["public", "private"] })
+  // "private" — owner only. "shared" — owner + the rows in `chatMember`. "public" —
+  // every signed-in user. Shared and public are both read/WRITE: any participant can
+  // send a message and the answer streams to everyone watching.
+  visibility: varchar("visibility", { enum: ["public", "private", "shared"] })
     .notNull()
     .default("private"),
+  // Group-chat turn lock. A chat answers one question at a time — concurrent sends would
+  // interleave retrieval and race the message inserts (which are ordered by createdAt
+  // alone). The sender claims the chat here for the duration of the turn; other
+  // participants see "X is asking…" and their composer disables. `activeStreamId` is the
+  // resumable-stream id the followers attach to, so they watch the answer stream live.
+  activeStreamId: text("activeStreamId"),
+  activeUserId: uuid("activeUserId"),
+  activeSince: timestamp("activeSince"),
   // "Talk to Author": when set, this chat is scoped to one author — retrieval is
   // pinned to their papers and the answer speaks in their first-person persona.
   personaAuthor: text("personaAuthor"),
@@ -55,6 +68,26 @@ export const chat = pgTable("Chat", {
 
 export type Chat = InferSelectModel<typeof chat>;
 
+// Who a "shared" chat is shared WITH. The owner is implicit (they're `chat.userId`) and
+// never has a row here. Membership grants read + write; only the owner can edit the list.
+export const chatMember = pgTable(
+  "ChatMember",
+  {
+    chatId: uuid("chatId")
+      .notNull()
+      .references(() => chat.id),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => user.id),
+    createdAt: timestamp("createdAt").notNull().defaultNow(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.chatId, table.userId] }),
+  })
+);
+
+export type ChatMember = InferSelectModel<typeof chatMember>;
+
 export const message = pgTable("Message_v2", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
   chatId: uuid("chatId")
@@ -64,10 +97,15 @@ export const message = pgTable("Message_v2", {
   parts: json("parts").notNull(),
   attachments: json("attachments").notNull(),
   createdAt: timestamp("createdAt").notNull(),
+  // Who sent it, for attribution in a group chat. Null on assistant messages and on
+  // every message written before group chat existed (rendered unattributed).
+  userId: uuid("userId").references(() => user.id),
 });
 
 export type DBMessage = InferSelectModel<typeof message>;
 
+// Votes are PER USER: in a group chat two people may disagree about the same answer, and
+// a (chatId, messageId) key would let one silently overwrite the other.
 export const vote = pgTable(
   "Vote_v2",
   {
@@ -77,10 +115,15 @@ export const vote = pgTable(
     messageId: uuid("messageId")
       .notNull()
       .references(() => message.id),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => user.id),
     isUpvoted: boolean("isUpvoted").notNull(),
   },
   (table) => ({
-    pk: primaryKey({ columns: [table.chatId, table.messageId] }),
+    pk: primaryKey({
+      columns: [table.chatId, table.messageId, table.userId],
+    }),
   })
 );
 

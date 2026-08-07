@@ -1,5 +1,9 @@
 import { auth } from "@/app/(auth)/auth";
-import { getChatById, getMessagesByChatId } from "@/lib/db/queries";
+import {
+  getChatParticipants,
+  getMessagesByChatId,
+  resolveChatAccess,
+} from "@/lib/db/queries";
 import { convertToUIMessages } from "@/lib/utils";
 
 export async function GET(request: Request) {
@@ -10,13 +14,14 @@ export async function GET(request: Request) {
     return Response.json({ error: "chatId required" }, { status: 400 });
   }
 
-  const [session, chat, messages] = await Promise.all([
-    auth(),
-    getChatById({ id: chatId }),
-    getMessagesByChatId({ id: chatId }),
-  ]);
+  const session = await auth();
+  const userId = session?.user?.id ?? null;
 
-  if (!chat) {
+  const access = await resolveChatAccess({ chatId, userId });
+
+  // No such chat yet — the client is opening a brand-new conversation whose row is
+  // written on the first message.
+  if (!access) {
     return Response.json({
       messages: [],
       visibility: "private",
@@ -24,24 +29,38 @@ export async function GET(request: Request) {
       isReadonly: false,
       personaAuthor: null,
       digest: null,
+      participants: [],
+      isOwner: true,
+      viewerId: userId,
     });
   }
 
-  if (
-    chat.visibility === "private" &&
-    (!session?.user || session.user.id !== chat.userId)
-  ) {
+  if (!userId) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  if (!access.canRead) {
     return Response.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const isReadonly = !session?.user || session.user.id !== chat.userId;
+  const [messages, participants] = await Promise.all([
+    getMessagesByChatId({ id: chatId }),
+    getChatParticipants({ chatId }),
+  ]);
 
   return Response.json({
     messages: convertToUIMessages(messages),
-    visibility: chat.visibility,
-    userId: chat.userId,
-    isReadonly,
-    personaAuthor: chat.personaAuthor ?? null,
-    digest: chat.digest ?? null,
+    visibility: access.chat.visibility,
+    userId: access.chat.userId,
+    // Everyone who can read a shared/public chat can also post into it — the read-only
+    // transcript is what a private chat's link already gave.
+    isReadonly: !access.canWrite,
+    isOwner: access.isOwner,
+    viewerId: userId,
+    // Owner first, then members: the transcript labels each message with its sender and
+    // the share dialog lists who currently has access.
+    participants,
+    personaAuthor: access.chat.personaAuthor ?? null,
+    digest: access.chat.digest ?? null,
   });
 }

@@ -22,6 +22,7 @@ import { getChatHistoryPaginationKey } from "@/components/chat/sidebar-history";
 import { toast } from "@/components/chat/toast";
 import type { VisibilityType } from "@/components/chat/visibility-selector";
 import { useAutoResume } from "@/hooks/use-auto-resume";
+import { displayName, type Participant } from "@/hooks/use-chat-participants";
 import {
   DEFAULT_CHAT_MODEL,
   DEFAULT_REASONING_EFFORT,
@@ -30,9 +31,9 @@ import {
   type RetrievalMode,
 } from "@/lib/ai/models";
 import type { RagFilters, RagRetrieval } from "@/lib/aprag/types";
-import { prefetchReferences } from "@/lib/pdf/loader";
 import type { Vote } from "@/lib/db/schema";
 import { ChatbotError } from "@/lib/errors";
+import { prefetchReferences } from "@/lib/pdf/loader";
 import type { ChatMessage } from "@/lib/types";
 import { fetcher, fetchWithErrorHandlers, generateUUID } from "@/lib/utils";
 
@@ -68,6 +69,13 @@ type ActiveChatContextValue = {
   personaAuthor: string | null;
   // "Research Digest": the topic + date window this chat summarizes (null for a normal chat).
   digest: DigestChatConfig | null;
+  // Group chat. `participants` is everyone with access (owner first) and drives the
+  // per-message bylines; `busyByOther` is true while ANOTHER participant holds the turn,
+  // which disables this composer — a chat answers one question at a time.
+  participants: Participant[];
+  viewerId: string | null;
+  busyByOther: boolean;
+  activeParticipantName: string | null;
 };
 
 // The digest config carried in the URL / persisted on the chat row (bucket is derived
@@ -158,6 +166,10 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
   }, [digest]);
   const digestByChat = useRef(new Map<string, DigestChatConfig>());
 
+  // useChat's onFinish is created before the transcript SWR below exists, so it reaches
+  // the refresher through a ref rather than closing over it.
+  const refreshChatDataRef = useRef<(() => void) | null>(null);
+
   const [personaAuthor, setPersonaAuthor] = useState<string | null>(null);
   const personaAuthorRef = useRef(personaAuthor);
   useEffect(() => {
@@ -165,7 +177,11 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
   }, [personaAuthor]);
   const personaByChat = useRef(new Map<string, string>());
 
-  const { data: chatData, isLoading } = useSWR(
+  const {
+    data: chatData,
+    isLoading,
+    mutate: refreshChatData,
+  } = useSWR(
     isNewChat
       ? null
       : `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/messages?chatId=${chatId}`,
@@ -179,6 +195,47 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
   const visibility: VisibilityType = isNewChat
     ? "private"
     : (chatData?.visibility ?? "private");
+
+  // GROUP CHAT HEARTBEAT.
+  //
+  // A shared chat has other people in it who can post at any moment, so this client can't
+  // just load the transcript once. It polls a deliberately tiny endpoint — last message
+  // id, message count, and who (if anyone) is mid-answer — and reacts:
+  //
+  //   * somebody posted, or an answer landed  -> refetch the transcript
+  //   * somebody is answering RIGHT NOW       -> attach to their stream and watch the
+  //                                              tokens arrive, same as if we'd asked
+  //
+  // Private chats never poll (nobody else can write to them), and SWR pauses polling
+  // while the tab is hidden, so an idle background tab costs nothing.
+  const isShared = !isNewChat && visibility !== "private";
+  const { data: chatState } = useSWR<{
+    exists: boolean;
+    activeStreamId: string | null;
+    activeUserId: string | null;
+    lastMessageId: string | null;
+    messageCount: number;
+    participants: Participant[];
+    busyByOther: boolean;
+  }>(
+    isShared
+      ? `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/chat/${chatId}/state`
+      : null,
+    fetcher,
+    { refreshInterval: 3000, revalidateOnFocus: true, dedupingInterval: 1000 }
+  );
+
+  const participants: Participant[] =
+    chatState?.participants ?? chatData?.participants ?? [];
+  const viewerId: string | null = chatData?.viewerId ?? null;
+  const busyByOther = Boolean(chatState?.busyByOther);
+  const activeParticipantName = useMemo(() => {
+    if (!(busyByOther && chatState?.activeUserId)) {
+      return null;
+    }
+    const who = participants.find((p) => p.id === chatState.activeUserId);
+    return who ? displayName(who) : "Someone";
+  }, [busyByOther, chatState?.activeUserId, participants]);
 
   const {
     messages,
@@ -242,9 +299,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
                     topic: digestRef.current.topic,
                     from: digestRef.current.from,
                     to: digestRef.current.to,
-                    ...(digestRef.current.openEnded
-                      ? { openEnded: true }
-                      : {}),
+                    ...(digestRef.current.openEnded ? { openEnded: true } : {}),
                   },
                 }
               : {}),
@@ -260,7 +315,8 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       // open — by the time they hover a citation, the bytes are already there. References
       // arrive frequency-ranked, so plain order is the importance signal.
       if (dataPart.type === "data-retrieval") {
-        const refs = (dataPart.data as RagRetrieval | undefined)?.references ?? [];
+        const refs =
+          (dataPart.data as RagRetrieval | undefined)?.references ?? [];
         prefetchReferences(
           refs.map((r) => ({ filename: r.filename, page: r.pages?.[0] ?? 1 }))
         );
@@ -271,6 +327,10 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
     },
     onFinish: () => {
       mutate(unstable_serialize(getChatHistoryPaginationKey));
+      // Re-read the transcript now that the turn is persisted: it comes back with sender
+      // attribution stamped on, and it re-aligns this client with the poll's stamp so the
+      // next tick doesn't look like a change.
+      refreshChatDataRef.current?.();
     },
     onError: (error) => {
       if (error.message?.includes("AI Gateway requires a valid credit card")) {
@@ -286,21 +346,91 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
     },
   });
 
-  const loadedChatIds = useRef(new Set<string>());
+  refreshChatDataRef.current = refreshChatData;
 
-  if (isNewChat && !loadedChatIds.current.has(newChatIdRef.current)) {
-    loadedChatIds.current.add(newChatIdRef.current);
-  }
+  // Read inside effects without making them re-run on every streamed token.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
 
+  // True while a turn is in flight in THIS client — either one we sent, or one we're
+  // following. Both cases must be left alone by the transcript sync below.
+  const isBusyLocally = status === "streaming" || status === "submitted";
+
+  // Apply the server's transcript. This is the initial load AND, in a shared chat, how
+  // another participant's messages arrive. It only ever adds: if the fetched transcript
+  // holds nothing we don't already have, it's left alone — otherwise a stale response
+  // landing just after our own turn would roll the answer back off the screen.
   useEffect(() => {
-    if (loadedChatIds.current.has(chatId)) {
+    if (isNewChat) {
       return;
     }
-    if (chatData?.messages) {
-      loadedChatIds.current.add(chatId);
-      setMessages(chatData.messages);
+    const incoming = chatData?.messages as ChatMessage[] | undefined;
+    if (!incoming?.length) {
+      return;
     }
-  }, [chatId, chatData?.messages, setMessages]);
+    if (isBusyLocally) {
+      return;
+    }
+    const known = new Set(messagesRef.current.map((m) => m.id));
+    const hasNew = incoming.some((m) => !known.has(m.id));
+    if (!(hasNew || messagesRef.current.length === 0)) {
+      return;
+    }
+    setMessages(incoming);
+    // Keyed on the fetched transcript alone: switching chats changes the SWR key, so
+    // `chatData` is undefined until the new chat's messages land and this bails above.
+  }, [chatData?.messages, isBusyLocally, isNewChat, setMessages]);
+
+  // The poll saw the transcript move (someone posted, or an answer finished) — fetch it.
+  // The effect above merges it in as soon as this client is idle.
+  const lastSeenStampRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!chatState?.exists) {
+      return;
+    }
+    const stamp = `${chatState.lastMessageId ?? ""}:${chatState.messageCount}`;
+    if (lastSeenStampRef.current === stamp) {
+      return;
+    }
+    lastSeenStampRef.current = stamp;
+    refreshChatData();
+  }, [
+    chatState?.exists,
+    chatState?.lastMessageId,
+    chatState?.messageCount,
+    refreshChatData,
+  ]);
+
+  // Someone else is answering right now: attach to their stream so the answer types out
+  // here too, instead of appearing all at once when they're done. `resumeStream` is the
+  // AI SDK's own reconnect path — the follower and the original sender resume the same
+  // resumable-stream id. The transcript is pulled FIRST so their question is on screen
+  // before its answer starts arriving under it.
+  const followingStreamRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!chatState?.busyByOther) {
+      followingStreamRef.current = null;
+      return;
+    }
+    const streamId = chatState.activeStreamId;
+    if (!streamId || followingStreamRef.current === streamId) {
+      return;
+    }
+    // Our own turn wins; we'd only be here on a stale tick.
+    if (isBusyLocally) {
+      return;
+    }
+    followingStreamRef.current = streamId;
+    refreshChatData().finally(() => {
+      resumeStream();
+    });
+  }, [
+    chatState?.busyByOther,
+    chatState?.activeStreamId,
+    isBusyLocally,
+    refreshChatData,
+    resumeStream,
+  ]);
 
   const prevChatIdRef = useRef(chatId);
   useEffect(() => {
@@ -314,6 +444,10 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       setFilters(null);
       setPersonaAuthor(personaByChat.current.get(chatId) ?? null);
       setDigest(digestByChat.current.get(chatId) ?? null);
+      // The live-sync bookkeeping is per chat; carrying it across would make the new
+      // chat's first poll look like "nothing changed".
+      lastSeenStampRef.current = null;
+      followingStreamRef.current = null;
       if (isNewChat) {
         setMessages([]);
       }
@@ -549,6 +683,10 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       setFilters,
       personaAuthor,
       digest,
+      participants,
+      viewerId,
+      busyByOther,
+      activeParticipantName,
     }),
     [
       chatId,
@@ -573,6 +711,10 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       filters,
       personaAuthor,
       digest,
+      participants,
+      viewerId,
+      busyByOther,
+      activeParticipantName,
     ]
   );
 

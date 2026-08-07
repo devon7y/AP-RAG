@@ -1,15 +1,16 @@
+import {
+  GlobeIcon as GlobeLucideIcon,
+  LogOutIcon,
+  UsersIcon,
+} from "lucide-react";
 import Link from "next/link";
-import { memo } from "react";
+import { memo, useState } from "react";
 import { useChatVisibility } from "@/hooks/use-chat-visibility";
 import type { Chat } from "@/lib/db/schema";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuPortal,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 import {
@@ -17,30 +18,30 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "../ui/sidebar";
-import {
-  CheckCircleFillIcon,
-  GlobeIcon,
-  LockIcon,
-  MoreHorizontalIcon,
-  ShareIcon,
-  TrashIcon,
-} from "./icons";
+import { MoreHorizontalIcon, ShareIcon, TrashIcon } from "./icons";
+import { ShareDialog } from "./share-dialog";
 
 const PureChatItem = ({
   chat,
   isActive,
   onDelete,
+  onLeave,
   setOpenMobile,
 }: {
-  chat: Chat;
+  chat: Chat & { isOwner?: boolean };
   isActive: boolean;
   onDelete: (chatId: string) => void;
+  // Present for chats shared WITH you: leaving drops your access, it doesn't delete
+  // someone else's conversation (which the server would refuse anyway).
+  onLeave?: (chatId: string) => void;
   setOpenMobile: (open: boolean) => void;
 }) => {
+  const isSharedWithMe = chat.isOwner === false;
   const { visibilityType, setVisibilityType } = useChatVisibility({
     chatId: chat.id,
     initialVisibilityType: chat.visibility,
   });
+  const [shareOpen, setShareOpen] = useState(false);
 
   return (
     <SidebarMenuItem>
@@ -51,6 +52,13 @@ const PureChatItem = ({
       >
         <Link href={`/chat/${chat.id}`} onClick={() => setOpenMobile(false)}>
           <span className="truncate">{chat.title}</span>
+          {/* A quiet marker that this conversation has other people in it. */}
+          {visibilityType === "shared" && (
+            <UsersIcon className="ml-auto size-3 shrink-0 opacity-60" />
+          )}
+          {visibilityType === "public" && (
+            <GlobeLucideIcon className="ml-auto size-3 shrink-0 opacity-60" />
+          )}
         </Link>
       </SidebarMenuButton>
 
@@ -66,52 +74,45 @@ const PureChatItem = ({
         </DropdownMenuTrigger>
 
         <DropdownMenuContent align="end" side="bottom">
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger className="cursor-pointer">
+          {/* One entry, the full dialog: picking WHO to share with needs a people picker,
+              which a nested menu can't carry. Only the owner may change access. */}
+          {!isSharedWithMe && (
+            <DropdownMenuItem
+              className="cursor-pointer"
+              onSelect={() => setShareOpen(true)}
+            >
               <ShareIcon />
               <span>Share</span>
-            </DropdownMenuSubTrigger>
-            <DropdownMenuPortal>
-              <DropdownMenuSubContent>
-                <DropdownMenuItem
-                  className="cursor-pointer flex-row justify-between"
-                  onClick={() => {
-                    setVisibilityType("private");
-                  }}
-                >
-                  <div className="flex flex-row items-center gap-2">
-                    <LockIcon size={12} />
-                    <span>Private</span>
-                  </div>
-                  {visibilityType === "private" ? (
-                    <CheckCircleFillIcon />
-                  ) : null}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="cursor-pointer flex-row justify-between"
-                  onClick={() => {
-                    setVisibilityType("public");
-                  }}
-                >
-                  <div className="flex flex-row items-center gap-2">
-                    <GlobeIcon />
-                    <span>Public</span>
-                  </div>
-                  {visibilityType === "public" ? <CheckCircleFillIcon /> : null}
-                </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuPortal>
-          </DropdownMenuSub>
+            </DropdownMenuItem>
+          )}
 
-          <DropdownMenuItem
-            onSelect={() => onDelete(chat.id)}
-            variant="destructive"
-          >
-            <TrashIcon />
-            <span>Delete</span>
-          </DropdownMenuItem>
+          {isSharedWithMe ? (
+            <DropdownMenuItem
+              onSelect={() => onLeave?.(chat.id)}
+              variant="destructive"
+            >
+              <LogOutIcon className="size-4" />
+              <span>Leave chat</span>
+            </DropdownMenuItem>
+          ) : (
+            <DropdownMenuItem
+              onSelect={() => onDelete(chat.id)}
+              variant="destructive"
+            >
+              <TrashIcon />
+              <span>Delete</span>
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
+
+      <ShareDialog
+        chatId={chat.id}
+        onOpenChange={setShareOpen}
+        open={shareOpen}
+        setVisibilityType={setVisibilityType}
+        visibilityType={visibilityType}
+      />
     </SidebarMenuItem>
   );
 };

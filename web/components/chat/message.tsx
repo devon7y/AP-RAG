@@ -1,9 +1,11 @@
 "use client";
 import type { UseChatHelpers } from "@ai-sdk/react";
+import { useActiveChat } from "@/hooks/use-active-chat";
+import { displayName } from "@/hooks/use-chat-participants";
 import {
   type CiteRef,
-  citedReferenceIds,
   citationsInsideSentence,
+  citedReferenceIds,
   disambiguationLetters,
   normalizeMath,
   rewriteIntext,
@@ -15,12 +17,6 @@ import type { RagChunk, RagReference, RagRetrieval } from "@/lib/aprag/types";
 import type { Vote } from "@/lib/db/schema";
 import type { ChatMessage } from "@/lib/types";
 import { cn, sanitizeText } from "@/lib/utils";
-import {
-  CITATION_COMPONENTS,
-  CitationContext,
-} from "./citation-popover";
-import { RagChunks } from "./rag-chunks";
-import { RagReferences } from "./rag-references";
 import { MessageContent, MessageResponse } from "../ai-elements/message";
 import { Shimmer } from "../ai-elements/shimmer";
 import {
@@ -30,6 +26,7 @@ import {
   ToolInput,
   ToolOutput,
 } from "../ai-elements/tool";
+import { CITATION_COMPONENTS, CitationContext } from "./citation-popover";
 import { useDataStream } from "./data-stream-provider";
 import { DocumentToolResult } from "./document";
 import { DocumentPreview } from "./document-preview";
@@ -37,6 +34,8 @@ import { SparklesIcon } from "./icons";
 import { MessageActions } from "./message-actions";
 import { MessageReasoning } from "./message-reasoning";
 import { PreviewAttachment } from "./preview-attachment";
+import { RagChunks } from "./rag-chunks";
+import { RagReferences } from "./rag-references";
 import { Weather } from "./weather";
 
 const PurePreviewMessage = ({
@@ -71,13 +70,24 @@ const PurePreviewMessage = ({
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
 
+  // Group chat: label a question with the participant who asked it. Skipped for your own
+  // messages, and for chats with nobody else in them (every byline would read the same).
+  const { participants, viewerId } = useActiveChat();
+  const senderId = message.metadata?.senderId;
+  const senderLabel =
+    isUser && senderId && senderId !== viewerId && participants.length > 1
+      ? (() => {
+          const sender = participants.find((p) => p.id === senderId);
+          return sender ? displayName(sender) : null;
+        })()
+      : null;
+
   // AP-RAG retrieval payload attached to this assistant message (references + chunks).
   const retrievalPart = message.parts?.find(
     (part) => part.type === "data-retrieval"
   );
-  const retrieval = (
-    retrievalPart as { data?: RagRetrieval } | undefined
-  )?.data;
+  const retrieval = (retrievalPart as { data?: RagRetrieval } | undefined)
+    ?.data;
 
   // Per-passage citation maps: the answer cites passage numbers (citeIndex); each maps to
   // its source chunk and that chunk's paper (for the APA in-text label + the popover).
@@ -116,7 +126,9 @@ const PurePreviewMessage = ({
       )
     : "";
   const cited =
-    isAssistant && retrieval ? citedReferenceIds(cleanedAnswer, byCiteIndex) : null;
+    isAssistant && retrieval
+      ? citedReferenceIds(cleanedAnswer, byCiteIndex)
+      : null;
   // Only list references the answer actually cites (matches the CLI).
   const rawCitedReferences = retrieval
     ? retrieval.references.filter((r) => !cited || cited.has(r.reference_id))
@@ -485,9 +497,13 @@ const PurePreviewMessage = ({
   // (Only when loading has finished; mid-stream a message is legitimately empty.)
   const hasReasoning = message.parts?.some(
     (part) =>
-      part.type === "reasoning" && "text" in part && part.text?.trim().length > 0
+      part.type === "reasoning" &&
+      "text" in part &&
+      part.text?.trim().length > 0
   );
-  const hasToolPart = message.parts?.some((part) => part.type.startsWith("tool-"));
+  const hasToolPart = message.parts?.some((part) =>
+    part.type.startsWith("tool-")
+  );
   const showsRetrieval = Boolean(
     retrieval &&
       (retrieval.chunkMode
@@ -526,7 +542,16 @@ const PurePreviewMessage = ({
         {isAssistant ? (
           <div className="flex min-w-0 flex-1 flex-col gap-2">{content}</div>
         ) : (
-          content
+          <>
+            {/* In a shared chat, say who asked. Only for other people's questions — your
+                own are already on your side of the thread. */}
+            {senderLabel && (
+              <span className="-mb-1 px-1 text-[11px] text-muted-foreground">
+                {senderLabel}
+              </span>
+            )}
+            {content}
+          </>
         )}
       </div>
     </div>

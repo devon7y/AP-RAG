@@ -1,43 +1,23 @@
 "use client";
 
-import { type ReactNode, useMemo, useState } from "react";
+import { GlobeIcon, LockIcon, UsersIcon } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { useChatParticipants } from "@/hooks/use-chat-participants";
 import { useChatVisibility } from "@/hooks/use-chat-visibility";
 import { cn } from "@/lib/utils";
-import {
-  CheckCircleFillIcon,
-  ChevronDownIcon,
-  GlobeIcon,
-  LockIcon,
-} from "./icons";
+import { ShareDialog } from "./share-dialog";
 
-export type VisibilityType = "private" | "public";
+// "private" — owner only. "shared" — the owner plus explicitly invited users. "public" —
+// every signed-in user. Shared and public both allow POSTING, not just reading: anyone
+// with access can ask a question and the answer streams to everyone watching.
+export type VisibilityType = "private" | "shared" | "public";
 
-const visibilities: Array<{
-  id: VisibilityType;
-  label: string;
-  description: string;
-  icon: ReactNode;
-}> = [
-  {
-    id: "private",
-    label: "Private",
-    description: "Only you can access this chat",
-    icon: <LockIcon />,
-  },
-  {
-    id: "public",
-    label: "Public",
-    description: "Anyone with the link can access this chat",
-    icon: <GlobeIcon />,
-  },
-];
+const labels: Record<VisibilityType, string> = {
+  private: "Private",
+  shared: "Shared",
+  public: "Public",
+};
 
 export function VisibilitySelector({
   chatId,
@@ -54,58 +34,48 @@ export function VisibilitySelector({
     initialVisibilityType: selectedVisibilityType,
   });
 
-  const selectedVisibility = useMemo(
-    () => visibilities.find((visibility) => visibility.id === visibilityType),
-    [visibilityType]
+  // Only fetched while the chat is actually shared, so a private chat's header costs
+  // nothing extra. The count tells the owner at a glance who else is in here.
+  const { participants } = useChatParticipants(
+    visibilityType === "shared" ? chatId : null
   );
+  const memberCount = participants.filter((p) => !p.isOwner).length;
+
+  const Icon =
+    visibilityType === "public"
+      ? GlobeIcon
+      : visibilityType === "shared"
+        ? UsersIcon
+        : LockIcon;
 
   return (
-    <DropdownMenu onOpenChange={setOpen} open={open}>
-      <DropdownMenuTrigger
-        asChild
+    <>
+      <Button
         className={cn(
-          "w-fit data-[state=open]:bg-accent data-[state=open]:text-accent-foreground",
+          "gap-1.5 rounded-lg border-border/50 text-muted-foreground shadow-none transition-colors hover:text-foreground focus-visible:ring-0 focus-visible:border-border/50 active:translate-y-0",
           className
         )}
+        data-testid="visibility-selector"
+        onClick={() => setOpen(true)}
+        size="sm"
+        variant="outline"
       >
-        <Button
-          className="gap-1.5 rounded-lg border-border/50 text-muted-foreground shadow-none transition-colors hover:text-foreground focus-visible:ring-0 focus-visible:border-border/50 active:translate-y-0"
-          data-testid="visibility-selector"
-          size="sm"
-          variant="outline"
-        >
-          {selectedVisibility?.icon}
-          <span className="md:sr-only">{selectedVisibility?.label}</span>
-          <ChevronDownIcon />
-        </Button>
-      </DropdownMenuTrigger>
+        <Icon className="size-3.5" />
+        <span className="md:sr-only">
+          {labels[visibilityType]}
+          {visibilityType === "shared" && memberCount > 0
+            ? ` · ${memberCount + 1}`
+            : ""}
+        </span>
+      </Button>
 
-      <DropdownMenuContent align="start" className="min-w-[300px]">
-        {visibilities.map((visibility) => (
-          <DropdownMenuItem
-            className="group/item flex flex-row items-center justify-between gap-4"
-            data-active={visibility.id === visibilityType}
-            data-testid={`visibility-selector-item-${visibility.id}`}
-            key={visibility.id}
-            onSelect={() => {
-              setVisibilityType(visibility.id);
-              setOpen(false);
-            }}
-          >
-            <div className="flex flex-col items-start gap-1">
-              {visibility.label}
-              {visibility.description && (
-                <div className="text-muted-foreground text-xs">
-                  {visibility.description}
-                </div>
-              )}
-            </div>
-            <div className="text-foreground opacity-0 group-data-[active=true]/item:opacity-100 dark:text-foreground">
-              <CheckCircleFillIcon />
-            </div>
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+      <ShareDialog
+        chatId={chatId}
+        onOpenChange={setOpen}
+        open={open}
+        setVisibilityType={setVisibilityType}
+        visibilityType={visibilityType}
+      />
+    </>
   );
 }

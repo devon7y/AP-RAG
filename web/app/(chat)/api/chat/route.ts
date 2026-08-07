@@ -51,13 +51,17 @@ import {
 import type { RagRetrieval } from "@/lib/aprag/types";
 import { isProductionEnvironment } from "@/lib/constants";
 import {
+  claimChatTurn,
   createStreamId,
   deleteChatById,
   getChatById,
   getMessageCountByUserId,
   getMessagesByChatId,
+  releaseChatTurn,
+  resolveChatAccess,
   saveChat,
   saveMessages,
+  setChatActiveStream,
   updateChatDigest,
   updateChatTitleById,
   updateMessage,
@@ -106,6 +110,10 @@ export async function POST(request: Request) {
   } catch (_) {
     return new ChatbotError("bad_request:api").toResponse();
   }
+
+  // Tracked out here so a throw between claiming the turn and finishing the stream still
+  // releases it, rather than leaving the chat wedged until the staleness window expires.
+  let claimedTurn: { chatId: string; userId: string } | null = null;
 
   try {
     const {
@@ -173,7 +181,13 @@ export async function POST(request: Request) {
         : null;
 
     if (chat) {
-      if (chat.userId !== session.user.id) {
+      // Owner, an invited member, or (on a public chat) any signed-in user. Everyone who
+      // can read a shared chat can post into it.
+      const access = await resolveChatAccess({
+        chatId: id,
+        userId: session.user.id,
+      });
+      if (!access?.canWrite) {
         return new ChatbotError("forbidden:chat").toResponse();
       }
       messagesFromDb = await getMessagesByChatId({ id });
@@ -195,6 +209,20 @@ export async function POST(request: Request) {
         : rawTitlePromise;
     }
 
+    // A chat answers one question at a time. Two participants sending at once would
+    // interleave their retrievals and race the message inserts (which are ordered by
+    // createdAt alone), so the sender claims the chat for the duration of the turn. The
+    // claim is one conditional UPDATE, so exactly one of two simultaneous senders wins;
+    // the loser gets a 409 and their composer shows who is currently asking.
+    const turnClaimed = await claimChatTurn({
+      chatId: id,
+      userId: session.user.id,
+    });
+    if (!turnClaimed) {
+      return new ChatbotError("conflict:chat").toResponse();
+    }
+    claimedTurn = { chatId: id, userId: session.user.id };
+
     const uiMessages: ChatMessage[] = [
       ...convertToUIMessages(messagesFromDb),
       message as ChatMessage,
@@ -210,6 +238,8 @@ export async function POST(request: Request) {
             parts: message.parts,
             attachments: [],
             createdAt: new Date(),
+            // Attribution: in a shared chat the transcript labels who asked what.
+            userId: session.user.id,
           },
         ],
       });
@@ -353,6 +383,11 @@ export async function POST(request: Request) {
           query: retrievalQuery,
           filters: inferred,
           mode: suggestedMode,
+          // Produced by the same router call (+0.18s). Passing them to /retrieve
+          // skips LightRAG's own keyword-extraction LLM call on the query server
+          // (~1.0-1.5s per KG-mode query). Absent => unchanged behaviour.
+          hlKeywords,
+          llKeywords,
         } = await condenseAndExtract(toHistoryTurns(priorMessages), question);
 
         // Resolve "auto" to the LLM-suggested concrete mode (hybrid fallback); an explicit
@@ -418,6 +453,8 @@ export async function POST(request: Request) {
                   mode: retrievalMode,
                   filters: { ...effectiveFilters, papers: [p] },
                   chunkTopK: perPaperK,
+                  hlKeywords,
+                  llKeywords,
                 });
                 return { filename: p, result };
               } catch {
@@ -448,6 +485,8 @@ export async function POST(request: Request) {
             question: retrievalQuery,
             mode: retrievalMode,
             filters: effectiveFilters,
+            hlKeywords,
+            llKeywords,
           });
           context = effectiveChunkMode
             ? ""
@@ -544,9 +583,15 @@ export async function POST(request: Request) {
               createdAt: new Date(),
               attachments: [],
               chatId: id,
+              // Assistant messages have no sender.
+              userId: null,
             })),
           });
         }
+        // Hand the chat back: the other participants' composers re-enable and their
+        // poll stops showing "asking…". Runs after the answer is persisted so nobody
+        // can send into the gap between release and write.
+        await releaseChatTurn({ chatId: id, userId: session.user.id });
       },
       onError: () => "Oops, an error occurred while retrieving from AP-RAG!",
     });
@@ -562,6 +607,16 @@ export async function POST(request: Request) {
           if (streamContext) {
             const streamId = generateId();
             await createStreamId({ streamId, chatId: id });
+            // Publish the id on the chat row BEFORE handing the stream to
+            // resumable-stream: the other participants poll for it and attach as
+            // followers, so they watch this answer arrive token by token rather than
+            // waiting for the finished message. Without Redis there is no resumable
+            // stream and they fall back to picking the answer up on the next poll.
+            await setChatActiveStream({
+              chatId: id,
+              userId: session.user.id,
+              streamId,
+            });
             await streamContext.createNewResumableStream(
               streamId,
               () => sseStream
@@ -574,6 +629,12 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     const vercelId = request.headers.get("x-vercel-id");
+
+    if (claimedTurn) {
+      await releaseChatTurn(claimedTurn).catch(() => {
+        /* the staleness window is the backstop */
+      });
+    }
 
     if (error instanceof ChatbotError) {
       return error.toResponse();

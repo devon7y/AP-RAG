@@ -10,6 +10,9 @@ import type { Suggestion } from "./db/schema";
 
 export const messageMetadataSchema = z.object({
   createdAt: z.string(),
+  // Who sent it, in a chat shared with other users. Absent on assistant messages and on
+  // messages written before group chat existed.
+  senderId: z.string().optional(),
 });
 
 export type MessageMetadata = z.infer<typeof messageMetadataSchema>;

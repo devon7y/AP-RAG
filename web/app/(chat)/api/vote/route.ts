@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { auth } from "@/app/(auth)/auth";
-import { getChatById, getVotesByChatId, voteMessage } from "@/lib/db/queries";
+import {
+  getVotesByChatId,
+  resolveChatAccess,
+  voteMessage,
+} from "@/lib/db/queries";
 import { ChatbotError } from "@/lib/errors";
 
 const voteSchema = z.object({
@@ -22,21 +26,23 @@ export async function GET(request: Request) {
 
   const session = await auth();
 
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return new ChatbotError("unauthorized:vote").toResponse();
   }
 
-  const chat = await getChatById({ id: chatId });
+  const access = await resolveChatAccess({ chatId, userId: session.user.id });
 
-  if (!chat) {
+  if (!access) {
     return new ChatbotError("not_found:chat").toResponse();
   }
 
-  if (chat.userId !== session.user.id) {
+  if (!access.canRead) {
     return new ChatbotError("forbidden:vote").toResponse();
   }
 
-  const votes = await getVotesByChatId({ id: chatId });
+  // Your own votes only — in a shared chat the thumbs show what YOU thought, not an
+  // aggregate over everyone reading.
+  const votes = await getVotesByChatId({ id: chatId, userId: session.user.id });
 
   return Response.json(votes, { status: 200 });
 }
@@ -60,23 +66,24 @@ export async function PATCH(request: Request) {
 
   const session = await auth();
 
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return new ChatbotError("unauthorized:vote").toResponse();
   }
 
-  const chat = await getChatById({ id: chatId });
+  const access = await resolveChatAccess({ chatId, userId: session.user.id });
 
-  if (!chat) {
+  if (!access) {
     return new ChatbotError("not_found:vote").toResponse();
   }
 
-  if (chat.userId !== session.user.id) {
+  if (!access.canWrite) {
     return new ChatbotError("forbidden:vote").toResponse();
   }
 
   await voteMessage({
     chatId,
     messageId,
+    userId: session.user.id,
     type,
   });
 
