@@ -70,6 +70,7 @@ import {
 import type { DBMessage } from "@/lib/db/schema";
 import { ChatbotError } from "@/lib/errors";
 import { checkIpRateLimit } from "@/lib/ratelimit";
+import { hasRedis } from "@/lib/redis";
 import type { ChatMessage } from "@/lib/types";
 import {
   convertToUIMessages,
@@ -608,7 +609,7 @@ export async function POST(request: Request) {
     return createUIMessageStreamResponse({
       stream,
       async consumeSseStream({ stream: sseStream }) {
-        if (!process.env.REDIS_URL) {
+        if (!hasRedis()) {
           return;
         }
         try {

@@ -48,7 +48,11 @@ Copy `.env.example` → `.env.local` and fill in. Required:
 - `AUTH_SECRET` — `openssl rand -base64 32`.
 - `POSTGRES_URL` — Neon/Vercel Postgres (chat history).
 - `BLOB_READ_WRITE_TOKEN` — Vercel Blob (attachments).
-- `REDIS_URL` — optional (resumable streams).
+- `REDIS_URL` (or `KV_URL`) — optional. Without it the chat still works, but loses
+  resumable streams — so in a shared chat the other participants wait for the whole
+  answer instead of watching it stream in — and IP rate limiting. Either name works,
+  since Vercel's marketplace providers disagree about it: the official Redis integration
+  sets `REDIS_URL`, Upstash's KV product sets `KV_URL`.
 
 ## Develop
 
