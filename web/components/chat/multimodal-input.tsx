@@ -47,11 +47,9 @@ import {
 } from "@/lib/ai/models";
 import { detectFilters } from "@/lib/aprag/detect";
 import {
-  authorFamily,
   DIGEST_WINDOW_DISMISS_KEY,
   type FilterListKey,
   hasAnyFilter,
-  isSpecificAuthor,
   mergeFilters,
 } from "@/lib/aprag/filters";
 import type { RagFilters } from "@/lib/aprag/types";
@@ -345,17 +343,6 @@ function PureMultimodalInput({
         }
         if (
           (active[dim] ?? []).some((a) => a.toLowerCase() === v.toLowerCase())
-        ) {
-          continue;
-        }
-        // A surname the text mentions is redundant once a specific person with that
-        // surname is already picked ("Zhang" alongside "Zhang, Kechen") — and applying
-        // it would widen the filter back to every Zhang, so don't offer the chip.
-        if (
-          dim === "authors" &&
-          (active.authors ?? []).some(
-            (a) => isSpecificAuthor(a) && authorFamily(a) === authorFamily(v)
-          )
         ) {
           continue;
         }
