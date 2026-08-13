@@ -39,6 +39,7 @@ const nextConfig: NextConfig = {
     // store path is also what require.resolve returns at runtime, so it is the file that
     // actually gets imported.
     "/api/uploads": [
+      "./lib/pdfjs/pdf.worker.min.mjs",
       "./node_modules/.pnpm/pdfjs-dist@*/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
     ],
   },

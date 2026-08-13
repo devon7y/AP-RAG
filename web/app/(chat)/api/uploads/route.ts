@@ -175,7 +175,12 @@ export async function POST(request: Request) {
     extracted = await extractPdfPages(bytes);
   } catch (error) {
     if (error instanceof PdfReadError) {
-      return Response.json({ error: error.message }, { status: 400 });
+      // A reader that won't start is our fault, not a bad request — and worth a 5xx so it
+      // shows up as a server error rather than as user error.
+      return Response.json(
+        { error: error.message },
+        { status: error.reason === "unavailable" ? 503 : 400 }
+      );
     }
     console.error("Failed to read uploaded PDF:", error);
     return Response.json(

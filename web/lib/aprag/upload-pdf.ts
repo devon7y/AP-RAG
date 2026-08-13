@@ -1,6 +1,8 @@
 import "server-only";
 
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { generateText } from "ai";
 import { openaiOptions } from "@/lib/ai/models";
@@ -24,27 +26,48 @@ const MAX_PAGES = 250;
 /** Hard ceiling on extracted text, so a pathological file can't exhaust the function. */
 const MAX_CHARS = 1_500_000;
 
-export class PdfReadError extends Error {
-  readonly reason: "encrypted" | "corrupt" | "empty";
+export type PdfReadFailure = "encrypted" | "corrupt" | "empty" | "unavailable";
 
-  constructor(reason: "encrypted" | "corrupt" | "empty", message: string) {
+export class PdfReadError extends Error {
+  readonly reason: PdfReadFailure;
+
+  constructor(reason: PdfReadFailure, message: string) {
     super(message);
     this.reason = reason;
     this.name = "PdfReadError";
   }
 }
 
-/** Where pdf.js's worker module actually sits on this machine, as a file:// URL. */
+/**
+ * Where pdf.js's worker module sits, as a file:// URL.
+ *
+ * The copy under lib/pdfjs is checked in (`pnpm sync-pdfjs-worker`, same as the browser
+ * one under public/) and is the one that can be relied on: it is a plain file inside the
+ * app, so it ships with the function whatever the host does to node_modules — installing
+ * flat, symlinking a pnpm store, or dereferencing those symlinks while packaging. The
+ * node_modules copy is tried first anyway, since in a normal checkout it is guaranteed to
+ * match the installed pdfjs-dist.
+ */
 function resolveWorkerSrc(): string | null {
+  const candidates: string[] = [];
   try {
-    const require = createRequire(import.meta.url);
-    return pathToFileURL(
-      require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs")
-    ).href;
-  } catch (error) {
-    console.error("pdf.js worker module could not be resolved:", error);
-    return null;
+    candidates.push(
+      createRequire(import.meta.url).resolve(
+        "pdfjs-dist/legacy/build/pdf.worker.mjs"
+      )
+    );
+  } catch {
+    /* not resolvable from here — the vendored copy below is the answer */
   }
+  candidates.push(join(process.cwd(), "lib/pdfjs/pdf.worker.min.mjs"));
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return pathToFileURL(candidate).href;
+    }
+  }
+  console.error("pdf.js worker module not found; tried:", candidates);
+  return null;
 }
 
 /** A PDF starts with "%PDF-" — checked on the bytes, not on the declared MIME type. */
@@ -102,9 +125,16 @@ export async function extractPdfPages(
         "This PDF is password-protected, so its text can't be read."
       );
     }
-    // The user is told their file couldn't be read; the log says why, because "couldn't
-    // read it" also covers pdf.js failing to start rather than the file being bad.
+    // "The reader didn't start" and "your file is broken" are different problems and want
+    // different words: one is ours to fix and retrying won't help, the other is the file.
     console.error("pdf.js could not open an uploaded PDF:", error);
+    const message = String((error as { message?: string }).message ?? "");
+    if (/worker/i.test(message)) {
+      throw new PdfReadError(
+        "unavailable",
+        "The PDF reader failed to start on the server, so this paper couldn't be read. Nothing is wrong with your file."
+      );
+    }
     throw new PdfReadError("corrupt", "This file could not be read as a PDF.");
   }
 
