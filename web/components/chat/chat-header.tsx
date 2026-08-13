@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { AppTitle } from "./app-title";
 import { ConnectDialog } from "./connect-dialog";
 import { DigestIndicator } from "./digest-indicator";
+import { PageHeader } from "./page-header";
 import { PersonaIndicator } from "./persona-indicator";
 import { VisibilitySelector, type VisibilityType } from "./visibility-selector";
 
@@ -37,7 +38,7 @@ function PureChatHeader({
   const sidebarTucked = peek || state === "collapsed";
 
   return (
-    <header className="sticky top-0 flex h-14 items-center gap-2 bg-sidebar px-3">
+    <PageHeader>
       <Button
         className={cn(!sidebarTucked && "md:hidden")}
         onClick={toggleSidebar}
@@ -77,7 +78,7 @@ function PureChatHeader({
           />
         )}
       </div>
-    </header>
+    </PageHeader>
   );
 }
 

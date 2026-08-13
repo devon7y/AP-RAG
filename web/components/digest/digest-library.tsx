@@ -11,6 +11,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import useSWR from "swr";
 import { formatDigestWindow } from "@/components/chat/digest-indicator";
+import { PageHeader } from "@/components/chat/page-header";
 import { SidebarToggle } from "@/components/chat/sidebar-toggle";
 import { paperFetcher } from "@/components/papers/lib";
 import type { DigestChatConfig } from "@/hooks/use-active-chat";
@@ -129,7 +130,7 @@ export function DigestLibrary() {
 
   return (
     <div className="flex h-dvh min-w-0 flex-col overflow-y-auto bg-background">
-      <header className="flex items-center gap-2 px-3 py-2 md:px-4">
+      <PageHeader>
         <SidebarToggle />
         <CalendarClockIcon className="size-4 text-muted-foreground" />
         <h1 className="font-semibold text-sm">Research Digest</h1>
@@ -138,7 +139,7 @@ export function DigestLibrary() {
             {digests.length} saved
           </span>
         )}
-      </header>
+      </PageHeader>
 
       <div className="mx-auto w-full max-w-4xl space-y-8 px-4 pb-10">
         {/* ── Creator ── */}

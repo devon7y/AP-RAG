@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
+import { PageHeader } from "@/components/chat/page-header";
 import { SidebarToggle } from "@/components/chat/sidebar-toggle";
 import { paperFetcher } from "@/components/papers/lib";
 import type { GraphEntitySummary, GraphOverview } from "@/lib/aprag/client";
@@ -111,7 +112,7 @@ export function GraphExplorer() {
 
   return (
     <div className="flex h-dvh min-w-0 flex-col overflow-y-auto bg-background">
-      <header className="flex items-center gap-2 px-3 py-2 md:px-4">
+      <PageHeader>
         <SidebarToggle />
         <WaypointsIcon className="size-4 text-muted-foreground" />
         <h1 className="font-semibold text-sm">Knowledge Graph</h1>
@@ -121,7 +122,7 @@ export function GraphExplorer() {
             {overview.relations.toLocaleString()} relations
           </span>
         )}
-      </header>
+      </PageHeader>
 
       <div className="mx-auto w-full max-w-4xl space-y-4 px-4 pb-10">
         <p className="text-muted-foreground text-xs">

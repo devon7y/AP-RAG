@@ -46,7 +46,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "../ui/alert-dialog";
-import { TalkToAuthorDialog } from "./talk-to-author-dialog";
 
 export function AppSidebar({ user }: { user: User | undefined }) {
   const router = useRouter();
@@ -54,7 +53,6 @@ export function AppSidebar({ user }: { user: User | undefined }) {
   const readerOpen = usePdfViewer((s) => s.tabs.length > 0);
   const { mutate } = useSWRConfig();
   const [showDeleteAllDialog, setShowDeleteAllDialog] = useState(false);
-  const [showTalkToAuthor, setShowTalkToAuthor] = useState(false);
 
   const handleDeleteAll = () => {
     setShowDeleteAllDialog(false);
@@ -129,15 +127,14 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                 </SidebarMenuItem>
                 <SidebarMenuItem>
                   <SidebarMenuButton
+                    asChild
                     className="h-8 rounded-lg text-[13px] text-sidebar-foreground/70 transition-colors duration-150 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                    onClick={() => {
-                      setOpenMobile(false);
-                      setShowTalkToAuthor(true);
-                    }}
                     tooltip="Talk to Author — interview a researcher in the corpus"
                   >
-                    <UserRoundIcon className="size-4" />
-                    <span className="font-medium">Talk to Author</span>
+                    <Link href="/authors" onClick={() => setOpenMobile(false)}>
+                      <UserRoundIcon className="size-4" />
+                      <span className="font-medium">Talk to Author</span>
+                    </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
                 <SidebarMenuItem>
@@ -192,10 +189,6 @@ export function AppSidebar({ user }: { user: User | undefined }) {
         <SidebarRail />
       </Sidebar>
 
-      <TalkToAuthorDialog
-        onOpenChange={setShowTalkToAuthor}
-        open={showTalkToAuthor}
-      />
 
       <AlertDialog
         onOpenChange={setShowDeleteAllDialog}

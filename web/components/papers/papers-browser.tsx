@@ -6,6 +6,7 @@ import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
 import useSWR from "swr";
 import { useLocalStorage } from "usehooks-ts";
+import { PageHeader } from "@/components/chat/page-header";
 import { SidebarToggle } from "@/components/chat/sidebar-toggle";
 import type { GraphFileEntity } from "@/lib/aprag/client";
 import type {
@@ -231,7 +232,7 @@ export function PapersBrowser() {
 
   return (
     <div className="flex h-dvh min-w-0 flex-col bg-background">
-      <header className="flex items-center gap-2 px-3 py-2 md:px-4">
+      <PageHeader>
         <SidebarToggle />
         <DatabaseIcon className="size-4 text-muted-foreground" />
         <h1 className="font-semibold text-sm">Papers Database</h1>
@@ -240,7 +241,7 @@ export function PapersBrowser() {
             {total.toLocaleString()} papers
           </span>
         )}
-      </header>
+      </PageHeader>
 
       <PapersToolbar
         deep={query.deep}
