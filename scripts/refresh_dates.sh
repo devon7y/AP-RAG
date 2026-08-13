@@ -37,9 +37,10 @@ if [ "$DO_LLM" = 1 ]; then
 fi
 
 if [ "$DO_DEPLOY" = 1 ]; then
-  echo "== deploy manifest to PC + restart query server =="
-  ssh -o ConnectTimeout=20 pc 'powershell -NoProfile -Command "Copy-Item C:\rag_server\papers_metadata.json C:\rag_server\papers_metadata.bak.json -Force"'
+  echo "== deploy canonical database (manifest + drive map) to PC + restart query server =="
+  ssh -o ConnectTimeout=20 pc 'powershell -NoProfile -Command "Copy-Item C:\rag_server\papers_metadata.json C:\rag_server\papers_metadata.bak.json -Force; if (Test-Path C:\rag_server\drive_links.json) { Copy-Item C:\rag_server\drive_links.json C:\rag_server\drive_links.bak.json -Force }"'
   scp -o ConnectTimeout=30 data/papers_metadata.json "pc:C:/rag_server/papers_metadata.json"
+  scp -o ConnectTimeout=30 data/drive_links.json "pc:C:/rag_server/drive_links.json"
   bash restart_aprag_pc.sh | grep manifest_papers
 fi
 

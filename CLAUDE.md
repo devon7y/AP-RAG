@@ -96,7 +96,7 @@ Optional native-multimodal path: an external **MinerU** parser service extracts 
 python -m uvicorn server:app       --host 0.0.0.0 --port 8000   # Octen embeddings (source: scripts/server.py)
 python -m uvicorn query_server:app --host 0.0.0.0 --port 8001   # query API (loads LightRAG + Qdrant)
 ```
-`restart_aprag_pc.sh` restarts the PC stack. The LightRAG/Octen maintenance utilities in `scripts/` (`rebuild_graph.py`, `reembed_missing.py`, `migrate_nano_to_qdrant.py`, `repair_*.py`, `verify_chunks.py`) are one-off, generally run on the cluster or PC.
+`restart_aprag_pc.sh` restarts the PC stack. **The single paper database is `data/papers_metadata.json` + `data/drive_links.json`** — every feature (chat, digest, trends, graph, papers browser, atlas metadata) derives from this pair; after it changes, run `scripts/propagate_papers.sh` to re-derive the web packs, deploy both files to the PC, and restart the query server (see [docs/SINGLE_DATABASE.md](docs/SINGLE_DATABASE.md); never hand-copy the manifest anywhere). The LightRAG/Octen maintenance utilities in `scripts/` (`rebuild_graph.py`, `reembed_missing.py`, `migrate_nano_to_qdrant.py`, `repair_*.py`, `verify_chunks.py`) are one-off, generally run on the cluster or PC.
 
 ## Conventions & gotchas specific to this repo
 

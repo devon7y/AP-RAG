@@ -24,8 +24,10 @@ const nextConfig: NextConfig = {
   // Atlas API routes read local JSON tables at runtime (readFileSync from
   // process.cwd()); make sure they ship inside the serverless function bundle.
   outputFileTracingIncludes: {
-    "/api/atlas/chunk": ["./server-data/chunk_text.json"],
-    "/api/atlas/semantle": ["./public/data/papers.json"],
+    "/api/atlas/semantle-author": [
+      "./server-data/author_game.json",
+      "./public/data/papers.json",
+    ],
   },
   cacheComponents: true,
   devIndicators: false,

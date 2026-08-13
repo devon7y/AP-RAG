@@ -42,5 +42,11 @@ logic lives inside `components/atlas/world/` (`walk.ts`, `tts.ts`,
 4. Every surfaced passage shows its citation (papers table via
    `corpus.papers[corpus.atlas.paper[i]]`).
 5. Server calls go through `/api/atlas/*` (auth-gated) — never the PC directly.
-6. Data pipeline order after a corpus rebuild: `pipeline.py` →
-   `export_metadata.py` → `pack_atlas.py` (see `data-pipeline/`).
+6. All metadata derives from the canonical database `data/papers_metadata.json`
+   (+ `data/drive_links.json`) at the repo root — never a copy. Full corpus
+   rebuild: `hpc_layout.py` (HPC) → `pack_full.py` → `name_clusters.py` →
+   `export_metadata.py` → `build_cluster_trends.py`. Metadata-only refresh
+   after the database changes (no re-layout): `refresh_paper_table.py` →
+   `export_metadata.py` → `build_cluster_trends.py`, or just run
+   `scripts/propagate_papers.sh` from the repo root (see
+   `docs/SINGLE_DATABASE.md`).

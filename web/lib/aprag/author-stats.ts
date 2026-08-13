@@ -6,9 +6,11 @@ import { fetcher } from "@/lib/utils";
 
 // Per-author corpus footprint, aggregated client-side from the static papers manifest
 // (public/data/papers.json — paper metadata only, no passage text). `papers.json`'s
-// `authors` field is the FIRST-author surname, so this counts each author's own led
-// papers — the "my work" set the persona speaks from. Used by the Talk-to-Author picker
-// and the persona chat header.
+// `authors` field is a display byline ("Smith", "Smith & Jones", "Smith et al."), so
+// the FIRST-author family name is extracted from it before grouping. That family name
+// is also what gets sent to the query server as the persona's `authors` filter, which
+// matches manifest author families — so it must never be the raw byline. Used by the
+// Talk-to-Author picker and the persona chat header.
 
 type PaperMeta = {
   authors: string;
@@ -26,10 +28,18 @@ export type AuthorStat = {
 
 const PAPERS_URL = `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/data/papers.json`;
 
+/** "Smith & Jones" / "Smith et al." / "Smith" → "Smith". */
+function firstFamily(byline: string): string {
+  return byline
+    .replace(/\s+et al\.?$/i, "")
+    .split(/\s*&\s*/)[0]
+    .trim();
+}
+
 function aggregate(papers: PaperMeta[]): AuthorStat[] {
   const byAuthor = new Map<string, AuthorStat>();
   for (const p of papers) {
-    const author = (p.authors || "").trim();
+    const author = firstFamily(p.authors || "");
     if (!author) {
       continue;
     }

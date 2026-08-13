@@ -53,7 +53,8 @@ def rf(x, nd=4):
 print("loading raw data...")
 vecs = np.load(RAW / "chunk_vectors.npy")
 meta = json.loads((RAW / "chunk_meta.json").read_text())
-manifest = json.loads((RAW / "papers_metadata.json").read_text())
+# canonical paper database at the repo root — never a hand-copy under raw/
+manifest = json.loads((HERE.parent.parent / "data" / "papers_metadata.json").read_text())
 text_chunks = json.loads((RAW / "kv_store_text_chunks.json").read_text())
 N = len(meta)
 assert vecs.shape[0] == N

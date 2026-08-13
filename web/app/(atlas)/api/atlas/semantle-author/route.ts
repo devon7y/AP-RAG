@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/app/(auth)/auth";
-import { chunkTextTable } from "@/lib/atlas/chunkText";
+import { pcQueryServer } from "@/lib/atlas/pc";
 
 export const maxDuration = 30;
 
@@ -13,79 +13,66 @@ export const maxDuration = 30;
  * win. Temperatures come from precomputed oeuvre-centroid cosines over the
  * real 4096-d chunk vectors, rank-calibrated.
  *
+ * Data: server-data/author_game.json is SELF-CONTAINED (pool names, full
+ * pool×pool cosine matrix, candidate papers with prebuilt chunk ids), written
+ * by data-pipeline/export_metadata.py from the canonical paper database.
+ * Passage prose is fetched live from the PC query server's /chunk_text — no
+ * local chunk-text table.
+ *
  * GET  → { day, nEligible, passage: { chunkId, text, section } }
  * POST { guess } → { correct, coauthor, temperature, rank, ... }
  * POST { reveal: true } → { target }
- *
- * Scale note: at the full corpus swap the sim matrix for on-demand centroid
- * cosines via the PC's /paper_centroid.
  */
+
+interface Candidate {
+  i: number; // papers.json idx
+  t: number; // pool row of the first author
+  c: string[]; // chunk ids to draw the passage from
+  co?: number[]; // pool rows of co-authors in the pool
+}
 
 interface GameData {
   names: string[];
   nPapers: number[];
   eligible: number[];
-  sim: number[][]; // eligible × all
+  sim: number[][]; // full pool × pool
+  papers: Candidate[];
 }
 
 interface PaperRec {
   file: string;
   title: string;
-  authors: string;
   year: number;
-  nChunks: number;
-}
-
-interface AuthorRec {
-  name: string;
-  papers: number[];
 }
 
 interface Store {
   game: GameData;
   papers: PaperRec[];
-  authors: AuthorRec[];
-  firstIdx: number[]; // per paper → authors.json idx
-  paperChunks: Map<number, string[]>; // paper idx → chunkIds (long-enough ones)
-  candidatePapers: number[]; // papers whose first author is an eligible target
+}
+
+interface ChunkTextRec {
+  text: string;
+  section: string;
+  page: number | null;
+  file: string;
 }
 
 let store: Store | null = null;
 
 function load(): Store {
   if (store) return store;
-  const pub = (f: string) =>
-    JSON.parse(readFileSync(join(process.cwd(), "public", "data", f), "utf-8"));
   const game = JSON.parse(
     readFileSync(join(process.cwd(), "server-data", "author_game.json"), "utf-8"),
   ) as GameData;
-  const papers = pub("papers.json") as PaperRec[];
-  const authors = pub("authors.json") as AuthorRec[];
-  const meta = pub("papermeta.json") as { first: number[] };
-  const firstIdx = meta.first;
-
-  const fileToPaper = new Map(papers.map((p, i) => [p.file, i]));
-  const paperChunks = new Map<number, string[]>();
-  for (const [chunkId, rec] of Object.entries(chunkTextTable())) {
-    const pi = fileToPaper.get((rec as { file: string }).file);
-    if (pi === undefined) continue;
-    if (((rec as { text: string }).text ?? "").length < 400) continue;
-    const list = paperChunks.get(pi);
-    if (list) list.push(chunkId);
-    else paperChunks.set(pi, [chunkId]);
-  }
-
-  const eligibleSet = new Set(game.eligible);
-  const candidatePapers = papers
-    .map((_, i) => i)
-    .filter(
-      (i) =>
-        firstIdx[i] >= 0 &&
-        eligibleSet.has(firstIdx[i]) &&
-        (paperChunks.get(i)?.length ?? 0) >= 3,
+  if (!Array.isArray(game.papers)) {
+    throw new Error(
+      "author_game.json predates the self-contained format — rerun data-pipeline/export_metadata.py",
     );
-
-  store = { game, papers, authors, firstIdx, paperChunks, candidatePapers };
+  }
+  const papers = JSON.parse(
+    readFileSync(join(process.cwd(), "public", "data", "papers.json"), "utf-8"),
+  ) as PaperRec[];
+  store = { game, papers };
   return store;
 }
 
@@ -100,33 +87,46 @@ function seeded(n: number, salt: number): number {
   return Math.floor((((t ^ (t >>> 14)) >>> 0) / 4294967296) * n);
 }
 
-interface Daily {
-  paperIdx: number;
-  chunkId: string;
-  targetAuthor: number; // authors.json idx
+function today(s: Store): Candidate {
+  return s.game.papers[seeded(s.game.papers.length, 0)];
 }
 
-function today(s: Store): Daily {
-  const paperIdx = s.candidatePapers[seeded(s.candidatePapers.length, 0)];
-  const chunks = s.paperChunks.get(paperIdx)!;
-  return {
-    paperIdx,
-    chunkId: chunks[seeded(chunks.length, 7)],
-    targetAuthor: s.firstIdx[paperIdx],
-  };
+async function fetchChunkText(ids: string[]): Promise<Record<string, ChunkTextRec>> {
+  const r = await pcQueryServer("/chunk_text", { ids });
+  if (!r.ok) return {};
+  const data = (await r.json()) as { chunks?: Record<string, ChunkTextRec> };
+  return data.chunks ?? {};
+}
+
+/** The day's passage: seeded pick, skipping chunks whose prose is too short. */
+async function todaysPassage(
+  cand: Candidate,
+): Promise<{ chunkId: string; text: string; section: string }> {
+  const start = seeded(cand.c.length, 7);
+  const order = cand.c.map((_, k) => cand.c[(start + k) % cand.c.length]);
+  const chunks = await fetchChunkText(order);
+  for (const id of order) {
+    const rec = chunks[id];
+    if ((rec?.text ?? "").length >= 400) {
+      return { chunkId: id, text: rec.text.slice(0, 1400), section: rec.section ?? "" };
+    }
+  }
+  const id = order[0];
+  const rec = chunks[id];
+  return { chunkId: id, text: (rec?.text ?? "").slice(0, 1400), section: rec?.section ?? "" };
 }
 
 function normName(x: string): string {
   return x.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function targetPayload(s: Store, d: Daily) {
+function targetPayload(s: Store, d: Candidate) {
   return {
-    name: s.game.names[d.targetAuthor],
-    idx: d.targetAuthor,
-    paperTitle: s.papers[d.paperIdx].title,
-    paperIdx: d.paperIdx,
-    year: s.papers[d.paperIdx].year,
+    name: s.game.names[d.t],
+    idx: d.t,
+    paperTitle: s.papers[d.i].title,
+    paperIdx: d.i,
+    year: s.papers[d.i].year,
   };
 }
 
@@ -135,20 +135,18 @@ export async function GET() {
   if (!session?.user) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  const s = load();
-  const d = today(s);
-  const rec = chunkTextTable()[d.chunkId] as
-    | { text: string; section: string }
-    | undefined;
-  return NextResponse.json({
-    day: dayNumber(),
-    nEligible: s.game.eligible.length,
-    passage: {
-      chunkId: d.chunkId,
-      text: (rec?.text ?? "").slice(0, 1400),
-      section: rec?.section ?? "",
-    },
-  });
+  try {
+    const s = load();
+    const d = today(s);
+    const passage = await todaysPassage(d);
+    return NextResponse.json({
+      day: dayNumber(),
+      nEligible: s.game.eligible.length,
+      passage,
+    });
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 502 });
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -177,16 +175,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const correct = guessIdx === d.targetAuthor;
-    const coauthor =
-      !correct && (s.authors[guessIdx]?.papers ?? []).includes(d.paperIdx);
+    const correct = guessIdx === d.t;
+    const coauthor = !correct && (d.co ?? []).includes(guessIdx);
 
-    const row = s.game.eligible.indexOf(d.targetAuthor);
-    const simRow = s.game.sim[row];
+    const simRow = s.game.sim[d.t];
     const cosine = simRow[guessIdx];
     let rank = 0;
     for (let i = 0; i < simRow.length; i++) {
-      if (i !== d.targetAuthor && simRow[i] > cosine) rank++;
+      if (i !== d.t && simRow[i] > cosine) rank++;
     }
     const n = simRow.length - 1;
     const temperature = correct

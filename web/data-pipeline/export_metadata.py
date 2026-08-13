@@ -1,35 +1,51 @@
 """Export the APA-metadata layers for the Papers Atlas world.
 
-Runs AFTER pipeline.py (joins against its public/data/papers.json paper order).
-Reads raw/papers_metadata.json (the same APA manifest the chat app's citation
-layer uses) + raw/chunk_vectors.npy + raw/chunk_meta.json, and writes:
+Runs AFTER the layout chain (joins against public/data/papers.json paper order).
+Reads the CANONICAL paper database at the repo root — data/papers_metadata.json
+and data/drive_links.json, the same two files the PC query server and the chat
+app's citation layer are deployed from — and writes:
 
-  ../public/data/authors.json    author table: display name, paper idxs, map pos
-  ../public/data/papermeta.json  per-paper keywords / subjects / affiliations
-  ../server-data/author_game.json  daily author-guess game: eligible targets +
-                                   cosine matrix (eligible x all authors) over
-                                   real 4096-d oeuvre centroids
+  ../public/data/authors.json      author table: display name, paper idxs, map pos
+  ../public/data/papermeta.json    per-paper keywords / subjects / affiliations /
+                                   drive links / fractional dates
+  ../server-data/author_game.json  daily author-guess game, SELF-CONTAINED:
+                                   pool names, cosine matrix, and per-candidate
+                                   papers with prebuilt chunk ids (passage prose
+                                   is fetched from the PC /chunk_text at play
+                                   time — no local chunk-text table)
 
-Scale note (full ~9.7k-paper corpus): authors.json grows linearly (fine);
-author_game.json's eligible x all matrix should switch to on-demand centroid
-cosines (PC /paper_centroid or Qdrant) once authors > ~3k.
+The cosine matrix comes from real 4096-d oeuvre centroids. Two sources:
+  default    reuse the matrix from hpc_out/author_game.json (built on HPC where
+             the chunk vectors live), remapping its names onto the CURRENT
+             author table so the game can never drift out of index space again
+  --pc-sim   rebuild the matrix from the PC query server's /paper_centroid
+             (needs APRAG_QUERY_URL [+ APRAG_API_KEY]); per-paper centroids are
+             cached in raw/paper_centroids.npz so re-runs only fetch new papers
 """
 
 import ast
 import json
+import os
 import re
-from collections import defaultdict
+import sys
+import urllib.request
+from datetime import date
 from pathlib import Path
 
 import numpy as np
 
 HERE = Path(__file__).parent
 RAW = HERE / "raw"
+HPC = HERE / "hpc_out"
 PUB = HERE.parent / "public" / "data"
 SRV = HERE.parent / "server-data"
+DATA = HERE.parent.parent / "data"  # the canonical paper database
 SRV.mkdir(parents=True, exist_ok=True)
 
-MIN_PAPERS_ELIGIBLE = 2  # daily-game targets need an oeuvre, not a cameo
+MIN_PAPERS_ELIGIBLE = 2   # daily-game targets need an oeuvre, not a cameo
+MAX_GAME_AUTHORS = 600    # pool cap when rebuilding the matrix from scratch
+MIN_CANDIDATE_CHUNKS = 3  # a candidate paper must have passages to draw from
+MAX_CANDIDATE_CHUNKS = 12
 
 
 def jdump(path: Path, obj) -> None:
@@ -66,21 +82,11 @@ def clean_str_list(v, cap: int) -> list[str]:
 
 
 papers = json.loads((PUB / "papers.json").read_text())
-manifest = json.loads((RAW / "papers_metadata.json").read_text())
-# The chunk vectors are the corpus's 7.3 GB of embeddings; they live on the HPC
-# now, so they are optional here — only the daily game needs them.
-_meta_p = RAW / "chunk_meta.json"
-chunk_meta = json.loads(_meta_p.read_text()) if _meta_p.exists() else []
-# repo-root Drive map (filename → webViewLink), built by scripts/build_drive_map.py
-drive_map_path = HERE.parent.parent / "data" / "drive_links.json"
+manifest = json.loads((DATA / "papers_metadata.json").read_text())
+drive_map_path = DATA / "drive_links.json"
 drive_map: dict[str, str] = (
     json.loads(drive_map_path.read_text()) if drive_map_path.exists() else {}
 )
-_vec_p = RAW / "chunk_vectors.npy"
-if _vec_p.exists() and chunk_meta:
-    vecs = np.load(_vec_p, mmap_mode="r")
-else:
-    vecs = None
 
 file_to_idx = {p["file"]: i for i, p in enumerate(papers)}
 
@@ -204,42 +210,164 @@ jdump(
     },
 )
 
-# ── oeuvre centroids + cosine matrix (daily game) ────────────────────────────
-# Capped: the matrix is eligible x all, so at full-corpus author counts it would
-# be hundreds of millions of cells. Only the best-represented authors are worth
-# guessing anyway, so both axes are restricted to the top MAX_GAME_AUTHORS.
-MAX_GAME_AUTHORS = 600
+# ── daily author game (self-contained) ───────────────────────────────────────
+# The game file carries everything its API route needs — pool names, cosine
+# matrix, and per-candidate papers with chunk ids — so it is regenerated here in
+# one shot with the tables above and can never drift out of index space.
 
-if vecs is None:
-    print("no chunk vectors available — skipping author_game.json "
-          "(the daily game needs 4096-d oeuvre centroids)")
-else:
-    paper_chunks: dict[int, list[int]] = defaultdict(list)
-    for ci, m in enumerate(chunk_meta):
-        pi = file_to_idx.get(m["file_path"])
-        if pi is not None:
-            paper_chunks[pi].append(ci)
+def norm_name(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def load_atlas_chunk_ids() -> dict[int, list[str]] | None:
+    """papers.json idx → chunk ids, from the layout run's columnar output."""
+    npz_p, hashes_p = HPC / "atlas_cols.npz", HPC / "doc_hashes.json"
+    if not (npz_p.exists() and hashes_p.exists()):
+        return None
+    z = np.load(npz_p)
+    doc_hashes = json.loads(hashes_p.read_text())
+    paper_col, doc_col, num_col = z["paper"], z["docIdx"], z["chunkNum"]
+    out: dict[int, list[tuple[int, str]]] = {}
+    for i in range(len(paper_col)):
+        d, num = int(doc_col[i]), int(num_col[i])
+        if d < 0:
+            continue
+        # chunk 0 is usually the title page — it names the authors outright
+        if num == 0:
+            continue
+        out.setdefault(int(paper_col[i]), []).append(
+            (num, f"doc-{doc_hashes[d]}-chunk-{num:03d}")
+        )
+    ids: dict[int, list[str]] = {}
+    for pi, pairs in out.items():
+        pairs.sort()
+        if len(pairs) > MAX_CANDIDATE_CHUNKS:  # spread picks across the paper
+            step = len(pairs) / MAX_CANDIDATE_CHUNKS
+            pairs = [pairs[int(j * step)] for j in range(MAX_CANDIDATE_CHUNKS)]
+        ids[pi] = [cid for _, cid in pairs]
+    return ids
+
+
+def matrix_from_hpc() -> tuple[list[str], np.ndarray] | None:
+    """Reuse the HPC-built oeuvre-cosine matrix; names are matched to the
+    current author table by display name, so a rename only drops that one
+    author from the pool instead of shifting every index."""
+    p = HPC / "author_game.json"
+    if not p.exists():
+        return None
+    g = json.loads(p.read_text())
+    names, sim, elig = g["names"], np.asarray(g["sim"], dtype=np.float32), g["eligible"]
+    if sim.shape[0] != len(names):  # rows may cover only the old eligible set
+        full = np.zeros((len(names), len(names)), dtype=np.float32)
+        for row, j in enumerate(elig):
+            full[j] = sim[row]
+        sim = full
+    return names, sim
+
+
+def matrix_from_pc() -> tuple[list[str], np.ndarray] | None:
+    """Rebuild oeuvre centroids from the PC query server's /paper_centroid.
+    Per-paper centroids are cached in raw/paper_centroids.npz."""
+    base = os.environ.get("APRAG_QUERY_URL", "").rstrip("/")
+    if not base:
+        print("--pc-sim needs APRAG_QUERY_URL")
+        return None
+    api_key = os.environ.get("APRAG_API_KEY", "")
+
+    cache_p = RAW / "paper_centroids.npz"
+    cache: dict[str, np.ndarray] = {}
+    if cache_p.exists():
+        z = np.load(cache_p, allow_pickle=False)
+        cache = {f: v for f, v in zip(json.loads(str(z["files"])), z["vecs"])}
+
+    def fetch(file: str) -> np.ndarray | None:
+        if file in cache:
+            return cache[file]
+        req = urllib.request.Request(
+            f"{base}/paper_centroid",
+            data=json.dumps({"file": file}).encode(),
+            headers={"Content-Type": "application/json",
+                     **({"X-API-Key": api_key} if api_key else {})},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=180) as r:
+                v = np.asarray(json.load(r)["centroid"], dtype=np.float32)
+        except Exception as e:  # 404 = paper not in the RAG store yet
+            print(f"  no centroid for {file}: {e}")
+            return None
+        cache[file] = v
+        return v
 
     ranked = sorted(range(len(authors)), key=lambda ai: -len(authors[ai]["papers"]))
-    pool = sorted(ranked[:MAX_GAME_AUTHORS])
-    cent = np.zeros((len(pool), vecs.shape[1]), dtype=np.float32)
-    for row, ai in enumerate(pool):
-        rows = [ci for pi in authors[ai]["papers"] for ci in paper_chunks.get(pi, [])]
-        if rows:
-            v = np.asarray(vecs[rows]).mean(axis=0)
-            cent[row] = v / (np.linalg.norm(v) + 1e-9)
+    pool_ai = ranked[:MAX_GAME_AUTHORS]
+    names = [authors[ai]["name"] for ai in pool_ai]
+    dim = None
+    cent_rows: list[np.ndarray | None] = []
+    for done, ai in enumerate(pool_ai):
+        vs = [v for i in authors[ai]["papers"]
+              if (v := fetch(papers[i]["file"])) is not None]
+        if vs:
+            m = np.mean(vs, axis=0)
+            m /= np.linalg.norm(m) + 1e-9
+            cent_rows.append(m)
+            dim = len(m)
+        else:
+            cent_rows.append(None)
+        if (done + 1) % 50 == 0:
+            print(f"  centroids: {done + 1}/{len(pool_ai)} authors")
+    if dim is None:
+        return None
+    cent = np.stack([r if r is not None else np.zeros(dim, dtype=np.float32)
+                     for r in cent_rows])
+    files = list(cache.keys())
+    np.savez_compressed(cache_p, files=json.dumps(files),
+                        vecs=np.stack([cache[f] for f in files]))
+    print(f"cached {len(files)} paper centroids -> {cache_p}")
+    return names, (cent @ cent.T).astype(np.float32)
 
-    elig_local = [r for r, ai in enumerate(pool)
-                  if len(authors[ai]["papers"]) >= MIN_PAPERS_ELIGIBLE]
-    sim = cent[elig_local] @ cent.T
+
+use_pc = "--pc-sim" in sys.argv
+src = matrix_from_pc() if use_pc else matrix_from_hpc()
+chunk_ids = load_atlas_chunk_ids()
+if src is None or chunk_ids is None:
+    missing = "cosine matrix" if src is None else "hpc_out atlas columns"
+    print(f"no {missing} available — skipping author_game.json")
+else:
+    names, sim = src
+    name_to_author = {norm_name(a["name"]): ai for ai, a in enumerate(authors)}
+    pool_author = [name_to_author.get(norm_name(nm), -1) for nm in names]
+    n_papers = [len(authors[ai]["papers"]) if ai >= 0 else 0 for ai in pool_author]
+    pool_row = {ai: r for r, ai in enumerate(pool_author) if ai >= 0}
+
+    # candidate papers: first author is in the pool with a real oeuvre, and the
+    # atlas has enough passages of it to draw from
+    candidates = []
+    for i, p in enumerate(papers):
+        r = pool_row.get(first_idx[i], -1)
+        if r < 0 or n_papers[r] < MIN_PAPERS_ELIGIBLE:
+            continue
+        ids = chunk_ids.get(i, [])
+        if len(ids) < MIN_CANDIDATE_CHUNKS:
+            continue
+        co = sorted(
+            pool_row[ai] for ai in pool_row
+            if ai != first_idx[i] and i in authors[ai]["papers"]
+        )
+        candidates.append({"i": i, "t": r, "c": ids, **({"co": co} if co else {})})
+
+    eligible = sorted({c["t"] for c in candidates})
     jdump(
         SRV / "author_game.json",
         {
-            "names": [authors[ai]["name"] for ai in pool],
-            "nPapers": [len(authors[ai]["papers"]) for ai in pool],
-            "authorIdx": pool,          # back-reference into authors.json
-            "eligible": elig_local,
+            "generated": date.today().isoformat(),
+            "matrixSource": "pc" if use_pc else "hpc",
+            "names": names,
+            "nPapers": n_papers,
+            "eligible": eligible,
             "sim": [[round(float(x), 3) for x in row] for row in sim],
+            "papers": candidates,
         },
     )
+    print(f"author game: {len(candidates)} candidate papers, "
+          f"{len(eligible)} eligible authors, pool {len(names)}")
 print("done.")
