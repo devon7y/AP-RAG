@@ -4,7 +4,6 @@ import {
   CalendarClockIcon,
   CompassIcon,
   DatabaseIcon,
-  PanelLeftIcon,
   PenSquareIcon,
   TrendingUpIcon,
   UserRoundIcon,
@@ -47,12 +46,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "../ui/alert-dialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { TalkToAuthorDialog } from "./talk-to-author-dialog";
 
 export function AppSidebar({ user }: { user: User | undefined }) {
   const router = useRouter();
-  const { setOpenMobile, toggleSidebar } = useSidebar();
+  const { setOpenMobile } = useSidebar();
   const readerOpen = usePdfViewer((s) => s.tabs.length > 0);
   const { mutate } = useSWRConfig();
   const [showDeleteAllDialog, setShowDeleteAllDialog] = useState(false);
@@ -79,22 +77,9 @@ export function AppSidebar({ user }: { user: User | undefined }) {
       <Sidebar collapsible="icon" peekOnHover={readerOpen}>
         <SidebarHeader className="pb-0 pt-3">
           <SidebarMenu>
+            {/* Icon-rail mode: the chat header's own toggle (plus the clickable
+                rail edge) reopens the sidebar, so the rail header holds nothing. */}
             <SidebarMenuItem className="flex flex-row items-center justify-end">
-              {/* Icon-rail mode: the expanded-mode trigger below is hidden, so
-                  the rail's only header control is this reopen button. */}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <SidebarMenuButton
-                    className="hidden size-8 items-center justify-center group-data-[collapsible=icon]:flex"
-                    onClick={() => toggleSidebar()}
-                  >
-                    <PanelLeftIcon className="size-4" />
-                  </SidebarMenuButton>
-                </TooltipTrigger>
-                <TooltipContent className="hidden md:block" side="right">
-                  Open sidebar
-                </TooltipContent>
-              </Tooltip>
               <div className="group-data-[collapsible=icon]:hidden">
                 <SidebarTrigger className="text-sidebar-foreground/60 transition-colors duration-150 hover:text-sidebar-foreground" />
               </div>
