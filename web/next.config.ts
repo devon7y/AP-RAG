@@ -32,9 +32,13 @@ const nextConfig: NextConfig = {
     // runtime. Nothing references that module statically, so tracing leaves it out of the
     // function and every upload fails with "Setting up fake worker failed" — which reads,
     // from the composer, as "this file could not be read as a PDF". Ship it explicitly.
-    // Both paths: node_modules/pdfjs-dist is a pnpm symlink into the store.
+    //
+    // The path is the pnpm STORE path, not node_modules/pdfjs-dist/… — the latter is a
+    // symlink, and a file included through it lands in a symlinked directory, which
+    // Vercel rejects when packaging the function ("invalid deployment package"). The
+    // store path is also what require.resolve returns at runtime, so it is the file that
+    // actually gets imported.
     "/api/uploads": [
-      "./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
       "./node_modules/.pnpm/pdfjs-dist@*/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
     ],
   },
