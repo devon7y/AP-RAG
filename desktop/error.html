@@ -43,6 +43,14 @@
     }
     button:hover { filter: brightness(1.1); }
     #status { margin-top: 1rem; font-size: 0.85rem; min-height: 1.4em; }
+    /* Frameless shell on macOS: keep a grab strip so the window stays draggable */
+    html::after {
+      content: "";
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 40px;
+      -webkit-app-region: drag;
+    }
   </style>
 </head>
 <body>

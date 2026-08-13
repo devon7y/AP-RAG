@@ -9,7 +9,9 @@ re-release.
 What the shell adds over a browser tab:
 
 - A real dock/taskbar app with its own icon, menus, and window state
-  (size/position persist across launches).
+  (size/position persist across launches). On macOS the native title bar is
+  hidden — just the traffic lights float over the site's own header, which
+  doubles as the window drag area.
 - Navigation policy: only `aprag.devon7y.com` loads in-app; every other link
   (Google Drive papers, external sites) opens in the default browser.
 - Chromium bundled — the Atlas WebGPU scene runs on the same engine it was

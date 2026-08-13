@@ -66,6 +66,34 @@ function openExternally(url) {
 }
 
 // ---------------------------------------------------------------------------
+// macOS frameless chrome. The native title bar duplicated the site's own
+// header, so it's hidden and only the traffic lights remain, floating over
+// the page. This CSS is injected into the site (main window, macOS only) to
+// keep the top-left controls clear of the lights and the window draggable.
+
+const MAC_SHELL_CSS = `
+  /* Sidebar open: its header row is the top-left element — clear the lights */
+  [data-sidebar="header"] { padding-left: 76px; }
+  /* Sidebar collapsed (offcanvas): the chat header becomes leftmost */
+  div[data-state="collapsed"] ~ main header.sticky.top-0 { padding-left: 76px; }
+  /* Top bars move the window; their controls stay clickable */
+  [data-sidebar="header"], main header.sticky.top-0 { -webkit-app-region: drag; }
+  [data-sidebar="header"] :is(a, button, input, [role="button"]),
+  main header.sticky.top-0 :is(a, button, input, select, [role="button"]) {
+    -webkit-app-region: no-drag;
+  }
+  /* Fallback grab strip on pages without those bars (atlas, login) */
+  html::after {
+    content: "";
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 12px;
+    z-index: 2147483647;
+    -webkit-app-region: drag;
+  }
+`;
+
+// ---------------------------------------------------------------------------
 // Window state persistence
 
 const stateFile = () => path.join(app.getPath("userData"), "window-state.json");
@@ -335,6 +363,13 @@ function createWindow() {
     minWidth: 800,
     minHeight: 560,
     show: false,
+    ...(process.platform === "darwin"
+      ? {
+          // Lights centered for the site's 56px (h-14) header row.
+          titleBarStyle: "hidden",
+          trafficLightPosition: { x: 16, y: 20 },
+        }
+      : {}),
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#09090b" : "#ffffff",
     webPreferences: securePrefs(),
   });
@@ -354,6 +389,14 @@ function createWindow() {
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = null;
   });
+
+  if (process.platform === "darwin") {
+    win.webContents.on("did-finish-load", () => {
+      if (isAllowed(win.webContents.getURL())) {
+        win.webContents.insertCSS(MAC_SHELL_CSS);
+      }
+    });
+  }
 
   win.webContents.on("did-fail-load", (_event, code, _desc, _url, isMainFrame) => {
     if (!isMainFrame || code === -3 /* ERR_ABORTED: superseded navigation */) return;
