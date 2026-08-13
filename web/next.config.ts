@@ -28,6 +28,15 @@ const nextConfig: NextConfig = {
       "./server-data/author_game.json",
       "./public/data/papers.json",
     ],
+    // pdf.js reads an uploaded paper by handing the file to a worker module it imports at
+    // runtime. Nothing references that module statically, so tracing leaves it out of the
+    // function and every upload fails with "Setting up fake worker failed" — which reads,
+    // from the composer, as "this file could not be read as a PDF". Ship it explicitly.
+    // Both paths: node_modules/pdfjs-dist is a pnpm symlink into the store.
+    "/api/uploads": [
+      "./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
+      "./node_modules/.pnpm/pdfjs-dist@*/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
+    ],
   },
   // pdf.js reads an uploaded paper's text server-side (app/(chat)/api/uploads). Bundling
   // it breaks that: its Node path dynamically imports its own worker file by relative

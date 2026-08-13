@@ -1,5 +1,7 @@
 import "server-only";
 
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { generateText } from "ai";
 import { openaiOptions } from "@/lib/ai/models";
 import { getLanguageModel } from "@/lib/ai/providers";
@@ -32,6 +34,19 @@ export class PdfReadError extends Error {
   }
 }
 
+/** Where pdf.js's worker module actually sits on this machine, as a file:// URL. */
+function resolveWorkerSrc(): string | null {
+  try {
+    const require = createRequire(import.meta.url);
+    return pathToFileURL(
+      require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs")
+    ).href;
+  } catch (error) {
+    console.error("pdf.js worker module could not be resolved:", error);
+    return null;
+  }
+}
+
 /** A PDF starts with "%PDF-" — checked on the bytes, not on the declared MIME type. */
 export function looksLikePdf(bytes: Uint8Array): boolean {
   const header = String.fromCharCode(...bytes.slice(0, 5));
@@ -53,6 +68,15 @@ export async function extractPdfPages(
   bytes: Uint8Array
 ): Promise<ExtractedPdf> {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // pdf.js parses in a worker module it imports at runtime. Left to itself it derives that
+  // path from its own module URL, which survives neither bundling nor deployment; resolved
+  // through node_modules it is the same file the build was told to ship (see
+  // outputFileTracingIncludes in next.config.ts). Best-effort: if this cannot be resolved,
+  // pdf.js still gets to try its own way.
+  const workerSrc = resolveWorkerSrc();
+  if (workerSrc) {
+    pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
+  }
   const task = pdfjs.getDocument({
     // pdf.js takes ownership of the buffer it is handed (it transfers it to its worker),
     // which would leave the caller holding a detached array — and the caller still has to
