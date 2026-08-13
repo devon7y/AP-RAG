@@ -1,6 +1,6 @@
 {
   "name": "aprag-desktop",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Desktop shell for the AP-RAG web app (aprag.devon7y.com)",
   "author": "devon7y <devon7y@gmail.com>",

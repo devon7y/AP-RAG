@@ -74,8 +74,12 @@ function openExternally(url) {
 const MAC_SHELL_CSS = `
   /* Sidebar open: its header row is the top-left element — clear the lights */
   [data-sidebar="header"] { padding-left: 76px; }
-  /* Sidebar collapsed (offcanvas): the chat header becomes leftmost */
-  div[data-state="collapsed"] ~ main header.sticky.top-0 { padding-left: 76px; }
+  /* Collapsed to the 48px icon rail: stack the rail header below the lights */
+  [data-collapsible="icon"] [data-sidebar="header"] { padding-left: 8px; padding-top: 44px; }
+  /* ...and the chat header only needs the clearance left past the rail */
+  div[data-state="collapsed"] ~ main header.sticky.top-0 { padding-left: 28px; }
+  /* Atlas: its absolute top-left chrome (the "← Chat" pill) clears the lights */
+  header.absolute.top-0.left-0 { padding-left: 84px; }
   /* Top bars move the window; their controls stay clickable */
   [data-sidebar="header"], main header.sticky.top-0 { -webkit-app-region: drag; }
   [data-sidebar="header"] :is(a, button, input, [role="button"]),
