@@ -13,8 +13,8 @@ export const guestRegex = /^guest-\d+$/;
 export const DUMMY_PASSWORD = generateDummyPassword();
 
 export const suggestions = [
-  "How does word frequency affect lexical decision times?",
-  "Summarize the evidence on humor and incongruity resolution.",
-  "What methods are used to measure semantic similarity?",
-  "Which papers study entropy in language, and what do they find?",
+  "Summarize the research of Devon Yanitski",
+  "According to Westbury, what are the main predictors of humor?",
+  "What are the advantages of EEG mass univariate analysis?",
+  "How are LLMs being used in scientific research?",
 ];
