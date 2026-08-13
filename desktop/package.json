@@ -16,6 +16,12 @@
   "build": {
     "appId": "com.devon7y.aprag",
     "productName": "AP-RAG",
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "resetAdHocDarwinSignature": true
+    },
     "directories": {
       "buildResources": "build",
       "output": "dist"

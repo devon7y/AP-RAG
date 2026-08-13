@@ -1,7 +1,7 @@
 # AP-RAG Desktop
 
 Native desktop apps (macOS `.dmg`, Windows `.exe`) for AP-RAG. This is a thin
-Electron shell around the deployed web app at **https://aprag.devon7y.com** —
+Electron shell around the deployed web app at **<https://aprag.devon7y.com>** —
 like the `aprag` CLI, it runs no models and holds no data, so the app stays
 current with every Vercel deploy and only the shell itself ever needs a
 re-release.
@@ -25,6 +25,14 @@ npm install
 npm start                                    # against production
 APRAG_APP_URL=http://localhost:3000 npm start  # against a local `next dev`
 ```
+
+> **VS Code terminals:** shells spawned by VS Code export
+> `ELECTRON_RUN_AS_NODE=1`, which makes any Electron binary run as plain Node
+> and exit instantly — this breaks `npm start`, and even `open
+> /Applications/AP-RAG.app`, since macOS `open` propagates the caller's
+> environment. In dev, prefix with `env -u ELECTRON_RUN_AS_NODE …`. Packaged
+> builds are immune: the `electronFuses` block in `package.json` burns Node
+> mode (plus `NODE_OPTIONS` and Node inspect flags) out of the shipped binary.
 
 ## Build installers
 
