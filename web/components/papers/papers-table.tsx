@@ -148,6 +148,35 @@ function FilterChip({
   );
 }
 
+// A chip that navigates instead of filtering. stopPropagation keeps the row's own
+// "open the paper" click from firing underneath it.
+function LinkChip({
+  label,
+  title,
+  href,
+  active,
+}: {
+  label: string;
+  title: string;
+  href: string;
+  active?: boolean;
+}) {
+  return (
+    <Badge
+      asChild
+      className={cn(
+        "max-w-full cursor-pointer font-normal transition-colors hover:border-muted-foreground/50 hover:bg-muted-foreground/30",
+        active && "border-primary/50 bg-primary/15"
+      )}
+      variant="outline"
+    >
+      <Link href={href} onClick={(e) => e.stopPropagation()} title={title}>
+        <span className="truncate">{label}</span>
+      </Link>
+    </Badge>
+  );
+}
+
 function ChipList({
   values,
   dim,
@@ -513,9 +542,11 @@ function Cell({
       );
     }
     case "authors": {
-      // Every author, each a chip that filters the table. The filter dimension is the
-      // family name (that is the vocabulary the manifest matches on), while the chip
-      // shows the full name.
+      // Every author, each a chip that opens that author's profile — their papers,
+      // topics, venues and co-authors, with buttons back here (filtered to them) and
+      // into a persona chat. The route segment is the family name, since that is the
+      // vocabulary the manifest matches on; the chip shows the full name. A chip stays
+      // highlighted while the table is filtered to that author.
       const authors = namedAuthors(row.authors);
       if (authors.length === 0) {
         return null;
@@ -528,12 +559,12 @@ function Cell({
         >
           {authors.map(({ key, name, family }) =>
             family ? (
-              <FilterChip
+              <LinkChip
                 active={on.includes(family)}
+                href={`/authors/${encodeURIComponent(family)}`}
                 key={key}
                 label={name}
-                onClick={() => onToggleFilter("authors", family)}
-                title={`Filter by ${family}`}
+                title={`${family}'s papers, topics, and co-authors`}
               />
             ) : (
               // No family name to filter on (a corporate author, say) — plain text.

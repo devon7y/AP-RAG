@@ -24,3 +24,31 @@ export function PageHeader({
     </header>
   );
 }
+
+// The inset panel that carries a page's content below the header: page-colored,
+// its top-left corner rounded away from the sidebar, with a hairline top and left
+// edge. ChatShell renders this same panel, so chat is the one definition and every
+// other page inherits it rather than approximating it.
+export const PAGE_PANEL_CLASS =
+  "relative flex min-h-0 flex-1 flex-col overflow-hidden bg-background md:rounded-tl-[12px] md:border-t md:border-l md:border-border/40";
+
+// Header + inset panel, the whole frame of a full-page view. The outer column is
+// sidebar-toned so the panel's rounded corner reveals it. Pages whose whole body
+// scrolls pass className="overflow-y-auto"; pages that scroll an inner region
+// (the papers table) keep the panel's own overflow-hidden.
+export function PageShell({
+  header,
+  children,
+  className,
+}: {
+  header: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className="flex h-dvh min-w-0 flex-col bg-sidebar">
+      <PageHeader>{header}</PageHeader>
+      <div className={cn(PAGE_PANEL_CLASS, "pt-4", className)}>{children}</div>
+    </div>
+  );
+}

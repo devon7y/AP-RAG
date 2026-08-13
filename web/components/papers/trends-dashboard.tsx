@@ -27,7 +27,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
-import { PageHeader } from "@/components/chat/page-header";
+import { PageShell } from "@/components/chat/page-header";
 import { SidebarToggle } from "@/components/chat/sidebar-toggle";
 import type { TrendDim, TrendsData, TrendTerm } from "@/lib/aprag/client";
 import {
@@ -452,19 +452,22 @@ export function TrendsDashboard() {
   }, [data, corpusYears, totalPapers, dim, dimDef, terms, citations, clusters]);
 
   return (
-    <div className="flex h-dvh min-w-0 flex-col overflow-y-auto bg-background">
-      <PageHeader>
-        <SidebarToggle />
-        <TrendingUpIcon className="size-4 text-muted-foreground" />
-        <h1 className="font-semibold text-sm">Research Trends</h1>
-        {totalPapers > 0 && (
-          <span className="text-muted-foreground text-xs">
-            {totalPapers.toLocaleString()} dated papers · {corpusYears[0]?.year}
-            –{corpusYears.at(-1)?.year}
-          </span>
-        )}
-      </PageHeader>
-
+    <PageShell
+      className="overflow-y-auto"
+      header={
+        <>
+          <SidebarToggle />
+          <TrendingUpIcon className="size-4 text-muted-foreground" />
+          <h1 className="font-semibold text-sm">Research Trends</h1>
+          {totalPapers > 0 && (
+            <span className="text-muted-foreground text-xs">
+              {totalPapers.toLocaleString()} dated papers · {corpusYears[0]?.year}
+              –{corpusYears.at(-1)?.year}
+            </span>
+          )}
+        </>
+      }
+    >
       <div className="mx-auto w-full max-w-5xl space-y-9 px-4 pb-16">
         {isLoading && (
           <div className="space-y-3 pt-2">
@@ -904,6 +907,6 @@ export function TrendsDashboard() {
           </>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

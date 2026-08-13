@@ -6,7 +6,7 @@ import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
 import useSWR from "swr";
 import { useLocalStorage } from "usehooks-ts";
-import { PageHeader } from "@/components/chat/page-header";
+import { PageShell } from "@/components/chat/page-header";
 import { SidebarToggle } from "@/components/chat/sidebar-toggle";
 import type { GraphFileEntity } from "@/lib/aprag/client";
 import type {
@@ -231,18 +231,20 @@ export function PapersBrowser() {
   );
 
   return (
-    <div className="flex h-dvh min-w-0 flex-col bg-background">
-      <PageHeader>
-        <SidebarToggle />
-        <DatabaseIcon className="size-4 text-muted-foreground" />
-        <h1 className="font-semibold text-sm">Papers Database</h1>
-        {!deepMode && total > 0 && (
-          <span className="text-muted-foreground text-xs">
-            {total.toLocaleString()} papers
-          </span>
-        )}
-      </PageHeader>
-
+    <PageShell
+      header={
+        <>
+          <SidebarToggle />
+          <DatabaseIcon className="size-4 text-muted-foreground" />
+          <h1 className="font-semibold text-sm">Papers Database</h1>
+          {!deepMode && total > 0 && (
+            <span className="text-muted-foreground text-xs">
+              {total.toLocaleString()} papers
+            </span>
+          )}
+        </>
+      }
+    >
       <PapersToolbar
         deep={query.deep}
         deepLoading={deepLoading}
@@ -360,6 +362,6 @@ export function PapersBrowser() {
           </div>
         )}
       </footer>
-    </div>
+    </PageShell>
   );
 }

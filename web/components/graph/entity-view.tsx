@@ -11,7 +11,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
-import { PageHeader } from "@/components/chat/page-header";
+import { PageShell } from "@/components/chat/page-header";
 import { SidebarToggle } from "@/components/chat/sidebar-toggle";
 import { type ListFilterKey, paperFetcher } from "@/components/papers/lib";
 import { PaperDrawer } from "@/components/papers/paper-drawer";
@@ -81,20 +81,23 @@ export function EntityView() {
   const familyName = data?.name.trim().split(/\s+/).at(-1) ?? "";
 
   return (
-    <div className="flex h-dvh min-w-0 flex-col overflow-y-auto bg-background">
-      <PageHeader>
-        <SidebarToggle />
-        <WaypointsIcon className="size-4 text-muted-foreground" />
-        <h1 className="min-w-0 truncate font-semibold text-sm">
-          {data?.name ?? name ?? "Entity"}
-        </h1>
-        {data && (
-          <Badge className="shrink-0 font-normal" variant="outline">
-            {data.type}
-          </Badge>
-        )}
-      </PageHeader>
-
+    <PageShell
+      className="overflow-y-auto"
+      header={
+        <>
+          <SidebarToggle />
+          <WaypointsIcon className="size-4 text-muted-foreground" />
+          <h1 className="min-w-0 truncate font-semibold text-sm">
+            {data?.name ?? name ?? "Entity"}
+          </h1>
+          {data && (
+            <Badge className="shrink-0 font-normal" variant="outline">
+              {data.type}
+            </Badge>
+          )}
+        </>
+      }
+    >
       <div className="mx-auto w-full max-w-4xl space-y-6 px-4 pb-10">
         <Link
           className="inline-flex items-center gap-1 text-muted-foreground text-xs hover:text-foreground"
@@ -259,6 +262,6 @@ export function EntityView() {
         onClose={() => setOpenFilename(null)}
         onOpenPaper={setOpenFilename}
       />
-    </div>
+    </PageShell>
   );
 }

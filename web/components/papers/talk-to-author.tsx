@@ -10,7 +10,7 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
-import { PageHeader } from "@/components/chat/page-header";
+import { PageShell } from "@/components/chat/page-header";
 import { SidebarToggle } from "@/components/chat/sidebar-toggle";
 import {
   type AuthorStat,
@@ -48,19 +48,22 @@ export function TalkToAuthor() {
   };
 
   return (
-    <div className="flex h-dvh min-w-0 flex-col overflow-y-auto bg-background">
-      <PageHeader>
-        <SidebarToggle />
-        <UserRoundIcon className="size-4 text-muted-foreground" />
-        <h1 className="font-semibold text-sm">Talk to Author</h1>
-        {stats.length > 0 && (
-          <span className="text-muted-foreground text-xs">
-            {stats.length.toLocaleString()} authors
-          </span>
-        )}
-      </PageHeader>
-
-      <div className="mx-auto w-full max-w-4xl space-y-8 px-4 pt-4 pb-10">
+    <PageShell
+      className="overflow-y-auto"
+      header={
+        <>
+          <SidebarToggle />
+          <UserRoundIcon className="size-4 text-muted-foreground" />
+          <h1 className="font-semibold text-sm">Talk to Author</h1>
+          {stats.length > 0 && (
+            <span className="text-muted-foreground text-xs">
+              {stats.length.toLocaleString()} authors
+            </span>
+          )}
+        </>
+      }
+    >
+      <div className="mx-auto w-full max-w-4xl space-y-8 px-4 pb-10">
         {/* ── Picker ── */}
         <section className="rounded-xl border border-border bg-card/60 p-4">
           <h2 className="mb-1 font-medium text-sm">Choose a researcher</h2>
@@ -205,6 +208,6 @@ export function TalkToAuthor() {
           </div>
         </section>
       </div>
-    </div>
+    </PageShell>
   );
 }

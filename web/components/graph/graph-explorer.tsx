@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
-import { PageHeader } from "@/components/chat/page-header";
+import { PageShell } from "@/components/chat/page-header";
 import { SidebarToggle } from "@/components/chat/sidebar-toggle";
 import { paperFetcher } from "@/components/papers/lib";
 import type { GraphEntitySummary, GraphOverview } from "@/lib/aprag/client";
@@ -111,19 +111,22 @@ export function GraphExplorer() {
   const total = list?.total ?? 0;
 
   return (
-    <div className="flex h-dvh min-w-0 flex-col overflow-y-auto bg-background">
-      <PageHeader>
-        <SidebarToggle />
-        <WaypointsIcon className="size-4 text-muted-foreground" />
-        <h1 className="font-semibold text-sm">Knowledge Graph</h1>
-        {overview && (
-          <span className="text-muted-foreground text-xs">
-            {overview.entities.toLocaleString()} entities ·{" "}
-            {overview.relations.toLocaleString()} relations
-          </span>
-        )}
-      </PageHeader>
-
+    <PageShell
+      className="overflow-y-auto"
+      header={
+        <>
+          <SidebarToggle />
+          <WaypointsIcon className="size-4 text-muted-foreground" />
+          <h1 className="font-semibold text-sm">Knowledge Graph</h1>
+          {overview && (
+            <span className="text-muted-foreground text-xs">
+              {overview.entities.toLocaleString()} entities ·{" "}
+              {overview.relations.toLocaleString()} relations
+            </span>
+          )}
+        </>
+      }
+    >
       <div className="mx-auto w-full max-w-4xl space-y-4 px-4 pb-10">
         <p className="text-muted-foreground text-xs">
           The concepts, methods, theories, authors, and findings the ingest
@@ -266,7 +269,7 @@ export function GraphExplorer() {
           </>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }
 

@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  ArrowLeftIcon,
   DatabaseIcon,
   MessageSquareIcon,
   UserRoundIcon,
@@ -9,7 +10,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
-import { PageHeader } from "@/components/chat/page-header";
+import { PageShell } from "@/components/chat/page-header";
 import { SidebarToggle } from "@/components/chat/sidebar-toggle";
 import type { PaperListResponse, PaperRow } from "@/lib/aprag/types";
 import { generateUUID } from "@/lib/utils";
@@ -147,22 +148,38 @@ export function AuthorProfile({ family }: { family: string }) {
   };
 
   return (
-    <div className="flex h-dvh min-w-0 flex-col overflow-y-auto bg-background">
-      <PageHeader>
-        <SidebarToggle />
-        <UserRoundIcon className="size-4 text-muted-foreground" />
-        <h1 className="font-semibold text-sm">{family}</h1>
-        {papers.length > 0 && (
-          <span className="text-muted-foreground text-xs">
-            {papers.length.toLocaleString()} paper
-            {papers.length === 1 ? "" : "s"}
-            {stats.yearMin > 0 &&
-              ` · ${stats.yearMin}${stats.yearMax !== stats.yearMin ? `–${stats.yearMax}` : ""}`}
-            {stats.firstAuthored > 0 && ` · ${stats.firstAuthored} as first author`}
-          </span>
-        )}
-      </PageHeader>
-
+    <PageShell
+      className="overflow-y-auto"
+      header={
+        <>
+          <SidebarToggle />
+          {/* Profiles are reached from the Talk to Author picker, so the way back
+              is to that list rather than to whatever page preceded it. */}
+          <Button
+            asChild
+            className="shrink-0 text-muted-foreground"
+            size="icon-sm"
+            title="Back to Talk to Author"
+            variant="ghost"
+          >
+            <Link href="/authors">
+              <ArrowLeftIcon className="size-4" />
+            </Link>
+          </Button>
+          <UserRoundIcon className="size-4 text-muted-foreground" />
+          <h1 className="font-semibold text-sm">{family}</h1>
+          {papers.length > 0 && (
+            <span className="text-muted-foreground text-xs">
+              {papers.length.toLocaleString()} paper
+              {papers.length === 1 ? "" : "s"}
+              {stats.yearMin > 0 &&
+                ` · ${stats.yearMin}${stats.yearMax !== stats.yearMin ? `–${stats.yearMax}` : ""}`}
+              {stats.firstAuthored > 0 && ` · ${stats.firstAuthored} as first author`}
+            </span>
+          )}
+        </>
+      }
+    >
       <div className="mx-auto w-full max-w-4xl space-y-6 px-4 pb-10">
         <div className="flex flex-wrap gap-2">
           <Button onClick={talkToAuthor} size="sm" type="button">
@@ -170,9 +187,12 @@ export function AuthorProfile({ family }: { family: string }) {
             Talk to {family}
           </Button>
           <Button asChild size="sm" type="button" variant="outline">
-            <Link href={papersHref()}>
+            <Link
+              href={papersHref()}
+              title={`Open the Papers Database filtered to ${family}`}
+            >
               <DatabaseIcon className="size-4" />
-              View in Paper Database
+              Filter in Papers Database
             </Link>
           </Button>
         </div>
@@ -320,6 +340,6 @@ export function AuthorProfile({ family }: { family: string }) {
         onClose={() => setOpenFilename(null)}
         onOpenPaper={setOpenFilename}
       />
-    </div>
+    </PageShell>
   );
 }
