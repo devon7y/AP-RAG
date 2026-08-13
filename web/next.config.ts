@@ -29,6 +29,11 @@ const nextConfig: NextConfig = {
       "./public/data/papers.json",
     ],
   },
+  // pdf.js reads an uploaded paper's text server-side (app/(chat)/api/uploads). Bundling
+  // it breaks that: its Node path dynamically imports its own worker file by relative
+  // path, which does not survive into the build output ("Setting up fake worker failed").
+  // Kept external, it is required from node_modules at runtime and resolves normally.
+  serverExternalPackages: ["pdfjs-dist"],
   cacheComponents: true,
   devIndicators: false,
   poweredByHeader: false,

@@ -1,5 +1,6 @@
 import { auth } from "@/app/(auth)/auth";
 import { fetchPdfAsset } from "@/lib/aprag/client";
+import { isUploadPdfName } from "@/lib/aprag/uploads";
 
 // One page of a corpus PDF as a WebP image (~285KB at the default width), rendered and
 // disk-cached on the PC. The viewer paints this immediately while pdf.js is still
@@ -26,6 +27,13 @@ export async function GET(request: Request) {
   if (!filename?.toLowerCase().endsWith(".pdf")) {
     return Response.json({ error: "filename required" }, { status: 400 });
   }
+  // A paper uploaded into a chat lives in Blob storage, not on the PC, so there is no
+  // pre-rendered page image for it. The reader treats a missing image as "not ready yet"
+  // and paints the real page as soon as pdf.js has it.
+  if (isUploadPdfName(filename)) {
+    return Response.json({ error: "no preview for uploads" }, { status: 404 });
+  }
+
   const page = Math.max(1, Number(sp.get("page")) || 1);
 
   const params: Record<string, string> = {

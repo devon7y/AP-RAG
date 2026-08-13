@@ -35,7 +35,9 @@ import {
   type Suggestion,
   stream,
   suggestion,
+  type UploadedPaperRow,
   type User,
+  uploadedPaper,
   user,
   vote,
 } from "./schema";
@@ -168,6 +170,9 @@ export async function deleteChatById({ id }: { id: string }) {
     await db.delete(stream).where(eq(stream.chatId, id));
     await db.delete(chatMember).where(eq(chatMember.chatId, id));
     await db.delete(chatTyping).where(eq(chatTyping.chatId, id));
+    // The blobs behind these rows are cleaned up by the caller (it needs network access);
+    // the rows go with the chat either way, so a failed blob delete can't strand them.
+    await db.delete(uploadedPaper).where(eq(uploadedPaper.chatId, id));
 
     const [chatsDeleted] = await db
       .delete(chat)
@@ -200,6 +205,9 @@ export async function deleteAllChatsByUserId({ userId }: { userId: string }) {
     await db.delete(stream).where(inArray(stream.chatId, chatIds));
     await db.delete(chatMember).where(inArray(chatMember.chatId, chatIds));
     await db.delete(chatTyping).where(inArray(chatTyping.chatId, chatIds));
+    await db
+      .delete(uploadedPaper)
+      .where(inArray(uploadedPaper.chatId, chatIds));
     // Chats OTHERS shared with this user survive — deleting your own history shouldn't
     // delete someone else's conversation. Just drop the membership rows.
     await db.delete(chatMember).where(eq(chatMember.userId, userId));
@@ -1142,6 +1150,144 @@ export async function createStreamId({
       "bad_request:database",
       "Failed to create stream id"
     );
+  }
+}
+
+// ── Uploaded papers ───────────────────────────────────────────────────────────
+// Papers attached to a chat that are not in the AP-RAG database. The chunk text is by far
+// the biggest column, so the listing query never selects it — only the retrieval path
+// (getUploadedPapersForChat) reads whole rows.
+
+export type UploadedPaperMeta = Omit<UploadedPaperRow, "chunks"> & {
+  chunkCount: number;
+  uploaderEmail: string | null;
+};
+
+export async function listUploadedPapers({
+  chatId,
+}: {
+  chatId: string;
+}): Promise<UploadedPaperMeta[]> {
+  try {
+    const { chunks: _chunks, ...columns } = getTableColumns(uploadedPaper);
+    return await db
+      .select({
+        ...columns,
+        chunkCount: sql<number>`coalesce(json_array_length(${uploadedPaper.chunks}), 0)`,
+        uploaderEmail: user.email,
+      })
+      .from(uploadedPaper)
+      .leftJoin(user, eq(uploadedPaper.userId, user.id))
+      .where(eq(uploadedPaper.chatId, chatId))
+      .orderBy(asc(uploadedPaper.createdAt));
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to list uploaded papers"
+    );
+  }
+}
+
+/** Whole rows, chunk text included — what retrieval reads on each turn. */
+export async function getUploadedPapersForChat({
+  chatId,
+}: {
+  chatId: string;
+}): Promise<UploadedPaperRow[]> {
+  try {
+    return await db
+      .select()
+      .from(uploadedPaper)
+      .where(eq(uploadedPaper.chatId, chatId))
+      .orderBy(asc(uploadedPaper.createdAt));
+  } catch (_error) {
+    // A retrieval turn must not fail because the attachments couldn't be read; the answer
+    // is simply drawn from the database alone.
+    return [];
+  }
+}
+
+export async function countUploadedPapers({
+  chatId,
+}: {
+  chatId: string;
+}): Promise<number> {
+  try {
+    const [row] = await db
+      .select({ count: count(uploadedPaper.id) })
+      .from(uploadedPaper)
+      .where(eq(uploadedPaper.chatId, chatId));
+    return row?.count ?? 0;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to count uploaded papers"
+    );
+  }
+}
+
+export async function getUploadedPaperById({
+  id,
+}: {
+  id: string;
+}): Promise<UploadedPaperRow | undefined> {
+  try {
+    const [row] = await db
+      .select()
+      .from(uploadedPaper)
+      .where(eq(uploadedPaper.id, id));
+    return row;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get uploaded paper"
+    );
+  }
+}
+
+export async function saveUploadedPaper(
+  paper: Omit<UploadedPaperRow, "id" | "createdAt">
+): Promise<UploadedPaperRow> {
+  try {
+    const [row] = await db.insert(uploadedPaper).values(paper).returning();
+    return row;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to save uploaded paper"
+    );
+  }
+}
+
+export async function deleteUploadedPaperById({ id }: { id: string }) {
+  try {
+    const [row] = await db
+      .delete(uploadedPaper)
+      .where(eq(uploadedPaper.id, id))
+      .returning();
+    return row;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to delete uploaded paper"
+    );
+  }
+}
+
+/** Blob pathnames for a chat's papers, so the caller can delete the files themselves. */
+export async function getUploadedPaperBlobPaths({
+  chatId,
+}: {
+  chatId: string;
+}): Promise<string[]> {
+  try {
+    const rows = await db
+      .select({ pathname: uploadedPaper.blobPathname })
+      .from(uploadedPaper)
+      .where(eq(uploadedPaper.chatId, chatId));
+    return rows.map((r) => r.pathname).filter(Boolean);
+  } catch (_error) {
+    return [];
   }
 }
 

@@ -1,5 +1,7 @@
 import { auth } from "@/app/(auth)/auth";
 import { fetchPdfAsset } from "@/lib/aprag/client";
+import { uploadIdFromPdfName } from "@/lib/aprag/uploads";
+import { getUploadedPaperById, resolveChatAccess } from "@/lib/db/queries";
 
 // Streams one corpus PDF from the always-on PC to the in-app viewer, behind the app's
 // own login (the tunnel URL and API key never reach the browser). The filename rides in
@@ -9,6 +11,10 @@ import { fetchPdfAsset } from "@/lib/aprag/client";
 // Range and conditional headers are forwarded and the upstream status (206/304) is
 // passed through verbatim — pdf.js depends on partial responses to avoid pulling whole
 // multi-megabyte files for one page.
+//
+// A paper the user uploaded into a chat is served here too, under the synthetic name
+// "upload-<id>.pdf", from Blob storage rather than the PC. Same URL shape means the
+// reader, the prefetcher and "open in a new tab" need to know nothing about it.
 
 const PASS_THROUGH = [
   "content-type",
@@ -19,6 +25,62 @@ const PASS_THROUGH = [
   "cache-control",
   "content-disposition",
 ];
+
+/**
+ * An uploaded paper, proxied out of Blob storage. The blob URL itself is unguessable but
+ * public, so it stays server-side: readers have to come through the chat's access rules.
+ */
+async function serveUploadedPdf(
+  request: Request,
+  id: string,
+  userId: string,
+  download: boolean
+): Promise<Response> {
+  const paper = await getUploadedPaperById({ id });
+  if (!paper) {
+    return Response.json({ error: "pdf not found" }, { status: 404 });
+  }
+
+  // Everyone who can read the chat can read its papers. Before the chat's first message
+  // there is no row to check, so only the uploader can.
+  const access = await resolveChatAccess({ chatId: paper.chatId, userId });
+  const allowed = access ? access.canRead : paper.userId === userId;
+  if (!allowed) {
+    return Response.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  const range = request.headers.get("range");
+  let upstream: Response;
+  try {
+    upstream = await fetch(paper.blobUrl, {
+      headers: range ? { Range: range } : undefined,
+      cache: "no-store",
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch {
+    return Response.json({ error: "file store unreachable" }, { status: 502 });
+  }
+  if (!upstream.ok && upstream.status !== 206) {
+    return Response.json({ error: "pdf unavailable" }, { status: 502 });
+  }
+
+  const headers = new Headers();
+  for (const key of ["content-length", "content-range", "accept-ranges"]) {
+    const value = upstream.headers.get(key);
+    if (value) {
+      headers.set(key, value);
+    }
+  }
+  headers.set("content-type", "application/pdf");
+  // The paper is chat-scoped and access-checked, so it must not be cached by anything in
+  // between; the browser may keep it for the session.
+  headers.set("cache-control", "private, max-age=600");
+  headers.set(
+    "content-disposition",
+    `${download ? "attachment" : "inline"}; filename="${paper.filename.replace(/"/g, "")}"`
+  );
+  return new Response(upstream.body, { status: upstream.status, headers });
+}
 
 export async function GET(
   request: Request,
@@ -36,6 +98,16 @@ export async function GET(
   }
 
   const download = new URL(request.url).searchParams.get("download") === "1";
+
+  const uploadId = uploadIdFromPdfName(name);
+  if (uploadId) {
+    return await serveUploadedPdf(
+      request,
+      uploadId,
+      session.user.id as string,
+      download
+    );
+  }
 
   let upstream: Response;
   try {

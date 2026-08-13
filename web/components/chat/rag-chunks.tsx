@@ -101,8 +101,7 @@ export function ChunkCard({
 }) {
   const openPdf = usePdfViewer((s) => s.openPdf);
   const label = reference?.apa || reference?.filename || chunk.file_path;
-  const score =
-    typeof chunk.score === "number" ? chunk.score.toFixed(3) : null;
+  const score = typeof chunk.score === "number" ? chunk.score.toFixed(3) : null;
   const pdfName = reference?.filename ?? "";
   const citedPage = chunk.page ?? reference?.pages?.[0] ?? 1;
   return (
@@ -115,6 +114,14 @@ export function ChunkCard({
           <MessageResponse>{label}</MessageResponse>
         </div>
         <div className="flex shrink-0 items-center gap-2 text-muted-foreground text-xs">
+          {reference?.uploaded && (
+            <span
+              className="rounded border border-border/60 px-1 py-px text-[10px] uppercase tracking-wide"
+              title="Uploaded to this chat — not in the database"
+            >
+              Uploaded
+            </span>
+          )}
           {chunk.page != null && <span>p. {chunk.page}</span>}
           {score && <span className="tabular-nums">{score}</span>}
           {pdfName && (
@@ -171,7 +178,8 @@ function GraphSection({
       <CollapsibleTrigger className="flex w-full items-center justify-between px-3.5 py-2 text-left text-muted-foreground text-xs hover:text-foreground">
         <span>
           Knowledge graph · {entities.length} entit
-          {entities.length === 1 ? "y" : "ies"}, {relationships.length} relationship
+          {entities.length === 1 ? "y" : "ies"}, {relationships.length}{" "}
+          relationship
           {relationships.length === 1 ? "" : "s"}
         </span>
         <span aria-hidden>▾</span>

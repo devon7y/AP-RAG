@@ -12,6 +12,11 @@ export type RagReference = {
   pages: number[]; // PDF pages the cited passages came from ([] for a pre-page-aware store)
   date?: string; // earliest-appearance date "YYYY[-MM[-DD]]" (server-supplied; "" if none)
   date_precision?: string; // "day" | "month" | "year" | ""
+  // A paper the user uploaded into this chat rather than one from the database. Its
+  // `filename` is the synthetic "upload-<id>.pdf" the reader streams it under; the name
+  // the file actually had is `uploadedName`.
+  uploaded?: boolean;
+  uploadedName?: string;
 };
 
 export type RagChunk = {
@@ -53,6 +58,24 @@ export type RagFilters = {
   keywords?: string[];
   affiliations?: string[];
   types?: string[]; // record types (article/book/…) — used by the Papers Database, not chat chips
+};
+
+// ── Uploaded papers (chat-scoped, not in the database) ────────────────────────
+
+// One uploaded paper as the composer lists it. Deliberately without the chunk text: the
+// browser only ever needs to name the paper, show how much of it was read, and remove it.
+export type UploadedPaperSummary = {
+  id: string;
+  filename: string; // the name the user's file had
+  title: string;
+  intext: string; // "Smith et al., 2019" — how the answer will cite it
+  apa: string;
+  year: string;
+  pageCount: number;
+  chunkCount: number;
+  createdAt: string;
+  uploadedBy: string | null; // username, for a chat shared with other people
+  isOwn: boolean;
 };
 
 // ── Papers Database (/papers) shapes ──────────────────────────────────────────

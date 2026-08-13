@@ -2,6 +2,8 @@ import type { InferSelectModel } from "drizzle-orm";
 import {
   boolean,
   foreignKey,
+  index,
+  integer,
   json,
   pgTable,
   primaryKey,
@@ -10,6 +12,7 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import type { UploadChunk } from "../aprag/uploads";
 
 export const user = pgTable("User", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
@@ -111,6 +114,46 @@ export const chatTyping = pgTable(
 );
 
 export type ChatTyping = InferSelectModel<typeof chatTyping>;
+
+// A paper the user uploaded into a chat: one that is NOT in the AP-RAG database, brought
+// in so the conversation can discuss it. The PDF itself lives in Vercel Blob; what is kept
+// here is the extracted, chunked text, which is what retrieval actually reads (see
+// lib/aprag/uploads.ts).
+//
+// `chatId` deliberately carries no foreign key: papers can be attached before the first
+// message is sent, and the Chat row is only written when that message arrives. Rows are
+// removed with their chat (deleteChatById) and when the user removes the paper.
+export const uploadedPaper = pgTable(
+  "UploadedPaper",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    chatId: uuid("chatId").notNull(),
+    userId: uuid("userId")
+      .notNull()
+      .references(() => user.id),
+    filename: text("filename").notNull(), // the name the user's file had
+    blobUrl: text("blobUrl").notNull(),
+    blobPathname: text("blobPathname").notNull(), // for deleting the blob
+    byteSize: integer("byteSize").notNull().default(0),
+    pageCount: integer("pageCount").notNull().default(0),
+    // Bibliographic identity, read off the first pages at upload time so the answer can
+    // cite the paper as "(Smith et al., 2019)" instead of by file name. Best-effort.
+    title: text("title").notNull().default(""),
+    apa: text("apa").notNull().default(""),
+    intext: text("intext").notNull().default(""),
+    year: text("year").notNull().default(""),
+    chunks: json("chunks").$type<UploadChunk[]>().notNull(),
+    createdAt: timestamp("createdAt").notNull().defaultNow(),
+  },
+  (table) => ({
+    chatIdx: index("UploadedPaper_chatId_createdAt_idx").on(
+      table.chatId,
+      table.createdAt
+    ),
+  })
+);
+
+export type UploadedPaperRow = InferSelectModel<typeof uploadedPaper>;
 
 export const message = pgTable("Message_v2", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),

@@ -47,9 +47,11 @@ import {
 } from "@/lib/ai/models";
 import { detectFilters } from "@/lib/aprag/detect";
 import {
+  authorFamily,
   DIGEST_WINDOW_DISMISS_KEY,
   type FilterListKey,
   hasAnyFilter,
+  isSpecificAuthor,
   mergeFilters,
 } from "@/lib/aprag/filters";
 import type { RagFilters } from "@/lib/aprag/types";
@@ -76,6 +78,13 @@ import {
   slashCommands,
 } from "./slash-commands";
 import { SuggestedActions } from "./suggested-actions";
+import {
+  PdfDropOverlay,
+  UploadedPapersRow,
+  UploadPapersButton,
+  useChatUploads,
+  usePdfDropZone,
+} from "./upload-papers";
 import type { VisibilityType } from "./visibility-selector";
 
 function setCookie(name: string, value: string) {
@@ -227,6 +236,18 @@ function PureMultimodalInput({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadQueue, setUploadQueue] = useState<string[]>([]);
+
+  // Papers uploaded into this chat — PDFs that aren't in the AP-RAG database, kept with
+  // the conversation so every turn can draw on them (see components/chat/upload-papers).
+  const {
+    papers: uploadedPapers,
+    pending: uploadingPapers,
+    isUploading: isUploadingPapers,
+    upload: uploadPapers,
+    remove: removePaper,
+  } = useChatUploads(chatId);
+  const { isDragging, dropProps } = usePdfDropZone({ onFiles: uploadPapers });
+
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [slashIndex, setSlashIndex] = useState(0);
@@ -244,7 +265,14 @@ function PureMultimodalInput({
     activeParticipantName,
     typingNames,
     sendTyping,
+    participants,
+    viewerId,
   } = useActiveChat();
+
+  // Only the owner of a shared chat can pull out a paper somebody else attached.
+  const isChatOwner =
+    participants.length === 0 ||
+    participants.some((p) => p.isOwner && p.id === viewerId);
 
   const isComposing = input.trim().length > 0;
 
@@ -317,6 +345,17 @@ function PureMultimodalInput({
         }
         if (
           (active[dim] ?? []).some((a) => a.toLowerCase() === v.toLowerCase())
+        ) {
+          continue;
+        }
+        // A surname the text mentions is redundant once a specific person with that
+        // surname is already picked ("Zhang" alongside "Zhang, Kechen") — and applying
+        // it would widen the filter back to every Zhang, so don't offer the chip.
+        if (
+          dim === "authors" &&
+          (active.authors ?? []).some(
+            (a) => isSpecificAuthor(a) && authorFamily(a) === authorFamily(v)
+          )
         ) {
           continue;
         }
@@ -554,7 +593,11 @@ function PureMultimodalInput({
   }, [handlePaste]);
 
   return (
-    <div className={cn("relative flex w-full flex-col gap-4", className)}>
+    <div
+      className={cn("relative flex w-full flex-col gap-4", className)}
+      {...dropProps}
+    >
+      {isDragging && <PdfDropOverlay />}
       {editingMessage && onCancelEdit && (
         <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
           <span>Editing message</span>
@@ -637,6 +680,12 @@ function PureMultimodalInput({
           }
         }}
       >
+        <UploadedPapersRow
+          isChatOwner={isChatOwner}
+          onRemove={removePaper}
+          papers={uploadedPapers}
+          pending={uploadingPapers}
+        />
         {(attachments.length > 0 || uploadQueue.length > 0) && (
           <div
             className="flex w-full self-start flex-row gap-2 overflow-x-auto px-3 pt-3 no-scrollbar"
@@ -715,58 +764,69 @@ function PureMultimodalInput({
             ))}
           </div>
         )}
-        <PromptInputTextarea
-          className="min-h-0 text-[13px] leading-relaxed px-4 pt-3.5 pb-1.5 placeholder:text-muted-foreground/35"
-          data-testid="multimodal-input"
-          // Held while someone else is composing or their answer is running, so the
-          // placeholder is the whole explanation of why nothing types.
-          disabled={blocked}
-          onChange={handleInput}
-          onKeyDown={(e) => {
-            if (slashOpen) {
-              const filtered = slashCommands.filter((cmd) =>
-                cmd.name.startsWith(slashQuery.toLowerCase())
-              );
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setSlashIndex((i) => Math.min(i + 1, filtered.length - 1));
-                return;
-              }
-              if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setSlashIndex((i) => Math.max(i - 1, 0));
-                return;
-              }
-              if (e.key === "Enter" || e.key === "Tab") {
-                e.preventDefault();
-                if (filtered[slashIndex]) {
-                  handleSlashSelect(filtered[slashIndex]);
+        {/* The text line, with "attach a paper" at its right end — directly above the send
+            button, so the two things you can do to a message sit in the same column. */}
+        <div className="flex w-full items-start gap-1">
+          <PromptInputTextarea
+            className="min-h-0 flex-1 text-[13px] leading-relaxed px-4 pt-3.5 pb-1.5 placeholder:text-muted-foreground/35"
+            data-testid="multimodal-input"
+            // Held while someone else is composing or their answer is running, so the
+            // placeholder is the whole explanation of why nothing types.
+            disabled={blocked}
+            onChange={handleInput}
+            onKeyDown={(e) => {
+              if (slashOpen) {
+                const filtered = slashCommands.filter((cmd) =>
+                  cmd.name.startsWith(slashQuery.toLowerCase())
+                );
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setSlashIndex((i) => Math.min(i + 1, filtered.length - 1));
+                  return;
                 }
-                return;
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSlashIndex((i) => Math.max(i - 1, 0));
+                  return;
+                }
+                if (e.key === "Enter" || e.key === "Tab") {
+                  e.preventDefault();
+                  if (filtered[slashIndex]) {
+                    handleSlashSelect(filtered[slashIndex]);
+                  }
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setSlashOpen(false);
+                  return;
+                }
               }
-              if (e.key === "Escape") {
+              if (e.key === "Escape" && editingMessage && onCancelEdit) {
                 e.preventDefault();
-                setSlashOpen(false);
-                return;
+                onCancelEdit();
               }
+            }}
+            placeholder={
+              busyByOther
+                ? "Checking the database…"
+                : blocked
+                  ? `Wait for ${otherTyping} to finish typing...`
+                  : editingMessage
+                    ? "Edit your message..."
+                    : "Ask anything..."
             }
-            if (e.key === "Escape" && editingMessage && onCancelEdit) {
-              e.preventDefault();
-              onCancelEdit();
-            }
-          }}
-          placeholder={
-            busyByOther
-              ? "Checking the database…"
-              : blocked
-                ? `Wait for ${otherTyping} to finish typing...`
-                : editingMessage
-                  ? "Edit your message..."
-                  : "Ask anything..."
-          }
-          ref={textareaRef}
-          value={input}
-        />
+            ref={textareaRef}
+            value={input}
+          />
+          <UploadPapersButton
+            busy={isUploadingPapers}
+            className="mt-2.5 mr-3"
+            count={uploadedPapers.length}
+            disabled={blocked}
+            onFiles={uploadPapers}
+          />
+        </div>
         <PromptInputFooter className="px-3 pb-3">
           <PromptInputTools>
             <RagControls />

@@ -4,6 +4,7 @@ import {
   CalendarIcon,
   FileTextIcon,
   SparklesIcon,
+  UploadIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { formatPages } from "@/lib/aprag/citations";
@@ -14,8 +15,18 @@ import { cn } from "@/lib/utils";
 import { MessageResponse } from "../ai-elements/message";
 
 const MONTHS_SHORT = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
 ];
 
 // "2024-03-17" → "17 Mar 2024"; "2024-03" → "Mar 2024"; "2024" → "2024".
@@ -78,6 +89,21 @@ export function RagReferences({
                     </span>
                   )}
                   {pages && <span>{pages}</span>}
+                  {/* A paper the user uploaded into this chat, not one from the database
+                      — said plainly, since the two are cited identically above. */}
+                  {ref.uploaded && (
+                    <span
+                      className="inline-flex items-center gap-1 rounded border border-border/60 px-1 py-px text-[10px] uppercase tracking-wide"
+                      title={
+                        ref.uploadedName
+                          ? `Uploaded to this chat: ${ref.uploadedName}`
+                          : "Uploaded to this chat"
+                      }
+                    >
+                      <UploadIcon className="size-2.5" />
+                      Uploaded
+                    </span>
+                  )}
                   {ref.filename && (
                     <button
                       className="inline-flex items-center gap-1 text-primary hover:underline"
@@ -89,7 +115,9 @@ export function RagReferences({
                           driveUrl: ref.drive_url,
                         })
                       }
-                      onFocus={() => promotePdf(ref.filename, ref.pages?.[0] ?? 1)}
+                      onFocus={() =>
+                        promotePdf(ref.filename, ref.pages?.[0] ?? 1)
+                      }
                       onMouseEnter={() =>
                         promotePdf(ref.filename, ref.pages?.[0] ?? 1)
                       }
@@ -100,8 +128,10 @@ export function RagReferences({
                     </button>
                   )}
                   {/* No Drive link here: the reader opens the paper in place, and a
-                      second, slower route to the same PDF only crowds the row. */}
-                  {ref.filename && (
+                      second, slower route to the same PDF only crowds the row.
+                      "Similar" is corpus-only — an uploaded paper has no neighbours in
+                      the vector store to be similar to. */}
+                  {ref.filename && !ref.uploaded && (
                     <Link
                       className="inline-flex items-center gap-1 text-primary hover:underline"
                       href={`/papers?similar=${encodeURIComponent(ref.filename)}`}

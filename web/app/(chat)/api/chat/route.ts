@@ -1,4 +1,4 @@
-import { geolocation, ipAddress } from "@vercel/functions";
+import { ipAddress } from "@vercel/functions";
 import {
   convertToModelMessages,
   createUIMessageStream,
@@ -18,21 +18,15 @@ import {
   SYNTH_VERBOSITY,
 } from "@/lib/ai/models";
 import { getLanguageModel } from "@/lib/ai/providers";
-import { getStats, retrieve, type RetrieveResult } from "@/lib/aprag/client";
 import { buildContext, SYNTH_SYSTEM_PROMPT } from "@/lib/aprag/citations";
+import { getStats, type RetrieveResult, retrieve } from "@/lib/aprag/client";
 import { condenseAndExtract, type HistoryTurn } from "@/lib/aprag/condense";
 import {
-  buildPinnedContext,
-  buildPinnedSystemPrompt,
-  mergePinnedRetrievals,
-  type PinnedRetrieval,
-} from "@/lib/aprag/pinned";
-import {
+  type BucketRetrieval,
   bucketize,
   bucketTopK,
   buildDigestContext,
   buildDigestSystemPrompt,
-  type BucketRetrieval,
   chooseBucketUnit,
   type DigestConfig,
   mapLimit,
@@ -48,7 +42,20 @@ import {
   buildPersonaContext,
   buildPersonaSystemPrompt,
 } from "@/lib/aprag/persona";
+import {
+  buildPinnedContext,
+  buildPinnedSystemPrompt,
+  mergePinnedRetrievals,
+  type PinnedRetrieval,
+} from "@/lib/aprag/pinned";
 import type { RagRetrieval } from "@/lib/aprag/types";
+import {
+  buildUploadContext,
+  maxCiteIndex,
+  selectUploadPassages,
+  UPLOAD_SOURCE_NOTE,
+  type UploadedPaper,
+} from "@/lib/aprag/uploads";
 import { isProductionEnvironment } from "@/lib/constants";
 import {
   claimChatTurn,
@@ -57,6 +64,7 @@ import {
   getChatById,
   getMessageCountByUserId,
   getMessagesByChatId,
+  getUploadedPapersForChat,
   releaseChatTurn,
   resolveChatAccess,
   saveChat,
@@ -65,7 +73,6 @@ import {
   setChatTyping,
   updateChatDigest,
   updateChatTitleById,
-  updateMessage,
 } from "@/lib/db/queries";
 import type { DBMessage } from "@/lib/db/schema";
 import { ChatbotError } from "@/lib/errors";
@@ -171,7 +178,7 @@ export async function POST(request: Request) {
     // synthesis below runs the author-persona path (forced author filter + persona prompt).
     const persona: string | null = chat
       ? (chat.personaAuthor ?? null)
-      : (personaAuthor?.trim() || null);
+      : personaAuthor?.trim() || null;
 
     // "Research Digest": like persona, an existing chat's config comes from its row; a
     // brand-new digest chat carries {topic, from, to} in the body on the first message.
@@ -275,7 +282,10 @@ export async function POST(request: Request) {
         // into one chronological context (global [n] cites), and synthesize dated ###
         // sections. Other follow-up turns fall through to the normal flow below (with
         // the window applied as a filter).
-        if (digestConfig && (priorMessages.length === 0 || digestRefreshRequested)) {
+        if (
+          digestConfig &&
+          (priorMessages.length === 0 || digestRefreshRequested)
+        ) {
           // An open-ended digest always runs up to the current month; a fixed window
           // keeps its stored end.
           const runTo = digestConfig.openEnded ? ymNow() : digestConfig.to;
@@ -356,7 +366,9 @@ export async function POST(request: Request) {
               functionId: "stream-text",
             },
           });
-          dataStream.merge(digestResult.toUIMessageStream({ sendReasoning: true }));
+          dataStream.merge(
+            digestResult.toUIMessageStream({ sendReasoning: true })
+          );
 
           // Stamp this run onto the chat row: advance an open-ended window's end and
           // record when/at-what-corpus-size the digest last ran (the /digest library's
@@ -387,6 +399,26 @@ export async function POST(request: Request) {
           return;
         }
 
+        // Papers the user uploaded into THIS chat — not in the database, so they can only
+        // be retrieved from here (see lib/aprag/uploads.ts). Read alongside the condense
+        // call so attaching a paper costs nothing in front of retrieval. Author-persona
+        // chats are left out on purpose: that voice answers from its own published work,
+        // and the digest's first turn is a dated sweep of the corpus, which an undated
+        // attachment has no place in.
+        const uploadsPromise: Promise<UploadedPaper[]> = persona
+          ? Promise.resolve([])
+          : getUploadedPapersForChat({ chatId: id }).then((rows) =>
+              rows.map((row) => ({
+                id: row.id,
+                filename: row.filename,
+                title: row.title,
+                intext: row.intext,
+                apa: row.apa,
+                pageCount: row.pageCount,
+                chunks: row.chunks ?? [],
+              }))
+            );
+
         // 1. Condense into a standalone query AND run the second-pass LLM filter
         //    extraction (catches mistyped/fuzzy names the client preview misses).
         const {
@@ -403,7 +435,18 @@ export async function POST(request: Request) {
         // Resolve "auto" to the LLM-suggested concrete mode (hybrid fallback); an explicit
         // user choice always wins.
         const retrievalMode =
-          requestedMode === "auto" ? (suggestedMode ?? "hybrid") : requestedMode;
+          requestedMode === "auto"
+            ? (suggestedMode ?? "hybrid")
+            : requestedMode;
+
+        // Which passages of the uploaded papers answer this question (whole paper when it
+        // is short enough to fit — see selectUploadPassages).
+        const uploadedPapers = await uploadsPromise;
+        const uploadSelection =
+          uploadedPapers.length > 0
+            ? selectUploadPassages(uploadedPapers, retrievalQuery)
+            : null;
+        const hasUploads = (uploadSelection?.chunks.length ?? 0) > 0;
 
         // Honor the user's pre-send cancellations, then combine the client-confirmed
         // filters with the server's second-pass extraction. In a persona chat the filter
@@ -415,7 +458,9 @@ export async function POST(request: Request) {
         // (the point of the digest) — the window rides on top of any inferred/manual filters.
         // The user can drop it for one message by removing the window chip, which sends the
         // DIGEST_WINDOW_DISMISS_KEY sentinel, letting them ask about papers outside the range.
-        const windowDismissed = (dismissed ?? []).includes(DIGEST_WINDOW_DISMISS_KEY);
+        const windowDismissed = (dismissed ?? []).includes(
+          DIGEST_WINDOW_DISMISS_KEY
+        );
         const baseFilters = mergeFilters(filters ?? null, inferredKept);
         // An open-ended digest's follow-ups have no upper date bound — the chat is
         // "about" everything from `from` to the present, including papers added after
@@ -426,9 +471,7 @@ export async function POST(request: Request) {
             ? {
                 ...baseFilters,
                 date_from: digestConfig.from,
-                ...(digestConfig.openEnded
-                  ? {}
-                  : { date_to: digestConfig.to }),
+                ...(digestConfig.openEnded ? {} : { date_to: digestConfig.to }),
               }
             : baseFilters;
 
@@ -452,7 +495,10 @@ export async function POST(request: Request) {
         let retrieved: RetrieveResult;
         let context = "";
         if (pinnedCompare) {
-          const perPaperK = Math.max(4, Math.min(10, Math.floor(24 / pinned.length)));
+          const perPaperK = Math.max(
+            4,
+            Math.min(10, Math.floor(24 / pinned.length))
+          );
           const results: PinnedRetrieval[] = await mapLimit(
             pinned,
             4,
@@ -501,8 +547,47 @@ export async function POST(request: Request) {
           context = effectiveChunkMode
             ? ""
             : persona
-              ? buildPersonaContext(retrieved.references, retrieved.chunks, persona)
+              ? buildPersonaContext(
+                  retrieved.references,
+                  retrieved.chunks,
+                  persona
+                )
               : buildContext(retrieved.references, retrieved.chunks);
+        }
+
+        // 3b. Fold in the uploaded papers. Their passages continue the SAME [n] numbering
+        //     the database sources were just given, so the answer cites an uploaded paper
+        //     exactly as it cites a corpus paper, and it lands in the reference list and
+        //     the reader with everything else. (In chunk mode there is no synthesis, so
+        //     they simply lead the chunk cards.)
+        if (uploadSelection && hasUploads) {
+          if (effectiveChunkMode) {
+            retrieved = {
+              ...retrieved,
+              references: [
+                ...uploadSelection.references,
+                ...retrieved.references,
+              ],
+              chunks: [...uploadSelection.chunks, ...retrieved.chunks],
+            };
+          } else {
+            const uploadContext = buildUploadContext(
+              uploadSelection.references,
+              uploadSelection.chunks,
+              maxCiteIndex(retrieved.chunks)
+            );
+            context = context
+              ? `${context}\n\n${uploadContext}`
+              : uploadContext;
+            retrieved = {
+              ...retrieved,
+              references: [
+                ...retrieved.references,
+                ...uploadSelection.references,
+              ],
+              chunks: [...retrieved.chunks, ...uploadSelection.chunks],
+            };
+          }
         }
 
         // 4. Attach the retrieval payload to the assistant message (persisted, so the
@@ -546,13 +631,20 @@ export async function POST(request: Request) {
           },
         ];
 
+        const baseSystemPrompt = persona
+          ? buildPersonaSystemPrompt(persona)
+          : pinnedCompare
+            ? buildPinnedSystemPrompt(pinned.length)
+            : SYNTH_SYSTEM_PROMPT;
+
         const result = streamText({
           model: getLanguageModel(DEFAULT_CHAT_MODEL),
-          system: persona
-            ? buildPersonaSystemPrompt(persona)
-            : pinnedCompare
-              ? buildPinnedSystemPrompt(pinned.length)
-              : SYNTH_SYSTEM_PROMPT,
+          // The uploaded papers are the user's own attachments, not corpus material — the
+          // model is told which Sources they are so it never presents one as a database
+          // paper (or ignores it as an outsider).
+          system: hasUploads
+            ? `${baseSystemPrompt}${UPLOAD_SOURCE_NOTE}`
+            : baseSystemPrompt,
           messages: synthesisMessages,
           providerOptions: openaiOptions(reasoning, SYNTH_VERBOSITY),
           experimental_telemetry: {

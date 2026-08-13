@@ -1,5 +1,6 @@
 import { auth } from "@/app/(auth)/auth";
 import { locatePdfQuote } from "@/lib/aprag/client";
+import { isUploadPdfName } from "@/lib/aprag/uploads";
 
 // Where does a cited passage actually sit in the PDF? The corpus store carries no
 // per-chunk page numbers, so the reader recovers the page (and the highlight boxes) by
@@ -25,6 +26,17 @@ export async function POST(request: Request) {
       { error: "filename and quote required" },
       { status: 400 }
     );
+  }
+
+  // Passages from an uploaded paper already carry the page they were chunked from, and the
+  // PC — which is what does the searching — has never seen the file. The reader opens at
+  // that page without a highlight.
+  if (isUploadPdfName(filename)) {
+    return Response.json({
+      page: body.hintPage ?? null,
+      rects: [],
+      unavailable: true,
+    });
   }
 
   try {
