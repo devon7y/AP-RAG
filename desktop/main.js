@@ -11,12 +11,17 @@ import {
   BrowserWindow,
   clipboard,
   dialog,
+  ipcMain,
   Menu,
   nativeTheme,
+  safeStorage,
   screen,
   session,
   shell,
+  systemPreferences,
 } from "electron";
+
+import { clearCreds, getNeverAsk, readCreds, setNeverAsk, writeCreds } from "./credentials.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -33,7 +38,12 @@ const ALLOWED_PERMISSIONS = new Set([
 let mainWindow = null;
 
 function securePrefs() {
-  return { sandbox: true, contextIsolation: true, nodeIntegration: false };
+  return {
+    sandbox: true,
+    contextIsolation: true,
+    nodeIntegration: false,
+    preload: path.join(__dirname, "preload.js"),
+  };
 }
 
 function isAllowed(url) {
@@ -169,6 +179,93 @@ function attachContextMenu(contents) {
 }
 
 // ---------------------------------------------------------------------------
+// Login autofill: credentials live in the OS keystore (see credentials.js).
+// The preload submits a save *candidate* on every auth-form submit; only the
+// navigation away from /login (proof the login worked) triggers the offer.
+
+let pendingCandidate = null; // { email, password, at }
+
+function isTrustedSender(event) {
+  try {
+    return ALLOWED_HOSTS.has(new URL(event.senderFrame.url).host);
+  } catch {
+    return false;
+  }
+}
+
+function registerCredentialIpc() {
+  ipcMain.on("creds:candidate", (event, payload) => {
+    if (!isTrustedSender(event)) return;
+    if (typeof payload?.email !== "string" || typeof payload?.password !== "string") return;
+    pendingCandidate = { email: payload.email, password: payload.password, at: Date.now() };
+  });
+
+  ipcMain.handle("creds:request-fill", async (event) => {
+    if (!isTrustedSender(event)) return null;
+    if (new URL(event.senderFrame.url).pathname !== "/login") return null;
+    const creds = readCreds();
+    if (!creds) return null;
+    if (process.platform === "darwin" && systemPreferences.canPromptTouchID()) {
+      try {
+        await systemPreferences.promptTouchID("autofill your AP-RAG login");
+      } catch {
+        return null; // cancelled or failed — leave the form untouched
+      }
+    }
+    return creds;
+  });
+}
+
+async function maybeOfferSave(contents, url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return;
+  }
+  if (!ALLOWED_HOSTS.has(u.host)) return;
+  if (u.pathname === "/login" || u.pathname === "/register") return;
+  if (!pendingCandidate) return;
+  const candidate = pendingCandidate;
+  pendingCandidate = null;
+  if (Date.now() - candidate.at > 120_000) return;
+  if (getNeverAsk() || !safeStorage.isEncryptionAvailable()) return;
+  const existing = readCreds();
+  if (existing?.email === candidate.email && existing?.password === candidate.password) return;
+
+  const detail =
+    process.platform === "darwin"
+      ? "Stored encrypted via the macOS Keychain and autofilled (after Touch ID) the next time you sign in. Remove it any time with Help → Forget Saved Login."
+      : "Stored encrypted with your OS user account and autofilled the next time you sign in. Remove it any time with Help → Forget Saved Login.";
+  const { response } = await dialog.showMessageBox(BrowserWindow.fromWebContents(contents) ?? mainWindow, {
+    type: "question",
+    message: existing ? "Update your saved AP-RAG login?" : "Save your AP-RAG login for autofill?",
+    detail,
+    buttons: ["Save", "Not Now", "Never Ask"],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (response === 0) writeCreds(candidate);
+  else if (response === 2) setNeverAsk();
+}
+
+function attachCredentialPrompts(contents) {
+  contents.on("did-navigate", (_event, url) => maybeOfferSave(contents, url));
+  contents.on("did-navigate-in-page", (_event, url, isMainFrame) => {
+    if (isMainFrame) maybeOfferSave(contents, url);
+  });
+}
+
+function forgetSavedLogin() {
+  clearCreds();
+  dialog.showMessageBox({
+    type: "info",
+    message: "Saved login removed.",
+    detail: "The app will offer to save it again after your next sign-in.",
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Menu
 
 function focusedContents() {
@@ -218,6 +315,8 @@ function buildMenu() {
       role: "help",
       submenu: [
         { label: "Open in Browser", click: () => shell.openExternal(APP_URL) },
+        { type: "separator" },
+        { label: "Forget Saved Login", click: forgetSavedLogin },
       ],
     },
   ]);
@@ -296,7 +395,10 @@ if (!app.requestSingleInstanceLock()) {
   app.on("web-contents-created", (_event, contents) => {
     attachNavigationPolicy(contents);
     attachContextMenu(contents);
+    attachCredentialPrompts(contents);
   });
+
+  registerCredentialIpc();
 
   app.whenReady().then(() => {
     if (process.platform === "win32") {

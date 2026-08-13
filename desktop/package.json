@@ -1,6 +1,6 @@
 {
   "name": "aprag-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Desktop shell for the AP-RAG web app (aprag.devon7y.com)",
   "author": "devon7y <devon7y@gmail.com>",
@@ -28,6 +28,8 @@
     },
     "files": [
       "main.js",
+      "preload.js",
+      "credentials.js",
       "error.html"
     ],
     "mac": {

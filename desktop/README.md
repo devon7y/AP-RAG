@@ -16,6 +16,24 @@ What the shell adds over a browser tab:
   debugged against, on both platforms.
 - Offline handling (retry page), crash recovery, spellcheck with
   right-click suggestions, locked-down web permissions.
+- Login autofill (see below) — browser-style credential fill on the login
+  page, backed by the OS keystore.
+
+## Login autofill
+
+Chromium cannot reach iCloud Keychain (Apple exposes it only to Safari,
+WKWebView, and an extension needing native-messaging APIs Electron lacks), so
+the shell provides the equivalent itself:
+
+- After a successful sign-in, the app offers to save the login. The password
+  is encrypted with Electron `safeStorage` — macOS Keychain / Windows DPAPI
+  hold the key — in `userData/credentials.json`; it never leaves the machine.
+- On the next visit to `/login`, the form autofills — behind a Touch ID
+  prompt on Macs that have it. Nothing is auto-submitted.
+- The offer only appears after the navigation that proves the login
+  succeeded; failed attempts are never saved. *Never Ask* is honored.
+- **Help → Forget Saved Login** deletes the stored credential (and re-enables
+  the save offer).
 
 ## Develop
 
