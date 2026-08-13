@@ -21,6 +21,7 @@ This repo is **not** a clone of LightRAG at its root. The git repo tracks the ro
 - **`tests/`** — the fast, local chunker tests (`pytest tests/`).
 - **`docs/`** — operational runbooks and notes (point-in-time; verify against code).
 - **Root scripts** — the query/serve layer. `query.py` / `mcp_server.py` belong to the older small "CML" corpus (~76 papers, OpenAI embeddings, file-based storage). The current corpus is served by `query_server.py` (the PC HTTP API: `/query` synthesized answer + `/retrieve` raw chunks) plus the **`aprag/`** package (the `aprag` CLI and `aprag-mcp` MCP server — thin clients over that API; this replaced the old `mcp_server_westbury.py`). **Ingestion is no longer at the root** — the legacy root ingest scripts (`ingest.py`, `ingest_westbury*.py`) were removed; the sole ingest entry point is now `pipeline/ingest.py`.
+- **`desktop/`** — the Electron desktop shell: a thin Chromium wrapper around the deployed web app (`https://aprag.devon7y.com`), packaged as macOS `.dmg` + Windows `.exe` via electron-builder (see `desktop/README.md`). Like `aprag/`, it's a client — no models, no data. Release CI: `.github/workflows/desktop.yml`, triggered by `desktop-v*` tags.
 - **`lightrag-explainer/`** — an unrelated Next.js 16 slideshow app (a presentation about LightRAG). Not part of the RAG pipeline.
 
 ## End-to-end architecture

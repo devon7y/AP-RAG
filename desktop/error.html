@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>AP-RAG — can't connect</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --fg: #18181b;
+      --muted: #71717a;
+      --bg: #ffffff;
+      --accent: #4f46e5;
+      --accent-fg: #ffffff;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fg: #fafafa;
+        --muted: #a1a1aa;
+        --bg: #09090b;
+        --accent: #6366f1;
+      }
+    }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      display: grid;
+      place-items: center;
+      background: var(--bg);
+      color: var(--fg);
+      font: 15px/1.6 -apple-system, "Segoe UI", system-ui, sans-serif;
+    }
+    main { text-align: center; max-width: 26rem; padding: 2rem; }
+    h1 { font-size: 1.3rem; margin: 0 0 0.5rem; }
+    p { margin: 0 0 1.5rem; color: var(--muted); }
+    button {
+      font: inherit;
+      padding: 0.5rem 1.4rem;
+      border: 0;
+      border-radius: 0.5rem;
+      background: var(--accent);
+      color: var(--accent-fg);
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.1); }
+    #status { margin-top: 1rem; font-size: 0.85rem; min-height: 1.4em; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Can't reach AP-RAG</h1>
+    <p>The app couldn't connect to <span id="host">aprag.devon7y.com</span>.
+       Check your internet connection, or try again in a moment.</p>
+    <button id="retry">Retry now</button>
+    <p id="status"></p>
+  </main>
+  <script>
+    const appUrl =
+      new URLSearchParams(location.search).get("to") || "https://aprag.devon7y.com";
+    document.getElementById("host").textContent = new URL(appUrl).host;
+    const status = document.getElementById("status");
+    function retry() {
+      status.textContent = "Retrying…";
+      location.replace(appUrl);
+    }
+    document.getElementById("retry").addEventListener("click", retry);
+    setInterval(() => {
+      if (navigator.onLine) retry();
+      else status.textContent = "Offline — waiting for a connection…";
+    }, 15000);
+  </script>
+</body>
+</html>
