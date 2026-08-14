@@ -1,6 +1,6 @@
 "use client";
 
-import { GlobeIcon, LockIcon, UsersIcon } from "lucide-react";
+import { Share2Icon } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useChatParticipants } from "@/hooks/use-chat-participants";
@@ -41,13 +41,6 @@ export function VisibilitySelector({
   );
   const memberCount = participants.filter((p) => !p.isOwner).length;
 
-  const Icon =
-    visibilityType === "public"
-      ? GlobeIcon
-      : visibilityType === "shared"
-        ? UsersIcon
-        : LockIcon;
-
   return (
     <>
       <Button
@@ -58,11 +51,15 @@ export function VisibilitySelector({
         data-testid="visibility-selector"
         onClick={() => setOpen(true)}
         size="sm"
+        title={`Share this chat — currently ${labels[visibilityType]}`}
         variant="outline"
       >
-        <Icon className="size-3.5" />
-        <span className="md:sr-only">
-          {labels[visibilityType]}
+        <Share2Icon className="size-3.5" />
+        {/* The button says what it does. Current visibility is no longer carried by a
+            varying icon, so it lives in the tooltip and the dialog — except the member
+            count, which is worth seeing without opening anything. */}
+        <span>
+          Share
           {visibilityType === "shared" && memberCount > 0
             ? ` · ${memberCount + 1}`
             : ""}
