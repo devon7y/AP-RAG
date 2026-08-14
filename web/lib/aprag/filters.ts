@@ -13,6 +13,30 @@ export const FILTER_LIST_KEYS = [
 
 export type FilterListKey = (typeof FILTER_LIST_KEYS)[number];
 
+// The surname of an author filter value: "Zhang, Kechen" → "zhang", "Zhang" → "zhang".
+export function authorFamily(value: string): string {
+  return value.split(",")[0].trim().toLowerCase();
+}
+
+/** Does this author filter value name one person rather than a whole surname? */
+export function isSpecificAuthor(value: string): boolean {
+  return value.includes(",");
+}
+
+// "Zhang, Kechen" is a deliberate narrowing of "Zhang". Once a specific person is
+// picked, a bare surname for the same family — typed into the question, or added by the
+// server's second-pass extraction — must not widen the filter back out to every Zhang,
+// since author values are OR'd.
+export function narrowAuthors(values: string[]): string[] {
+  const specific = new Set(values.filter(isSpecificAuthor).map(authorFamily));
+  if (specific.size === 0) {
+    return values;
+  }
+  return values.filter(
+    (v) => isSpecificAuthor(v) || !specific.has(authorFamily(v))
+  );
+}
+
 // Union of two filter sets: list dimensions are de-duplicated unions; year scalars take
 // b's value when present, else a's. Returns null when nothing is set.
 export function mergeFilters(
@@ -21,9 +45,10 @@ export function mergeFilters(
 ): RagFilters | null {
   const out: RagFilters = {};
   for (const k of FILTER_LIST_KEYS) {
-    const merged = Array.from(
+    const union = Array.from(
       new Set([...(a?.[k] ?? []), ...(b?.[k] ?? [])].map((s) => s.trim()).filter(Boolean))
     );
+    const merged = k === "authors" ? narrowAuthors(union) : union;
     if (merged.length > 0) {
       out[k] = merged;
     }

@@ -9,7 +9,11 @@ import {
   XIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { FacetInput, useFacets } from "@/components/chat/facet-input";
+import {
+  AuthorInput,
+  FacetInput,
+  useFacets,
+} from "@/components/chat/facet-input";
 import type { RagFilters } from "@/lib/aprag/types";
 import { cn } from "@/lib/utils";
 import { Badge } from "../ui/badge";
@@ -274,11 +278,11 @@ function FiltersPopover({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-80 space-y-3">
-        <FacetInput
-          label="Authors"
+        {/* Authors gets its own picker: a surname alone can't say which Zhang. */}
+        <AuthorInput
+          enabled={open}
+          fallbackOptions={facets.authors}
           onChange={(v) => setList("authors", v)}
-          options={facets.authors}
-          placeholder="e.g. Westbury"
           selected={filters?.authors ?? []}
         />
         <FacetInput

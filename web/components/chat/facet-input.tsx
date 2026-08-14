@@ -1,8 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
-import type { Facets, PapersIndexRow } from "@/lib/aprag/client";
+import type {
+  AuthorSuggestion,
+  Facets,
+  PapersIndexRow,
+} from "@/lib/aprag/client";
 import type { PaperIndexEntry } from "@/lib/aprag/detect";
 import { cn, fetcher } from "@/lib/utils";
 import { Input } from "../ui/input";
@@ -51,6 +55,180 @@ export function usePapersIndex(enabled = true): PaperIndexEntry[] {
           }))
         : EMPTY_PAPERS_INDEX,
     [data]
+  );
+}
+
+const AUTHOR_SEARCH_DEBOUNCE_MS = 200;
+const MAX_AUTHOR_SUGGESTIONS = 12;
+
+// "6 papers · 1999–2011 · The Journal of Neuroscience · with Blair" — everything that
+// separates one Zhang from the next.
+function authorMeta(a: AuthorSuggestion): string {
+  const parts: string[] = [];
+  if (a.n_papers > 0) {
+    parts.push(`${a.n_papers} paper${a.n_papers === 1 ? "" : "s"}`);
+  }
+  if (a.year_min > 0) {
+    parts.push(
+      a.year_min === a.year_max
+        ? `${a.year_min}`
+        : `${a.year_min}–${a.year_max}`
+    );
+  }
+  if (a.journal) {
+    parts.push(a.journal);
+  }
+  if (a.coauthor) {
+    parts.push(`with ${a.coauthor}`);
+  }
+  return parts.join(" · ");
+}
+
+// The Authors filter's autocomplete, everywhere it appears. The corpus holds ~80
+// different Zhangs, so this picks a *person* ("Zhang, Kechen") rather than a surname,
+// showing each candidate's papers, active years, main journal and main co-author. A
+// shared surname also offers an "everyone" row — the surname-wide filter, kept as a
+// deliberate choice rather than the only option.
+//
+// `enabled` gates the lookup (pass the containing popover's open state — an empty query
+// lists the most prolific authors, so it's worth a request, but not on every render).
+// Falls back to plain surname suggestions from `fallbackOptions` (the facets payload)
+// when the query server has no /authors endpoint or the lookup fails.
+export function AuthorInput({
+  label = "Authors",
+  enabled = true,
+  fallbackOptions,
+  selected,
+  onChange,
+}: {
+  label?: string;
+  enabled?: boolean;
+  fallbackOptions: string[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [debounced, setDebounced] = useState("");
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query), AUTHOR_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const { data, isLoading } = useSWR<{ authors: AuthorSuggestion[] }>(
+    enabled
+      ? `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/authors?q=${encodeURIComponent(
+          debounced.trim()
+        )}&limit=${MAX_AUTHOR_SUGGESTIONS}`
+      : null,
+    fetcher,
+    {
+      revalidateOnFocus: false,
+      keepPreviousData: true,
+      dedupingInterval: 60_000,
+    }
+  );
+
+  const people = data?.authors ?? [];
+  const q = debounced.trim().toLowerCase();
+  const fallback: AuthorSuggestion[] =
+    people.length === 0 && q
+      ? fallbackOptions
+          .filter((o) => o.toLowerCase().includes(q))
+          .slice(0, MAX_AUTHOR_SUGGESTIONS)
+          .map((o) => ({
+            name: o,
+            family: o,
+            given: "",
+            n_papers: 0,
+            year_min: 0,
+            year_max: 0,
+            journal: "",
+            coauthor: "",
+            any: true,
+          }))
+      : [];
+
+  const suggestions = (people.length > 0 ? people : fallback).filter(
+    (a) => !selected.includes(a.name)
+  );
+
+  const add = (name: string) => {
+    const v = name.trim();
+    if (v && !selected.includes(v)) {
+      onChange([...selected, v]);
+    }
+    setQuery("");
+    setDebounced("");
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-xs">{label}</Label>
+      <Input
+        autoComplete="off"
+        className="h-8 text-sm"
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            add(suggestions[0]?.name ?? query);
+          } else if (e.key === "Tab" && suggestions.length > 0) {
+            e.preventDefault(); // Tab completes the top suggestion
+            add(suggestions[0].name);
+          }
+        }}
+        placeholder="Type a surname — e.g. Zhang"
+        value={query}
+      />
+      {query.trim() && suggestions.length === 0 && !isLoading && (
+        <p className="px-1 text-muted-foreground text-xs">No authors match.</p>
+      )}
+      {suggestions.length > 0 && (
+        <ul className="max-h-64 overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-sm">
+          {suggestions.map((a, i) => (
+            <li key={a.name}>
+              <button
+                className={cn(
+                  "flex w-full flex-col gap-0.5 px-2 py-1.5 text-left text-sm hover:bg-accent",
+                  i === 0 && "bg-accent/40"
+                )}
+                // onMouseDown (not onClick) so the input keeps focus and the click
+                // registers before any blur.
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  add(a.name);
+                }}
+                type="button"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="truncate">{a.name}</span>
+                  {a.any && (
+                    <span className="shrink-0 rounded border px-1 text-[10px] text-muted-foreground">
+                      everyone
+                    </span>
+                  )}
+                  {i === 0 && (
+                    <span className="ml-auto shrink-0 rounded border px-1 text-[10px] text-muted-foreground">
+                      tab
+                    </span>
+                  )}
+                </span>
+                {authorMeta(a) && (
+                  <span className="line-clamp-1 text-muted-foreground text-xs">
+                    {authorMeta(a)}
+                  </span>
+                )}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="px-1 text-[11px] text-muted-foreground">
+        Same surname, different people — pick the one you mean, or the
+        “everyone” row for every author with that surname.
+      </p>
+    </div>
   );
 }
 

@@ -50,6 +50,70 @@ def _any_substr(needles: list[str], haystacks: list[str]) -> bool:
     return any(any(n in h for h in hay) for n in needles)
 
 
+# ── Author filter values ──────────────────────────────────────────────────────
+# An author filter value is either a bare family name ("Zhang" — *every* Zhang, which is
+# what natural-language detection produces and what the filter has always meant) or one
+# specific person as "Family, Given" ("Zhang, Kechen" — what the web author picker sends,
+# since a surname alone can't tell two Zhangs apart). Given names are compared on their
+# normalised prefix in both directions, so picking "Zhang, Kechen" still matches records
+# that only recorded the initial ("Zhang, K.") and vice versa.
+
+
+def _norm_given(given: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(given or "").lower())
+
+
+def _given_tokens(given: str) -> list[str]:
+    return [t for t in re.split(r"[\s.]+", str(given or "").strip()) if t]
+
+
+def is_initials(given: str) -> bool:
+    """``"K."`` / ``"S. W."`` → True; ``"Li"`` / ``"Li I."`` / ``"Wei-Hua"`` → False."""
+    tokens = _given_tokens(given)
+    return bool(tokens) and all(len(t) == 1 and t.isalpha() for t in tokens)
+
+
+def _initials_of(given: str) -> str:
+    return "".join(t[0] for t in _given_tokens(given)).lower()
+
+
+def given_matches(a: str, b: str) -> bool:
+    """Could two given names be the same person? Prefix-compatible either way, so
+    "Kechen" matches "K."; when either side is initials-only the comparison drops to
+    initials, so "Chris F." matches "C. F.". Two spelled-out names that merely share a
+    first letter ("Kechen" / "Kai") do NOT match — that's the ambiguity being fixed."""
+    na, nb = _norm_given(a), _norm_given(b)
+    if not (na and nb):
+        return False
+    if na.startswith(nb) or nb.startswith(na):
+        return True
+    if is_initials(a) or is_initials(b):
+        ia, ib = _initials_of(a), _initials_of(b)
+        return ia.startswith(ib) or ib.startswith(ia)
+    return False
+
+
+def parse_author_filter(value: str) -> tuple[str, str]:
+    """``"Zhang, Kechen"`` → ``("zhang", "kechen")``; ``"Zhang"`` → ``("zhang", "")``."""
+    family, _, given = str(value or "").partition(",")
+    return family.strip().lower(), given.strip().lower()
+
+
+def author_matches(family: str, given: str, people: list[tuple[str, str]]) -> bool:
+    """Does one parsed author filter match any of a record's ``(family, given)`` names?"""
+    if not family:
+        return False
+    if not given:
+        return any(family in fam for fam, _ in people if fam)   # bare surname: substring
+    return any(fam == family and given_matches(given, giv) for fam, giv in people)
+
+
+def record_people(record: dict) -> list[tuple[str, str]]:
+    """A record's authors + editors as lower-cased ``(family, given)`` pairs."""
+    return [((a.get("family") or "").strip().lower(), (a.get("given") or "").strip())
+            for a in (record.get("authors") or []) + (record.get("editors") or [])]
+
+
 def _record_year(record: dict) -> int | None:
     m = re.search(r"\d{4}", str(record.get("year") or ""))
     return int(m.group()) if m else None
@@ -118,9 +182,9 @@ def record_matches(record: dict, filters: dict, filename: str = "") -> bool:
 
     authors = _lc_list(filters.get("authors"))
     if authors:
-        fams = [(a.get("family") or "").lower()
-                for a in (record.get("authors") or []) + (record.get("editors") or [])]
-        if not _any_substr(authors, fams):
+        people = record_people(record)
+        if not any(author_matches(fam, giv, people)
+                   for fam, giv in map(parse_author_filter, authors)):
             return False
 
     year = _record_year(record)

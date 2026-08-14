@@ -63,6 +63,72 @@ def test_filter_by_author_surname():
     assert s.resolve_filter({"authors": ["hollis"]}, MANIFEST) == {"Westbury_Hollis_2019.pdf"}
 
 
+SAME_SURNAME = {
+    "Zhang_Kechen_1999.pdf": {
+        "authors": [{"family": "Zhang", "given": "Kechen"}], "year": "1999",
+    },
+    "Zhang_Kai_2020.pdf": {
+        "authors": [{"family": "Zhang", "given": "Kai"}], "year": "2020",
+    },
+    "Zhang_K_2001.pdf": {          # same person as Kechen, recorded as an initial
+        "authors": [{"family": "Zhang", "given": "K."}], "year": "2001",
+    },
+    "Zhang_ChrisF_2005.pdf": {     # multi-initial form of a spelled-out given name
+        "authors": [{"family": "Zhang", "given": "C. F."}], "year": "2005",
+    },
+    "Zhang_bare_2010.pdf": {       # no given name recorded at all
+        "authors": [{"family": "Zhang", "given": ""}], "year": "2010",
+    },
+}
+
+
+def test_filter_by_specific_person():
+    """"Family, Given" picks one person out of a shared surname; the bare surname keeps
+    meaning every author with it."""
+    assert s.resolve_filter({"authors": ["Zhang"]}, SAME_SURNAME) == set(SAME_SURNAME)
+    # an initial-only record is compatible with the full given name it abbreviates…
+    assert s.resolve_filter({"authors": ["Zhang, Kechen"]}, SAME_SURNAME) == {
+        "Zhang_Kechen_1999.pdf", "Zhang_K_2001.pdf"}
+    # …which cuts both ways: "K." could equally be Kai, so it stays in that result too
+    # (the record is genuinely ambiguous — better to include it than to drop the paper)
+    assert s.resolve_filter({"authors": ["Zhang, Kai"]}, SAME_SURNAME) == {
+        "Zhang_Kai_2020.pdf", "Zhang_K_2001.pdf"}
+    # multi-initial forms match on initials
+    assert s.resolve_filter({"authors": ["Zhang, Chris F."]}, SAME_SURNAME) == {
+        "Zhang_ChrisF_2005.pdf"}
+    # two spelled-out names sharing a first letter are different people
+    assert "Zhang_Kechen_1999.pdf" not in s.resolve_filter(
+        {"authors": ["Zhang, Kai"]}, SAME_SURNAME)
+    # a record with no given name recorded is not claimed by any specific person
+    assert "Zhang_bare_2010.pdf" not in s.resolve_filter(
+        {"authors": ["Zhang, Kechen"]}, SAME_SURNAME)
+    # several people OR together
+    assert s.resolve_filter({"authors": ["Zhang, Kai", "Zhang, Chris F."]},
+                            SAME_SURNAME) == {"Zhang_Kai_2020.pdf", "Zhang_K_2001.pdf",
+                                              "Zhang_ChrisF_2005.pdf"}
+
+
+def test_specific_person_needs_a_matching_surname():
+    assert s.resolve_filter({"authors": ["Westbury, Chris"]}, MANIFEST) == {
+        "Westbury_Hollis_2019.pdf"}
+    assert s.resolve_filter({"authors": ["Westbury, Jane"]}, MANIFEST) == set()
+    # a surname substring is only good enough for the bare-surname form
+    assert s.resolve_filter({"authors": ["estbury"]}, MANIFEST) == {
+        "Westbury_Hollis_2019.pdf"}
+    assert s.resolve_filter({"authors": ["estbury, Chris"]}, MANIFEST) == set()
+
+
+def test_given_name_helpers():
+    assert s.parse_author_filter("Zhang, Kechen") == ("zhang", "kechen")
+    assert s.parse_author_filter(" Zhang ") == ("zhang", "")
+    assert s.is_initials("K.") and s.is_initials("S. W.")
+    assert not (s.is_initials("Li") or s.is_initials("Li I.") or s.is_initials("Wei-Hua"))
+    assert s.given_matches("Kechen", "K.") and s.given_matches("K.", "Kechen")
+    assert s.given_matches("Chris F.", "C. F.")
+    assert not s.given_matches("Kechen", "Kai")
+    assert not s.given_matches("Kechen", "")
+
+
 def test_filter_by_year_range():
     assert s.resolve_filter({"year_from": 2019}, MANIFEST) == {
         "Westbury_Hollis_2019.pdf", "Smith_2021.pdf"}

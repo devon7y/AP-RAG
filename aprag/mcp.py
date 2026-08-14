@@ -166,7 +166,8 @@ async def aprag_query(
             "high", or "xhigh". Higher is slower but more careful; raise it for hard questions.
         papers: pin specific papers by filename (e.g. ["Westbury_2019.pdf"]; ".pdf"
             optional) — the answer draws ONLY on these papers.
-        authors: restrict to these author surnames.
+        authors: restrict to these authors — a surname ("Zhang") means every author
+            with it, "Family, Given" ("Zhang, Kechen") means that one person.
         year / year_from / year_to: restrict by publication year (exact or range).
         journals: restrict to these journals/venues (substring).
         subjects: restrict to these subject/field labels.
@@ -215,7 +216,8 @@ async def aprag_search(
     Args:
         question: The topic to rank papers by (semantic).
         papers: pin specific papers by filename (".pdf" optional) — rank only these.
-        authors: restrict to these author surnames.
+        authors: restrict to these authors — a surname ("Zhang") means every author
+            with it, "Family, Given" ("Zhang, Kechen") means that one person.
         year / year_from / year_to: restrict by publication year (exact or range).
         journals: restrict to these journals/venues (substring).
         subjects: restrict to these subject/field labels.

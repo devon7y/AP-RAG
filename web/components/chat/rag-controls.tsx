@@ -20,7 +20,12 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "../ui/select";
-import { FacetInput, useFacets, usePapersIndex } from "./facet-input";
+import {
+  AuthorInput,
+  FacetInput,
+  useFacets,
+  usePapersIndex,
+} from "./facet-input";
 
 const MODE_LABEL: Record<RetrievalMode, string> = {
   auto: "Auto Retrieval",
@@ -58,9 +63,9 @@ const REASONING_HINT: Record<ReasoningEffort, string> = {
 };
 
 // Each metadata filter that maps to a Facets key, surfaced as its own composer button.
+// (Authors has its own picker below — a surname alone can't say which Zhang is meant.)
 const FACET_FILTERS: { key: keyof RagFilters & keyof Facets; label: string }[] =
   [
-    { key: "authors", label: "Authors" },
     { key: "journals", label: "Journals" },
     { key: "subjects", label: "Subjects" },
     { key: "keywords", label: "Keywords" },
@@ -174,6 +179,13 @@ export function RagControls() {
         onChange={setList("papers")}
         selected={filters?.papers ?? []}
       />
+      <AuthorsFilterButton
+        active={dimActive("authors")}
+        fallbackOptions={facets.authors ?? []}
+        onChange={setList("authors")}
+        onOpen={() => setFacetsEnabled(true)}
+        selected={filters?.authors ?? []}
+      />
       {FACET_FILTERS.map((f) => (
         <FacetFilterButton
           active={dimActive(f.key)}
@@ -231,6 +243,58 @@ function FacetFilterButton({
           onChange={onChange}
           options={options}
           placeholder={`Type a ${label.replace(/s$/, "").toLowerCase()}…`}
+          selected={selected}
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// "Authors" filter — the shared person-level picker (see AuthorInput) behind a composer
+// button, so a question can be scoped to one specific Zhang.
+function AuthorsFilterButton({
+  active,
+  selected,
+  fallbackOptions,
+  onChange,
+  onOpen,
+}: {
+  active: boolean;
+  selected: string[];
+  fallbackOptions: string[];
+  onChange: (next: string[]) => void;
+  onOpen: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Popover
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) {
+          onOpen();
+        }
+      }}
+      open={open}
+    >
+      <PopoverTrigger asChild>
+        <Button
+          className={cn(
+            "h-7 gap-1.5 rounded-lg px-2 text-xs",
+            active && "bg-accent text-foreground"
+          )}
+          size="sm"
+          type="button"
+          variant="ghost"
+        >
+          Authors
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-96">
+        <AuthorInput
+          enabled={open}
+          fallbackOptions={fallbackOptions}
+          onChange={onChange}
           selected={selected}
         />
       </PopoverContent>

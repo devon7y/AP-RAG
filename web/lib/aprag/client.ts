@@ -188,6 +188,43 @@ export async function getFacets(): Promise<Facets> {
   return (await res.json()) as Facets;
 }
 
+// One person in the corpus, for the Authors filter picker. The `authors` facet above is
+// surnames only, which can't tell the ~80 Zhangs apart; `name` here is the value to send
+// as an `authors` filter — "Zhang, Kechen" for a person, the bare surname for an `any`
+// row (every Zhang, the historical behaviour). The rest is context for the dropdown.
+export type AuthorSuggestion = {
+  name: string;
+  family: string;
+  given: string;
+  n_papers: number;
+  year_min: number;
+  year_max: number;
+  journal: string;
+  coauthor: string;
+  any: boolean;
+};
+
+// GET /authors — ranked people matching a typed prefix (empty query = the most prolific).
+export async function getAuthorSuggestions(
+  q: string,
+  limit = 15
+): Promise<AuthorSuggestion[]> {
+  const sp = new URLSearchParams({ limit: String(limit) });
+  if (q) {
+    sp.set("q", q);
+  }
+  const res = await fetch(`${BASE_URL}/authors?${sp}`, {
+    headers: headers(),
+    cache: "no-store",
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) {
+    throw new Error(`AP-RAG /authors failed: ${res.status}`);
+  }
+  const data = (await res.json()) as { authors?: AuthorSuggestion[] };
+  return data.authors ?? [];
+}
+
 // Module-cached facets (the corpus is read-mostly within a deployment), used to validate
 // LLM-inferred filters without re-fetching the large payload each turn.
 let _facetsCache: Facets | null = null;
