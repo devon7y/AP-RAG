@@ -190,8 +190,7 @@ export async function getFacets(): Promise<Facets> {
 
 // One person in the corpus, for the Authors filter picker. The `authors` facet above is
 // surnames only, which can't tell the ~80 Zhangs apart; `name` here is the value to send
-// as an `authors` filter — "Zhang, Kechen" for a person, the bare surname for an `any`
-// row (every Zhang, the historical behaviour). The rest is context for the dropdown.
+// as an `authors` filter ("Zhang, Kechen"). The rest is context for the dropdown.
 export type AuthorSuggestion = {
   name: string;
   family: string;
@@ -201,10 +200,10 @@ export type AuthorSuggestion = {
   year_max: number;
   journal: string;
   coauthor: string;
-  any: boolean;
 };
 
-// GET /authors — ranked people matching a typed prefix (empty query = the most prolific).
+// GET /authors — people matching a typed prefix, most published first (empty query = the
+// most published overall).
 export async function getAuthorSuggestions(
   q: string,
   limit = 15

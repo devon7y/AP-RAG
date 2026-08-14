@@ -86,9 +86,8 @@ function authorMeta(a: AuthorSuggestion): string {
 
 // The Authors filter's autocomplete, everywhere it appears. The corpus holds ~80
 // different Zhangs, so this picks a *person* ("Zhang, Kechen") rather than a surname,
-// showing each candidate's papers, active years, main journal and main co-author. A
-// shared surname also offers an "everyone" row — the surname-wide filter, kept as a
-// deliberate choice rather than the only option.
+// showing each candidate's papers, active years, main journal and main co-author.
+// Matches come back most-published first, so Tab takes the surname's best-known author.
 //
 // `enabled` gates the lookup (pass the containing popover's open state — an empty query
 // lists the most prolific authors, so it's worth a request, but not on every render).
@@ -145,7 +144,6 @@ export function AuthorInput({
             year_max: 0,
             journal: "",
             coauthor: "",
-            any: true,
           }))
       : [];
 
@@ -203,11 +201,6 @@ export function AuthorInput({
               >
                 <span className="flex items-center gap-2">
                   <span className="truncate">{a.name}</span>
-                  {a.any && (
-                    <span className="shrink-0 rounded border px-1 text-[10px] text-muted-foreground">
-                      everyone
-                    </span>
-                  )}
                   {i === 0 && (
                     <span className="ml-auto shrink-0 rounded border px-1 text-[10px] text-muted-foreground">
                       tab
@@ -225,8 +218,7 @@ export function AuthorInput({
         </ul>
       )}
       <p className="px-1 text-[11px] text-muted-foreground">
-        Same surname, different people — pick the one you mean, or the
-        “everyone” row for every author with that surname.
+        Same surname, different people — pick the one you mean.
       </p>
     </div>
   );
