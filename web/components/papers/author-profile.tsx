@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { PageShell } from "@/components/chat/page-header";
 import { SidebarToggle } from "@/components/chat/sidebar-toggle";
@@ -55,6 +55,23 @@ function topCounts(values: string[], cap: number): Counted[] {
 export function AuthorProfile({ family }: { family: string }) {
   const router = useRouter();
   const [openFilename, setOpenFilename] = useState<string | null>(null);
+
+  // Profiles are reached from several places — the Talk to Author picker, an author
+  // chip in the Papers Database, a graph entity — so "back" is the page you came
+  // from, not a fixed destination. A tab opened straight onto a profile has nothing
+  // to go back to; that case falls back to the picker.
+  const [canGoBack, setCanGoBack] = useState(false);
+  useEffect(() => {
+    setCanGoBack(window.history.length > 1);
+  }, []);
+
+  const goBack = () => {
+    if (canGoBack) {
+      router.back();
+    } else {
+      router.push("/authors");
+    }
+  };
 
   // The server's author filter is a substring any-position match; keep only rows where
   // some author's family name EQUALS the page's name so "Li" doesn't absorb "Liang".
@@ -153,18 +170,16 @@ export function AuthorProfile({ family }: { family: string }) {
       header={
         <>
           <SidebarToggle />
-          {/* Profiles are reached from the Talk to Author picker, so the way back
-              is to that list rather than to whatever page preceded it. */}
           <Button
-            asChild
+            aria-label="Go back"
             className="shrink-0 text-muted-foreground"
+            onClick={goBack}
             size="icon-sm"
-            title="Back to Talk to Author"
+            title="Back"
+            type="button"
             variant="ghost"
           >
-            <Link href="/authors">
-              <ArrowLeftIcon className="size-4" />
-            </Link>
+            <ArrowLeftIcon className="size-4" />
           </Button>
           <UserRoundIcon className="size-4 text-muted-foreground" />
           <h1 className="font-semibold text-sm">{family}</h1>
