@@ -13,18 +13,13 @@ import useSWR from "swr";
 import { PageShell } from "@/components/chat/page-header";
 import { SidebarToggle } from "@/components/chat/sidebar-toggle";
 import type { PaperListResponse, PaperRow } from "@/lib/aprag/types";
+import { usePdfViewer } from "@/lib/pdf/store";
 import { generateUUID } from "@/lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { YearBarChart, type YearCount } from "./charts";
-import {
-  compactAuthors,
-  displayTitle,
-  type ListFilterKey,
-  paperFetcher,
-} from "./lib";
-import { PaperDrawer } from "./paper-drawer";
+import { compactAuthors, displayTitle, paperFetcher } from "./lib";
 
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
@@ -54,7 +49,9 @@ function topCounts(values: string[], cap: number): Counted[] {
 // The author's corpus footprint, aggregated client-side from their (≤1000) paper rows.
 export function AuthorProfile({ family }: { family: string }) {
   const router = useRouter();
-  const [openFilename, setOpenFilename] = useState<string | null>(null);
+  // Clicking a paper goes straight to the PDF reader, which splits the page beside
+  // the profile — the same affordance the Papers Database row has.
+  const openPdf = usePdfViewer((s) => s.openPdf);
 
   // Profiles are reached from several places — the Talk to Author picker, an author
   // chip in the Papers Database, a graph entity — so "back" is the page you came
@@ -87,6 +84,42 @@ export function AuthorProfile({ family }: { family: string }) {
       p.authors.some((a) => (a.family ?? "").toLowerCase() === lc)
     );
   }, [data, family]);
+
+  // The route segment is the family name — that is the vocabulary the manifest matches
+  // on — so the given name has to come from the papers themselves, where spellings
+  // vary across records ("Chris", "Chris F.", "C."). Prefer a spelled-out given name
+  // over bare initials, then the most common, then the fullest; an initial should
+  // never win just by being more frequent.
+  const displayName = useMemo(() => {
+    const lc = family.toLowerCase();
+    const counts = new Map<string, number>();
+    for (const p of papers) {
+      for (const a of p.authors) {
+        const given = (a.given ?? "").trim();
+        if (given && (a.family ?? "").toLowerCase() === lc) {
+          counts.set(given, (counts.get(given) ?? 0) + 1);
+        }
+      }
+    }
+    let best = "";
+    let bestSpelled = false;
+    let bestCount = -1;
+    for (const [given, n] of counts) {
+      const spelled = /[A-Za-z]{2,}/.test(given);
+      const better =
+        spelled !== bestSpelled
+          ? spelled
+          : n === bestCount
+            ? given.length > best.length
+            : n > bestCount;
+      if (better) {
+        best = given;
+        bestSpelled = spelled;
+        bestCount = n;
+      }
+    }
+    return best ? `${best} ${family}` : family;
+  }, [papers, family]);
 
   const stats = useMemo(() => {
     const perYear = new Map<number, number>();
@@ -149,12 +182,6 @@ export function AuthorProfile({ family }: { family: string }) {
       `/chat/${generateUUID()}?author=${encodeURIComponent(family)}`
     );
 
-  const onAddFilter = (dim: ListFilterKey, value: string) => {
-    const sp = new URLSearchParams();
-    sp.append(dim, value);
-    router.push(`${BASE}/papers?${sp.toString()}`);
-  };
-
   const papersHref = (extra?: Record<string, string>) => {
     const sp = new URLSearchParams();
     sp.append("authors", family);
@@ -182,7 +209,9 @@ export function AuthorProfile({ family }: { family: string }) {
             <ArrowLeftIcon className="size-4" />
           </Button>
           <UserRoundIcon className="size-4 text-muted-foreground" />
-          <h1 className="font-semibold text-sm">{family}</h1>
+          <h1 className="min-w-0 truncate font-semibold text-sm">
+            {displayName}
+          </h1>
           {papers.length > 0 && (
             <span className="text-muted-foreground text-xs">
               {papers.length.toLocaleString()} paper
@@ -199,7 +228,7 @@ export function AuthorProfile({ family }: { family: string }) {
         <div className="flex flex-wrap gap-2">
           <Button onClick={talkToAuthor} size="sm" type="button">
             <MessageSquareIcon className="size-4" />
-            Talk to {family}
+            Talk to {displayName}
           </Button>
           <Button asChild size="sm" type="button" variant="outline">
             <Link
@@ -329,7 +358,14 @@ export function AuthorProfile({ family }: { family: string }) {
                   <li key={p.filename}>
                     <button
                       className="w-full px-3 py-2 text-left transition-colors hover:bg-accent"
-                      onClick={() => setOpenFilename(p.filename)}
+                      onClick={() =>
+                        openPdf({
+                          filename: p.filename,
+                          page: 1,
+                          label: p.intext || displayTitle(p),
+                          driveUrl: p.drive_url,
+                        })
+                      }
                       type="button"
                     >
                       <span className="line-clamp-2 text-[13px] leading-snug">
@@ -349,12 +385,6 @@ export function AuthorProfile({ family }: { family: string }) {
         )}
       </div>
 
-      <PaperDrawer
-        filename={openFilename}
-        onAddFilter={onAddFilter}
-        onClose={() => setOpenFilename(null)}
-        onOpenPaper={setOpenFilename}
-      />
     </PageShell>
   );
 }

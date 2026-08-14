@@ -52,11 +52,10 @@ export function PageShell({
         {header}
         {/* Whether retrieval is actually up matters on every page, not just in chat —
             a dead backend is why the graph, trends or the papers table came back
-            empty. Rendered here so no page can forget it. (The Atlas has its own
-            chrome and does not use this shell.) */}
-        <div className="ml-auto flex shrink-0 items-center pl-2">
-          <BackendStatus />
-        </div>
+            empty. Rendered here so no page can forget it, and sitting directly after
+            the page's own header content, exactly as it does in chat. (The Atlas has
+            its own chrome and does not use this shell.) */}
+        <BackendStatus />
       </PageHeader>
       <div className={cn(PAGE_PANEL_CLASS, "pt-4", className)}>{children}</div>
     </div>
