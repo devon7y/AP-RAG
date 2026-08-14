@@ -39,6 +39,138 @@ export class PdfReadError extends Error {
 }
 
 /**
+ * A 2D-affine stand-in for the browser's DOMMatrix, installed before pdf.js loads.
+ *
+ * pdf.js evaluates `new DOMMatrix()` at module scope. In Node it expects to polyfill that
+ * from @napi-rs/canvas, which it pulls in through `createRequire` — a call no bundler can
+ * see, so the package is traced out of the deployed function and the module throws
+ * "DOMMatrix is not defined" on import. Shipping a platform-specific native binary to fix
+ * that is a lot of machinery for something this route never uses: it reads a text layer
+ * and rasterizes nothing, and the matrix only matters for rendering.
+ *
+ * Defining the global first also stops pdf.js reaching for canvas at all. The arithmetic
+ * here is real (an incorrect matrix would be worse than a missing one), just limited to
+ * the 2D affine case pdf.js works in.
+ */
+class AffineDOMMatrix {
+  a = 1;
+  b = 0;
+  c = 0;
+  d = 1;
+  e = 0;
+  f = 0;
+
+  constructor(init?: number[] | string | AffineDOMMatrix) {
+    if (Array.isArray(init)) {
+      if (init.length >= 6) {
+        [this.a, this.b, this.c, this.d, this.e, this.f] = init;
+      }
+      return;
+    }
+    if (init && typeof init === "object") {
+      const { a, b, c, d, e, f } = init;
+      Object.assign(this, { a, b, c, d, e, f });
+    }
+  }
+
+  get is2D() {
+    return true;
+  }
+
+  get isIdentity() {
+    return (
+      this.a === 1 &&
+      this.b === 0 &&
+      this.c === 0 &&
+      this.d === 1 &&
+      this.e === 0 &&
+      this.f === 0
+    );
+  }
+
+  /** this = this × other */
+  multiplySelf(other: AffineDOMMatrix): this {
+    const { a, b, c, d, e, f } = this;
+    this.a = a * other.a + c * other.b;
+    this.b = b * other.a + d * other.b;
+    this.c = a * other.c + c * other.d;
+    this.d = b * other.c + d * other.d;
+    this.e = a * other.e + c * other.f + e;
+    this.f = b * other.e + d * other.f + f;
+    return this;
+  }
+
+  /** this = other × this */
+  preMultiplySelf(other: AffineDOMMatrix): this {
+    const { a, b, c, d, e, f } = other;
+    const m = new AffineDOMMatrix([a, b, c, d, e, f]).multiplySelf(this);
+    return Object.assign(this, {
+      a: m.a,
+      b: m.b,
+      c: m.c,
+      d: m.d,
+      e: m.e,
+      f: m.f,
+    });
+  }
+
+  translateSelf(tx = 0, ty = 0): this {
+    this.e += this.a * tx + this.c * ty;
+    this.f += this.b * tx + this.d * ty;
+    return this;
+  }
+
+  translate(tx = 0, ty = 0): AffineDOMMatrix {
+    return new AffineDOMMatrix(this).translateSelf(tx, ty);
+  }
+
+  scaleSelf(sx = 1, sy = sx): this {
+    this.a *= sx;
+    this.b *= sx;
+    this.c *= sy;
+    this.d *= sy;
+    return this;
+  }
+
+  scale(sx = 1, sy = sx): AffineDOMMatrix {
+    return new AffineDOMMatrix(this).scaleSelf(sx, sy);
+  }
+
+  invertSelf(): this {
+    const det = this.a * this.d - this.b * this.c;
+    if (det === 0) {
+      // What the platform does with a singular matrix: mark it non-invertible.
+      return Object.assign(this, {
+        a: Number.NaN,
+        b: Number.NaN,
+        c: Number.NaN,
+        d: Number.NaN,
+        e: Number.NaN,
+        f: Number.NaN,
+      });
+    }
+    const { a, b, c, d, e, f } = this;
+    this.a = d / det;
+    this.b = -b / det;
+    this.c = -c / det;
+    this.d = a / det;
+    this.e = (c * f - d * e) / det;
+    this.f = (b * e - a * f) / det;
+    return this;
+  }
+
+  toString(): string {
+    return `matrix(${this.a}, ${this.b}, ${this.c}, ${this.d}, ${this.e}, ${this.f})`;
+  }
+}
+
+/** Install the stand-ins pdf.js expects a browser to provide. Idempotent. */
+function ensureDomGlobals(): void {
+  const globals = globalThis as Record<string, unknown>;
+  globals.DOMMatrix ??= AffineDOMMatrix;
+}
+
+/**
  * Where pdf.js's worker module sits, as a file:// URL.
  *
  * The copy under lib/pdfjs is checked in (`pnpm sync-pdfjs-worker`, same as the browser
@@ -90,6 +222,8 @@ export type ExtractedPdf = {
 export async function extractPdfPages(
   bytes: Uint8Array
 ): Promise<ExtractedPdf> {
+  // Before the import: pdf.js touches DOMMatrix while its module body runs.
+  ensureDomGlobals();
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   // pdf.js parses in a worker module it imports at runtime. Left to itself it derives that
   // path from its own module URL, which survives neither bundling nor deployment; resolved
