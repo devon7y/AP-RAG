@@ -7,7 +7,7 @@
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#242424"/>
-      <stop offset="1" stop-color="#101010"/>
+      <stop offset="1" stop-color="#000000"/>
     </linearGradient>
 
     <linearGradient id="ink" gradientUnits="userSpaceOnUse" x1="0" y1="2.6" x2="0" y2="61.4">
@@ -39,7 +39,7 @@
 
   <rect x="0" y="0" width="1024" height="1024" rx="231" fill="url(#bg)"/>
 
-  <g transform="translate(51.2,82.38) scale(14.4)">
+  <g transform="translate(61.44,91.92) scale(14.08)">
    <g filter="url(#lift)">
     <g filter="url(#shade)">
     <g fill="none" stroke="url(#ink)" stroke-linecap="round">

@@ -10,7 +10,7 @@
     <!-- Exactly vertical: x1 == x2. -->
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#242424"/>
-      <stop offset="1" stop-color="#101010"/>
+      <stop offset="1" stop-color="#000000"/>
     </linearGradient>
 
     <!-- Lit from above, and the mark stays white: pure #ffffff across the top
@@ -49,12 +49,12 @@
   <!-- macOS-style squircle with transparent margins (Apple's 824/1024 grid) -->
   <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
 
-  <!-- Mark at 90% of the tile. y is 25 lower than x, not a typo: the graded
+  <!-- Mark at 88% of the tile. y is 25 lower than x, not a typo: the graded
        nodes make the star's real bounding box sit 2.17 field-units above the
        field's centre (top edge 0.5, bottom edge 59.17), so centring the field
        would leave the mark riding high. This centres the ink instead — measured
        at 511.5/512 on the rendered PNG. -->
-  <g transform="translate(141.2,166.29) scale(11.5875)">
+  <g transform="translate(149.44,173.97) scale(11.33)">
    <g filter="url(#lift)">
     <g filter="url(#shade)">
     <g fill="none" stroke="url(#ink)" stroke-linecap="round">

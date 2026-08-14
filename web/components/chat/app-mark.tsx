@@ -43,9 +43,12 @@ export function AppMark({
       className={className}
       focusable="false"
       height={size}
-      // The mark's ink sits 2.17 units above the field's centre because the
-      // nodes are graded; shifting the view box up by that much centres it.
-      viewBox="0 -2.17 64 64"
+      // Cropped to the ink, not to the 64-unit field: the star's real bounds are
+      // x 2.34–61.66 and y 0.5–59.17 (the nodes are graded, so it sits high in
+      // its field). Squaring on that box means `size` is the mark's actual size,
+      // so a caller asking for 88% of a badge gets 88% rather than the ~70% a
+      // padded field would have given.
+      viewBox="2.34 0.175 59.32 59.32"
       width={size}
     >
       <g fill="none" stroke="currentColor" strokeLinecap="round">
