@@ -2,6 +2,7 @@
 
 import useSWR from "swr";
 import { cn, fetcher } from "@/lib/utils";
+import { AppMark } from "./app-mark";
 
 // Header title — "AP-RAG — Academic Paper Retrieval-Augmented Generation" with each
 // acronym letter bold. The expansion collapses on small screens. `showBackend` hides the
@@ -17,6 +18,10 @@ export function AppTitle({
 }) {
   return (
     <div className="flex min-w-0 items-center gap-2">
+      {/* Every other page leads its header with an icon; chat leads with the
+          wordmark, so the mark goes beside it rather than replacing it —
+          same size and muted tone as the icons on those pages. */}
+      <AppMark className="shrink-0 text-muted-foreground" size={16} />
       <span className="shrink-0 font-semibold text-sm tracking-tight">
         AP-RAG
       </span>

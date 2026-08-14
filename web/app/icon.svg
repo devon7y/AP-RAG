@@ -1,21 +1,15 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
-  <!-- Source for build/icon.png (electron-builder derives .icns/.ico from the PNG).
-       Regenerate with: npx electron build/render-icon.mjs
-       (NOT qlmanage — it composites onto opaque white and eats the alpha.)
-
-       Mark: a seven-edge node star. Each spoke is two straight legs meeting at a
-       lightly filleted knee; nodes and stroke weights are graded by height, so the
-       star is heaviest at the crown and lightest at its feet. -->
+  <!-- Browser tab / PWA icon. Same mark and ground as the desktop app icon
+       (desktop/build/icon.svg), but full-bleed: the desktop file leaves Apple's
+       transparent margin around an 824px squircle, which just wastes pixels in a
+       16px tab. Regenerate favicon.ico and apple-icon.png from this with
+       web/scripts/build-favicons.mjs. -->
   <defs>
-    <!-- Exactly vertical: x1 == x2. -->
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#242424"/>
       <stop offset="1" stop-color="#101010"/>
     </linearGradient>
 
-    <!-- Lit from above, and the mark stays white: pure #ffffff across the top
-         half, falling away only near the feet. The modelling comes from the
-         shaded lower edges and the cast shadow, not from dimming the star. -->
     <linearGradient id="ink" gradientUnits="userSpaceOnUse" x1="0" y1="2.6" x2="0" y2="61.4">
       <stop offset="0" stop-color="#ffffff"/>
       <stop offset="0.48" stop-color="#ffffff"/>
@@ -25,9 +19,6 @@
 
     <filter id="shade" x="-30%" y="-30%" width="160%" height="160%"
             color-interpolation-filters="sRGB">
-      <!-- Alpha nudged up, then subtracted from the shape: what is left is a
-           band hugging the lower inside edge, which becomes the shading. No
-           highlight rim — nothing can be brighter than the white it would sit on. -->
       <feOffset in="SourceAlpha" dy="-1" result="up"/>
       <feGaussianBlur in="up" stdDeviation="0.72" result="upBlur"/>
       <feComposite in="SourceAlpha" in2="upBlur" operator="out" result="band"/>
@@ -46,15 +37,9 @@
     </filter>
   </defs>
 
-  <!-- macOS-style squircle with transparent margins (Apple's 824/1024 grid) -->
-  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="231" fill="url(#bg)"/>
 
-  <!-- Mark at 90% of the tile. y is 25 lower than x, not a typo: the graded
-       nodes make the star's real bounding box sit 2.17 field-units above the
-       field's centre (top edge 0.5, bottom edge 59.17), so centring the field
-       would leave the mark riding high. This centres the ink instead — measured
-       at 511.5/512 on the rendered PNG. -->
-  <g transform="translate(141.2,166.29) scale(11.5875)">
+  <g transform="translate(51.2,82.38) scale(14.4)">
    <g filter="url(#lift)">
     <g filter="url(#shade)">
     <g fill="none" stroke="url(#ink)" stroke-linecap="round">
