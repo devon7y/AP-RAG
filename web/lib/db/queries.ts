@@ -67,6 +67,53 @@ export async function createUser(email: string, password: string) {
   }
 }
 
+// Google sign-in lands here on every login. Matching by email means an account that was
+// registered with a password and later switches to Google keeps its id — and with it every
+// chat, upload, and membership row. Name and photo are refreshed from the Google profile
+// each time so the share dialog and bylines track profile changes; they're never blanked
+// by a login that happens to omit them.
+export async function upsertGoogleUser({
+  email,
+  name,
+  image,
+}: {
+  email: string;
+  name: string | null;
+  image: string | null;
+}): Promise<{ id: string }> {
+  try {
+    const [existing] = await db
+      .select({ id: user.id })
+      .from(user)
+      .where(eq(user.email, email))
+      .limit(1);
+
+    if (existing) {
+      await db
+        .update(user)
+        .set({
+          ...(name ? { name } : {}),
+          ...(image ? { image } : {}),
+          emailVerified: true,
+          updatedAt: new Date(),
+        })
+        .where(eq(user.id, existing.id));
+      return existing;
+    }
+
+    const [created] = await db
+      .insert(user)
+      .values({ email, name, image, emailVerified: true })
+      .returning({ id: user.id });
+    return created;
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to upsert Google user"
+    );
+  }
+}
+
 export async function createGuestUser() {
   const email = `guest-${Date.now()}`;
   const password = generateHashedPassword(generateUUID());
@@ -408,6 +455,7 @@ export type ChatParticipant = {
   id: string;
   email: string;
   name: string | null;
+  image: string | null;
   isOwner: boolean;
 };
 
@@ -423,19 +471,34 @@ export async function getChatParticipants({
   try {
     const [[owner], members, senders] = await Promise.all([
       db
-        .select({ id: user.id, email: user.email, name: user.name })
+        .select({
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          image: user.image,
+        })
         .from(chat)
         .innerJoin(user, eq(user.id, chat.userId))
         .where(eq(chat.id, chatId))
         .limit(1),
       db
-        .select({ id: user.id, email: user.email, name: user.name })
+        .select({
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          image: user.image,
+        })
         .from(chatMember)
         .innerJoin(user, eq(user.id, chatMember.userId))
         .where(eq(chatMember.chatId, chatId))
         .orderBy(asc(chatMember.createdAt)),
       db
-        .selectDistinct({ id: user.id, email: user.email, name: user.name })
+        .selectDistinct({
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          image: user.image,
+        })
         .from(message)
         .innerJoin(user, eq(user.id, message.userId))
         .where(eq(message.chatId, chatId)),
@@ -577,7 +640,12 @@ export async function getShareableUsers({
 }) {
   try {
     return await db
-      .select({ id: user.id, email: user.email, name: user.name })
+      .select({
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        image: user.image,
+      })
       .from(user)
       .where(and(ne(user.id, excludeUserId), eq(user.isAnonymous, false)))
       .orderBy(asc(user.email));
@@ -1153,6 +1221,24 @@ export async function createStreamId({
   }
 }
 
+export async function getStreamIdsByChatId({ chatId }: { chatId: string }) {
+  try {
+    const streamIds = await db
+      .select({ id: stream.id })
+      .from(stream)
+      .where(eq(stream.chatId, chatId))
+      .orderBy(asc(stream.createdAt))
+      .execute();
+
+    return streamIds.map(({ id }) => id);
+  } catch (_error) {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get stream ids by chat id"
+    );
+  }
+}
+
 // ── Uploaded papers ───────────────────────────────────────────────────────────
 // Papers attached to a chat that are not in the AP-RAG database. The chunk text is by far
 // the biggest column, so the listing query never selects it — only the retrieval path
@@ -1288,23 +1374,5 @@ export async function getUploadedPaperBlobPaths({
     return rows.map((r) => r.pathname).filter(Boolean);
   } catch (_error) {
     return [];
-  }
-}
-
-export async function getStreamIdsByChatId({ chatId }: { chatId: string }) {
-  try {
-    const streamIds = await db
-      .select({ id: stream.id })
-      .from(stream)
-      .where(eq(stream.chatId, chatId))
-      .orderBy(asc(stream.createdAt))
-      .execute();
-
-    return streamIds.map(({ id }) => id);
-  } catch (_error) {
-    throw new ChatbotError(
-      "bad_request:database",
-      "Failed to get stream ids by chat id"
-    );
   }
 }

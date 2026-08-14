@@ -55,6 +55,23 @@ function isAllowed(url) {
   }
 }
 
+// Google sign-in is a full-page redirect: app → accounts.google.com → back to the app.
+// If that hop got bounced to the system browser (like every other external link), the
+// session cookie would land in Safari instead of this window and login would never
+// complete — so Google's auth pages may load in-window. Auth pages only; a link to,
+// say, Gmail still opens externally. (The UA is already stripped of the Electron token,
+// which is what keeps Google from rejecting the flow as an embedded browser.)
+const GOOGLE_AUTH_HOSTS = new Set(["accounts.google.com", "accounts.youtube.com"]);
+
+function isGoogleAuth(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && GOOGLE_AUTH_HOSTS.has(u.host);
+  } catch {
+    return false;
+  }
+}
+
 function openExternally(url) {
   try {
     if (["https:", "http:", "mailto:"].includes(new URL(url).protocol)) {
@@ -144,20 +161,27 @@ function saveWindowState(win) {
 
 function attachNavigationPolicy(contents) {
   contents.on("will-navigate", (event, url) => {
-    if (!isAllowed(url)) {
+    if (!(isAllowed(url) || isGoogleAuth(url))) {
       event.preventDefault();
       openExternally(url);
     }
   });
-  // Same-origin popups (e.g. a PDF opened in a new tab) become app windows;
-  // everything else goes to the default browser.
+  // Same-origin popups (e.g. a PDF opened in a new tab) become app windows, and
+  // Google's occasional account-chooser popup gets the same sandboxed treatment —
+  // minus the autofill preload, which has no business on Google's pages (its IPC is
+  // sender-gated in the main process anyway; this is belt and suspenders).
+  // Everything else goes to the default browser.
   contents.setWindowOpenHandler(({ url }) => {
-    if (isAllowed(url)) {
+    if (isAllowed(url) || isGoogleAuth(url)) {
+      const prefs = securePrefs();
+      if (isGoogleAuth(url)) {
+        delete prefs.preload;
+      }
       return {
         action: "allow",
         overrideBrowserWindowOptions: {
           autoHideMenuBar: true,
-          webPreferences: securePrefs(),
+          webPreferences: prefs,
         },
       };
     }

@@ -7,6 +7,7 @@ export type Participant = {
   id: string;
   email: string;
   name: string | null;
+  image: string | null;
   isOwner: boolean;
 };
 
@@ -14,6 +15,7 @@ export type ShareableUser = {
   id: string;
   email: string;
   name: string | null;
+  image: string | null;
 };
 
 const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";

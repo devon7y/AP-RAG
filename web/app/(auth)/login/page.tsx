@@ -1,62 +1,10 @@
-"use client";
+import { googleAuthEnabled } from "../auth";
+import { LoginForm } from "./login-form";
 
-import Link from "next/link";
-import { useActionState, useEffect, useState } from "react";
-
-import { AuthForm } from "@/components/chat/auth-form";
-import { SubmitButton } from "@/components/chat/submit-button";
-import { toast } from "@/components/chat/toast";
-import { type LoginActionState, login } from "../actions";
-
+// Server wrapper: whether Google sign-in exists is decided by env vars the client
+// can't see. (The ?error= param NextAuth bounces back with is read client-side in
+// LoginForm — awaiting searchParams here would make the page dynamic, which
+// cacheComponents rejects at build time for a page without a Suspense boundary.)
 export default function Page() {
-  const [email, setEmail] = useState("");
-  const [isSuccessful, setIsSuccessful] = useState(false);
-
-  const [state, formAction] = useActionState<LoginActionState, FormData>(
-    login,
-    { status: "idle" }
-  );
-
-  useEffect(() => {
-    if (state.status === "failed") {
-      toast({ type: "error", description: "Invalid credentials!" });
-    } else if (state.status === "invalid_data") {
-      toast({
-        type: "error",
-        description: "Failed validating your submission!",
-      });
-    } else if (state.status === "success") {
-      setIsSuccessful(true);
-      // Hard-navigate so the request re-runs the auth middleware with the freshly-set
-      // session cookie and lands on the app. (router.refresh() alone can leave you
-      // stranded on /login.)
-      window.location.assign(`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/`);
-    }
-  }, [state.status]);
-
-  const handleSubmit = (formData: FormData) => {
-    setEmail(formData.get("email") as string);
-    formAction(formData);
-  };
-
-  return (
-    <>
-      <h1 className="text-2xl font-semibold tracking-tight">Welcome back</h1>
-      <p className="text-sm text-muted-foreground">
-        Sign in to your account to continue
-      </p>
-      <AuthForm action={handleSubmit} defaultEmail={email}>
-        <SubmitButton isSuccessful={isSuccessful}>Sign in</SubmitButton>
-        <p className="text-center text-[13px] text-muted-foreground">
-          {"No account? "}
-          <Link
-            className="text-foreground underline-offset-4 hover:underline"
-            href="/register"
-          >
-            Sign up
-          </Link>
-        </p>
-      </AuthForm>
-    </>
-  );
+  return <LoginForm googleEnabled={googleAuthEnabled} />;
 }

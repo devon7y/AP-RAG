@@ -7,6 +7,14 @@ import { createUser, getUser } from "@/lib/db/queries";
 
 import { signIn } from "./auth";
 
+// Kicks off the Google OAuth redirect. signIn() throws Next's redirect control-flow
+// "error", which the form action machinery handles — nothing to return.
+export async function loginWithGoogle() {
+  await signIn("google", {
+    redirectTo: `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/`,
+  });
+}
+
 // No password length limits — only require a valid email and a non-empty password.
 const authFormSchema = z.object({
   email: z.string().email(),

@@ -27,6 +27,7 @@ import {
 } from "@/hooks/use-chat-participants";
 import { cn } from "@/lib/utils";
 import { toast } from "./toast";
+import { UserAvatar } from "./user-avatar";
 import type { VisibilityType } from "./visibility-selector";
 
 const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -224,9 +225,7 @@ export function ShareDialog({
                     className="flex items-center gap-2 rounded-md px-1 py-1"
                     key={member.id}
                   >
-                    <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] uppercase">
-                      {displayName(member).slice(0, 2)}
-                    </span>
+                    <UserAvatar className="size-6" person={member} />
                     <span className="min-w-0 flex-1 truncate text-sm">
                       {displayName(member)}
                       <span className="ml-1.5 text-muted-foreground text-xs">
@@ -267,13 +266,14 @@ export function ShareDialog({
                         onClick={() => addMember(candidate.id)}
                         type="button"
                       >
-                        <UserPlusIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                        <UserAvatar className="size-6" person={candidate} />
                         <span className="min-w-0 flex-1 truncate">
                           {displayName(candidate)}
                           <span className="ml-1.5 text-muted-foreground text-xs">
                             {candidate.email}
                           </span>
                         </span>
+                        <UserPlusIcon className="size-3.5 shrink-0 text-muted-foreground" />
                       </button>
                     </li>
                   ))}
