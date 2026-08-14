@@ -142,9 +142,8 @@ export function useChatUploads(chatId: string): ChatUploads {
             }),
             { revalidate: false }
           );
-          toast.success(
-            `${added.title || added.filename} is ready to discuss.`
-          );
+          // No success toast: the chip appearing above the composer, with the paper's
+          // title in it, already says the upload worked.
         } catch (error) {
           toast.error(
             `Couldn't upload ${file.name}: ${(error as Error)?.message ?? "unknown error"}`
