@@ -178,6 +178,17 @@ function headingLabel(canonical: string): string {
 const SENTENCE_END = /[.!?]["'”’)\]]?$/;
 
 /**
+ * A line that plainly runs on into the next one: it breaks mid-clause, or ends on a word
+ * no sentence ends with. Used to tell a short line that is a TITLE from a short line that
+ * is simply where the text happened to break.
+ */
+/** A masthead or a footer line: whatever follows it starts something new. */
+const ENDS_WITH_URL = /(?:https?:\/\/|www\.)\S+$/i;
+
+const CONTINUES_ON_NEXT_LINE =
+  /(?:[,;:—–-]|\b(?:a|an|the|of|in|on|at|to|for|with|by|from|and|or|but|as|that|which|than|between|during|per|via|into|over|under|is|are|was|were|be|been|we|our|their|its)|\b[A-Z])$/i;
+
+/**
  * A running head carries the page number with it ("PARSING AND MEMORY 441"), so the same
  * furniture is textually different on every page. Comparing without the numbers is what
  * makes it recognizable as furniture at all.
@@ -238,6 +249,11 @@ function pageParagraphs(page: UploadPage, furniture: Set<string>): Paragraph[] {
 
   const out: Paragraph[] = [];
   let buffer = "";
+  // The length of the LAST line folded into the buffer, not of the buffer itself: "is the
+  // line above this one short?" is the question, and by the second line the buffer is
+  // always long. (A journal masthead runs the width of the page, so measuring the buffer
+  // welded every title that followed one onto the text beneath it.)
+  let lastLineLength = 0;
 
   const flush = () => {
     const text = buffer.replace(/\s+/g, " ").trim();
@@ -245,6 +261,7 @@ function pageParagraphs(page: UploadPage, furniture: Set<string>): Paragraph[] {
       out.push({ page: page.page, text, heading: null });
     }
     buffer = "";
+    lastLineLength = 0;
   };
 
   for (const line of lines) {
@@ -268,26 +285,57 @@ function pageParagraphs(page: UploadPage, furniture: Set<string>): Paragraph[] {
     }
     if (!buffer) {
       buffer = line;
+      lastLineLength = line.length;
       continue;
     }
     // A word broken across a line break: "compre-\nhension".
     if (/[a-z]-$/.test(buffer) && /^[a-z]/.test(line)) {
       buffer = buffer.slice(0, -1) + line;
+      lastLineLength = line.length;
+      continue;
+    }
+    const previousLine = buffer.slice(-lastLineLength);
+    const startsFresh = /^[A-Z0-9"'(]/.test(line);
+    // A line that ends in a URL is the journal's masthead, whatever its length — the
+    // paper's title is the next line, not a continuation of nature.com.
+    if (ENDS_WITH_URL.test(previousLine) && startsFresh) {
+      flush();
+      buffer = line;
+      lastLineLength = line.length;
       continue;
     }
     // A short line that closes a sentence ends the paragraph — that ragged last line is
     // what a paragraph break looks like once the layout is gone.
-    const previousShort = median > 0 && buffer.length < median * 0.75;
     if (
       SENTENCE_END.test(buffer) &&
-      previousShort &&
-      /^[A-Z0-9"'(]/.test(line)
+      median > 0 &&
+      lastLineLength < median * 0.75 &&
+      startsFresh
     ) {
       flush();
       buffer = line;
+      lastLineLength = line.length;
+      continue;
+    }
+    // A line far shorter than the column that does NOT close a sentence is a title, an
+    // author line or an unlabelled heading — a paper's own title rarely ends in a full
+    // stop. Without this they weld onto the text beneath: "EEG is better left alone
+    // Arnaud Delorme Automated preprocessing methods are…", where the first sentence of
+    // the abstract is no longer a sentence anyone can quote. The continuation guard keeps
+    // genuinely broken-off body text (a line ending in "the", "and", a comma) attached.
+    if (
+      median > 0 &&
+      lastLineLength < median * 0.55 &&
+      !CONTINUES_ON_NEXT_LINE.test(previousLine) &&
+      startsFresh
+    ) {
+      flush();
+      buffer = line;
+      lastLineLength = line.length;
       continue;
     }
     buffer = `${buffer} ${line}`;
+    lastLineLength = line.length;
   }
   flush();
   return out;
@@ -372,7 +420,14 @@ export function chunkPages(pages: UploadPage[]): UploadChunk[] {
     });
   };
 
-  const push = (piece: string, page: number) => {
+  /**
+   * `separator` is what holds the paragraph structure together inside a chunk. Joining
+   * paragraphs with a space is what let a title, an author line and an abstract arrive as
+   * one undifferentiated sentence — asked to quote the first sentence of the abstract, a
+   * reader of that text can only guess. A newline (not a blank line: chunk cards read a
+   * leading blank-line-delimited段 as a situating blurb) keeps them apart.
+   */
+  const push = (piece: string, page: number, separator = "\n") => {
     if (chunks.length >= MAX_CHUNKS) {
       return;
     }
@@ -385,10 +440,10 @@ export function chunkPages(pages: UploadPage[]): UploadChunk[] {
       while (estimateTokens(rest) > MAX_TOKENS) {
         const space = rest.lastIndexOf(" ", limit);
         const at = space > limit / 2 ? space : limit;
-        push(rest.slice(0, at), page);
+        push(rest.slice(0, at), page, separator);
         rest = rest.slice(at).trim();
       }
-      push(rest, page);
+      push(rest, page, separator);
       return;
     }
     if (!buffer) {
@@ -401,10 +456,10 @@ export function chunkPages(pages: UploadPage[]): UploadChunk[] {
       const tail = overlapTail(buffer);
       flush();
       bufferPage = page;
-      buffer = tail ? `${tail} ${piece}` : piece;
+      buffer = tail ? `${tail}${separator}${piece}` : piece;
       return;
     }
-    buffer = `${buffer} ${piece}`;
+    buffer = `${buffer}${separator}${piece}`;
     if (estimateTokens(buffer) >= TARGET_TOKENS) {
       const tail = overlapTail(buffer);
       flush();
@@ -427,8 +482,9 @@ export function chunkPages(pages: UploadPage[]): UploadChunk[] {
       continue;
     }
     if (estimateTokens(para.text) > MAX_TOKENS) {
+      // Sentences of one paragraph belong on one line; only paragraphs get a break.
       for (const s of sentences(para.text)) {
-        push(s, para.page);
+        push(s, para.page, " ");
       }
       continue;
     }
