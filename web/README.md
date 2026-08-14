@@ -32,11 +32,22 @@ chunker, the citation plumbing and the reader are all built around a paper with 
 The corpus itself is built by the HPC ingest pipeline (chunk → contextualize → embed →
 Qdrant), so an uploaded paper is deliberately **not** ingested. It lives with its chat:
 
-1. **Upload** (`POST /api/uploads`) stores the PDF in Vercel Blob, extracts its text with
-   pdf.js **page by page**, chunks it (`lib/aprag/uploads.ts` — a trimmed cousin of
-   `pipeline/scientific_chunker.py`: section-aware, strips running heads, drops the
-   reference list), and reads the front matter with gpt-5-mini for an APA citation. The
-   composer shows "Reading…" while this runs; when it returns, the paper is answerable.
+1. **Upload.** The browser sends the PDF **straight to Vercel Blob** (`@vercel/blob/client`),
+   with `POST /api/uploads/blob` issuing a one-shot token after checking who is asking and
+   whether the chat has room. The file must not travel through a function: Vercel rejects
+   any request body over **4.5 MB** with a plain-text 413 before the handler runs, and
+   papers are routinely larger. `POST /api/uploads` is then handed the blob URL, reads it
+   back (no limit server-side), extracts the text with pdf.js **page by page**, chunks it
+   (`lib/aprag/uploads.ts` — a trimmed cousin of `pipeline/scientific_chunker.py`:
+   section-aware, strips running heads, drops the reference list), and reads the front
+   matter with gpt-5-mini for an APA citation. The composer shows "Reading…" while this
+   runs; when it returns, the paper is answerable. Anything that fails deletes the stored
+   file rather than leaving an orphan.
+
+   pdf.js parses in a worker module it imports at runtime, which nothing references
+   statically — so a copy is checked in at `lib/pdfjs/pdf.worker.min.mjs` (refreshed by
+   `pnpm sync-pdfjs-worker`, same as the browser copy under `public/`). Without it the
+   worker is traced out of the deployed function and every upload fails.
 2. **Every following turn** puts the attached papers in front of the answer model, merged
    into the *same* `[n]`-numbered Sources the database retrieval produced. One budget
    governs this — **30k tokens** — and what the model sees is `min(attached, budget)`:

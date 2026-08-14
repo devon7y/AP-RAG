@@ -1,4 +1,4 @@
-import { put } from "@vercel/blob";
+import { del, head } from "@vercel/blob";
 import { auth } from "@/app/(auth)/auth";
 import type { UploadedPaperSummary } from "@/lib/aprag/types";
 import {
@@ -23,17 +23,22 @@ import {
 // Papers a user attaches to a chat that are NOT in the AP-RAG database — uploaded so the
 // conversation can discuss them alongside the corpus.
 //
-// Everything happens in this one request: the PDF goes to Blob storage, its text is
-// extracted and chunked, and its bibliographic record is read off the front matter. That
-// keeps the contract simple (when the request returns, the paper is answerable) at the
-// cost of a slower upload, which is why the composer shows the paper as "Reading…" while
-// it runs.
+// The PDF does NOT arrive here. A serverless function rejects any request body over 4.5MB
+// with a plain-text 413 before the handler runs, and academic papers are routinely larger
+// than that, so the browser uploads straight to the blob store (./blob issues the token)
+// and this route is handed the resulting URL. Reading the blob back server-side has no
+// such limit.
+//
+// From there it is one request: read the stored PDF, extract its text page by page, chunk
+// it, and read its front matter for a citation. When this returns, the paper is
+// answerable — which is why the composer shows it as "Reading…" until it does. Anything
+// that goes wrong takes the stored file with it, rather than leaving an orphan behind.
 //
 // PDFs only. Not a policy about file types so much as about what the rest of the pipeline
 // can do: the chunker, the citation plumbing and the reader are all built around a paper
 // with pages.
 
-// Reading a PDF, identifying it and storing it all happen in this one request.
+// Reading and identifying the paper both happen in this one request.
 export const maxDuration = 120;
 
 /** Extraction below this is a scan or an image-only PDF — there is nothing to retrieve. */
@@ -108,14 +113,16 @@ export async function POST(request: Request) {
   }
   const userId = session.user.id;
 
-  let form: FormData;
+  // The browser has already put the PDF in the blob store (see ./blob) — this request is
+  // only the small JSON that says which one to read.
+  let body: { chatId?: string; url?: string; filename?: string };
   try {
-    form = await request.formData();
+    body = (await request.json()) as typeof body;
   } catch {
-    return Response.json({ error: "Expected a file upload." }, { status: 400 });
+    return Response.json({ error: "Expected JSON." }, { status: 400 });
   }
 
-  const chatId = String(form.get("chatId") ?? "").trim();
+  const chatId = String(body.chatId ?? "").trim();
   if (!/^[0-9a-f-]{36}$/i.test(chatId)) {
     return Response.json({ error: "chatId required" }, { status: 400 });
   }
@@ -125,25 +132,10 @@ export async function POST(request: Request) {
     return Response.json({ error: access.error }, { status: access.status });
   }
 
-  const file = form.get("file");
-  if (!(file instanceof File)) {
-    return Response.json({ error: "No file uploaded." }, { status: 400 });
-  }
-
-  const filename = (file.name || "paper.pdf").slice(0, 200);
+  const filename = (body.filename || "paper.pdf").slice(0, 200);
   if (!filename.toLowerCase().endsWith(".pdf")) {
     return Response.json(
       { error: `${filename} isn't a PDF. Only PDFs can be uploaded.` },
-      { status: 400 }
-    );
-  }
-  if (file.size > MAX_UPLOAD_BYTES) {
-    return Response.json(
-      {
-        error: `${filename} is ${(file.size / 1024 / 1024).toFixed(1)} MB — the limit is ${
-          MAX_UPLOAD_BYTES / 1024 / 1024
-        } MB.`,
-      },
       { status: 400 }
     );
   }
@@ -158,38 +150,94 @@ export async function POST(request: Request) {
     );
   }
 
-  const bytes = new Uint8Array(await file.arrayBuffer());
+  // The client names the blob to read, so the claim is checked rather than trusted: `head`
+  // speaks for our own store only, which both proves the blob is ours and gives us its
+  // real size and path. A URL pointing anywhere else simply isn't found.
+  const blobUrl = String(body.url ?? "");
+  let stored: Awaited<ReturnType<typeof head>>;
+  try {
+    stored = await head(blobUrl);
+  } catch {
+    return Response.json({ error: "Unknown upload." }, { status: 400 });
+  }
+  if (!stored.pathname.startsWith(`chat-uploads/${chatId}/`)) {
+    return Response.json({ error: "Unknown upload." }, { status: 400 });
+  }
+
+  /** Nothing usable came of the file — don't leave it sitting in the store. */
+  const discard = async () => {
+    await del(blobUrl).catch(() => {
+      /* best-effort */
+    });
+  };
+
+  if (stored.size > MAX_UPLOAD_BYTES) {
+    await discard();
+    return Response.json(
+      {
+        error: `${filename} is ${(stored.size / 1024 / 1024).toFixed(1)} MB — the limit is ${
+          MAX_UPLOAD_BYTES / 1024 / 1024
+        } MB.`,
+      },
+      { status: 400 }
+    );
+  }
+
+  let bytes: Uint8Array;
+  try {
+    const response = await fetch(blobUrl, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok) {
+      throw new Error(String(response.status));
+    }
+    bytes = new Uint8Array(await response.arrayBuffer());
+  } catch {
+    await discard();
+    return Response.json(
+      { error: "The uploaded file couldn't be read back. Please try again." },
+      { status: 502 }
+    );
+  }
+
   // The declared type is whatever the browser guessed from the extension; the bytes are
   // the actual claim to being a PDF.
   if (!looksLikePdf(bytes)) {
+    await discard();
     return Response.json(
       { error: `${filename} isn't a valid PDF file.` },
       { status: 400 }
     );
   }
 
-  // Read the paper BEFORE storing it: a scan with no text layer is of no use to the chat,
-  // and failing here leaves nothing behind to clean up.
   let extracted: Awaited<ReturnType<typeof extractPdfPages>>;
   try {
     extracted = await extractPdfPages(bytes);
   } catch (error) {
     if (error instanceof PdfReadError) {
       // A reader that won't start is our fault, not a bad request — and worth a 5xx so it
-      // shows up as a server error rather than as user error.
-      return Response.json(
-        { error: error.message },
-        { status: error.reason === "unavailable" ? 503 : 400 }
-      );
+      // shows up as a server error rather than as user error. The file stays: it is fine,
+      // and a retry once the server is fixed should not need re-uploading.
+      if (error.reason === "unavailable") {
+        return Response.json({ error: error.message }, { status: 503 });
+      }
+      await discard();
+      return Response.json({ error: error.message }, { status: 400 });
     }
     console.error("Failed to read uploaded PDF:", error);
+    await discard();
     return Response.json(
-      { error: `Couldn't read ${filename}.` },
+      {
+        error:
+          `Couldn't read ${filename}: ${(error as Error).message ?? ""}`.trim(),
+      },
       { status: 400 }
     );
   }
 
   if (extracted.chars < MIN_EXTRACTED_CHARS) {
+    await discard();
     return Response.json(
       {
         error: `${filename} has no text layer — it looks like a scan. Run OCR on it and upload it again.`,
@@ -200,6 +248,7 @@ export async function POST(request: Request) {
 
   const chunks = chunkPages(extracted.pages);
   if (chunks.length === 0) {
+    await discard();
     return Response.json(
       { error: `No readable text could be extracted from ${filename}.` },
       { status: 400 }
@@ -213,28 +262,7 @@ export async function POST(request: Request) {
 
   // The identification is a nicety (it decides how the paper is cited); the upload is not
   // worth failing over it, and identifyPaper already falls back to the file name.
-  const [identity, stored] = await Promise.all([
-    identifyPaper(frontMatter, filename),
-    put(
-      `chat-uploads/${chatId}/${filename.replace(/[^\w.-]+/g, "_")}`,
-      Buffer.from(bytes),
-      {
-        access: "public",
-        addRandomSuffix: true,
-        contentType: "application/pdf",
-      }
-    ).catch((error: unknown) => {
-      console.error("Blob upload failed:", error);
-      return null;
-    }),
-  ]);
-
-  if (!stored) {
-    return Response.json(
-      { error: "Couldn't store the file. Please try again." },
-      { status: 502 }
-    );
-  }
+  const identity = await identifyPaper(frontMatter, filename);
 
   const row = await saveUploadedPaper({
     chatId,
@@ -242,7 +270,7 @@ export async function POST(request: Request) {
     filename,
     blobUrl: stored.url,
     blobPathname: stored.pathname,
-    byteSize: file.size,
+    byteSize: stored.size,
     pageCount: extracted.pageCount,
     title: identity.title,
     apa: identity.apa,

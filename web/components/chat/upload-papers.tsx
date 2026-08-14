@@ -1,5 +1,6 @@
 "use client";
 
+import { upload as uploadToBlob } from "@vercel/blob/client";
 import {
   FileTextIcon,
   Loader2Icon,
@@ -97,19 +98,41 @@ export function useChatUploads(chatId: string): ChatUploads {
         }
         setPending((current) => [...current, file.name]);
         try {
-          const body = new FormData();
-          body.append("file", file);
-          body.append("chatId", chatId);
+          // Straight from the browser into blob storage. It cannot go through the API
+          // route: a serverless function refuses a body over 4.5MB, and papers are
+          // routinely bigger — that refusal is what used to surface as "couldn't read"
+          // for every large PDF. /api/uploads then reads it back and does the work.
+          const stored = await uploadToBlob(
+            `chat-uploads/${chatId}/${file.name.replace(/[^\w.-]+/g, "_")}`,
+            file,
+            {
+              access: "public",
+              handleUploadUrl: `${base}/api/uploads/blob`,
+              contentType: "application/pdf",
+              clientPayload: JSON.stringify({ chatId }),
+            }
+          );
+
           const response = await fetch(`${base}/api/uploads`, {
             method: "POST",
-            body,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              chatId,
+              url: stored.url,
+              filename: file.name,
+            }),
           });
           const payload = (await response.json().catch(() => ({}))) as {
             paper?: UploadedPaperSummary;
             error?: string;
           };
           if (!response.ok || !payload.paper) {
-            toast.error(payload.error ?? `Couldn't read ${file.name}.`);
+            // Always say something specific: a bare "couldn't read it" sent us hunting
+            // through the PDF when the request had never reached the server at all.
+            toast.error(
+              payload.error ??
+                `Couldn't read ${file.name} (server said ${response.status}).`
+            );
             continue;
           }
           const added = payload.paper;
@@ -122,8 +145,10 @@ export function useChatUploads(chatId: string): ChatUploads {
           toast.success(
             `${added.title || added.filename} is ready to discuss.`
           );
-        } catch {
-          toast.error(`Couldn't upload ${file.name}.`);
+        } catch (error) {
+          toast.error(
+            `Couldn't upload ${file.name}: ${(error as Error)?.message ?? "unknown error"}`
+          );
         } finally {
           setPending((current) => {
             const next = [...current];
