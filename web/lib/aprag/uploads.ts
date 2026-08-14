@@ -918,6 +918,38 @@ export function buildUploadContext(
   )}`;
 }
 
+/**
+ * A one-line roll-call of the attached papers, carried in the USER turn next to the
+ * question rather than in the system prompt.
+ *
+ * "How does this paper relate?" is ambiguous in a conversation that has been discussing
+ * database papers for ten turns — and the attachment is the newest thing in the chat, but
+ * nothing in the context says so. Naming the papers where the question is asked is what
+ * makes "this paper" resolve to them.
+ */
+export function describeUploads(references: RagReference[]): string {
+  if (references.length === 0) {
+    return "";
+  }
+  const list = references
+    .map((r) => {
+      const cite = r.intext || r.uploadedName || r.filename;
+      const title = r.uploadedName?.replace(/\.pdf$/i, "");
+      return title && title !== cite ? `${cite} — "${title}"` : cite;
+    })
+    .join("; ");
+  const noun = references.length === 1 ? "paper" : "papers";
+  return (
+    `[The user has attached ${references.length} ${noun} to this conversation, and their ` +
+    `passages are included in the Sources below: ${list}. Unless the user clearly means ` +
+    `something else, "this paper", "the attached paper" and "the PDF" refer to ${
+      references.length === 1 ? "it" : "them"
+    }, and a question about how it relates should be answered by reading ${
+      references.length === 1 ? "it" : "them"
+    } against the database sources.]`
+  );
+}
+
 /** Appended to the synthesis system prompt whenever uploaded passages are in the context. */
 export const UPLOAD_SOURCE_NOTE =
   "\n\nSOME SOURCES ARE UPLOADED PAPERS. The user has attached one or more papers to this " +

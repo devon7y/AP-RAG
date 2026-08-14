@@ -51,6 +51,7 @@ import {
 import type { RagRetrieval } from "@/lib/aprag/types";
 import {
   buildUploadContext,
+  describeUploads,
   maxCiteIndex,
   selectUploadPassages,
   UPLOAD_SOURCE_NOTE,
@@ -401,23 +402,27 @@ export async function POST(request: Request) {
 
         // Papers the user uploaded into THIS chat — not in the database, so they can only
         // be retrieved from here (see lib/aprag/uploads.ts). Read alongside the condense
-        // call so attaching a paper costs nothing in front of retrieval. Author-persona
-        // chats are left out on purpose: that voice answers from its own published work,
-        // and the digest's first turn is a dated sweep of the corpus, which an undated
-        // attachment has no place in.
-        const uploadsPromise: Promise<UploadedPaper[]> = persona
-          ? Promise.resolve([])
-          : getUploadedPapersForChat({ chatId: id }).then((rows) =>
-              rows.map((row) => ({
-                id: row.id,
-                filename: row.filename,
-                title: row.title,
-                intext: row.intext,
-                apa: row.apa,
-                pageCount: row.pageCount,
-                chunks: row.chunks ?? [],
-              }))
-            );
+        // call so attaching a paper costs nothing in front of retrieval.
+        //
+        // Every kind of chat gets them, author personas included: attaching a paper and
+        // asking "how does this relate to your work?" is a question that voice should be
+        // able to answer, and silently dropping the attachment is worse than answering
+        // from it. (Only the digest's FIRST turn skips them — that path is a dated sweep
+        // of the corpus and returns before this point.)
+        const uploadsPromise: Promise<UploadedPaper[]> =
+          getUploadedPapersForChat({
+            chatId: id,
+          }).then((rows) =>
+            rows.map((row) => ({
+              id: row.id,
+              filename: row.filename,
+              title: row.title,
+              intext: row.intext,
+              apa: row.apa,
+              pageCount: row.pageCount,
+              chunks: row.chunks ?? [],
+            }))
+          );
 
         // 1. Condense into a standalone query AND run the second-pass LLM filter
         //    extraction (catches mistyped/fuzzy names the client preview misses).
@@ -623,11 +628,20 @@ export async function POST(request: Request) {
         );
         const priorModelMessages =
           await convertToModelMessages(priorForSynthesis);
+        // The attached papers are named right next to the question. In a conversation that
+        // has been about database papers for ten turns, "how does this paper relate?" reads
+        // as being about those unless something says otherwise — and the attachment, though
+        // it is the newest thing in the chat, is otherwise just another block of Sources.
+        const attached = hasUploads
+          ? describeUploads(uploadSelection?.references ?? [])
+          : "";
         const synthesisMessages: ModelMessage[] = [
           ...priorModelMessages,
           {
             role: "user",
-            content: `${question}\n\n${context}`,
+            content: attached
+              ? `${question}\n\n${attached}\n\n${context}`
+              : `${question}\n\n${context}`,
           },
         ];
 
