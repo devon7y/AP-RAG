@@ -13,12 +13,12 @@ import type { RagChunk, RagReference } from "./types";
 // Same citation-style instruction the server feeds LightRAG, so the answer emits clean
 // bracketed [n] markers we can rewrite to (Author, Year).
 export const CITATION_STYLE_PROMPT =
-  'Citation style (APA7): cite each supporting source by placing its bracketed ' +
-  'reference number directly after the statement it supports and INSIDE the sentence — ' +
+  "Citation style (APA7): cite each supporting source by placing its bracketed " +
+  "reference number directly after the statement it supports and INSIDE the sentence — " +
   'before the closing period, never after it, e.g. "Lexical decision times fall as word ' +
   'frequency rises [2]." not "…rises. [2]". Use the bracket only — do NOT add words ' +
   'such as "see", "cf.", "e.g.", or "Supported by" before it, do NOT wrap it in extra ' +
-  'parentheses, and do NOT cite the same source more than once in a sentence. When ' +
+  "parentheses, and do NOT cite the same source more than once in a sentence. When " +
   'several sources support one statement, group them in adjacent brackets, e.g. "… as ' +
   'widely reported [1][3]."';
 
@@ -54,7 +54,10 @@ export function normalizeMath(text: string): string {
     .replace(/\\\[([\s\S]*?)\\\]/g, (_m, body) => `\n$$${body}$$\n`)
     .replace(/\\\(([\s\S]*?)\\\)/g, (_m, body) => `$${body}$`)
     .replace(/\$\$([\s\S]*?)\$\$/g, (_m, body) => `$$${escPct(body)}$$`)
-    .replace(/(?<!\$)\$(?!\$)([^\n$]+?)\$(?!\$)/g, (_m, body) => `$${escPct(body)}$`);
+    .replace(
+      /(?<!\$)\$(?!\$)([^\n$]+?)\$(?!\$)/g,
+      (_m, body) => `$${escPct(body)}$`
+    );
 }
 
 // The [n]-tagged context handed to the synthesis model. Each eligible chunk is numbered
@@ -106,8 +109,17 @@ export function citationsInsideSentence(text: string): string {
   }
   return text.replace(
     TRAILING_CITATION_RE,
-    (match, punctuation: string, closers: string, cites: string, offset: number) => {
-      if (punctuation === "." && ABBREVIATION_RE.test(text.slice(0, offset + 1))) {
+    (
+      match,
+      punctuation: string,
+      closers: string,
+      cites: string,
+      offset: number
+    ) => {
+      if (
+        punctuation === "." &&
+        ABBREVIATION_RE.test(text.slice(0, offset + 1))
+      ) {
         return match;
       }
       // A closing quote or bracket means the sentence ends something quoted; moving the
@@ -192,7 +204,9 @@ type DisambigRef = { reference_id: string; intext: string; filename?: string };
  * stored letters when those already tell them apart (so the citation still matches the
  * filename in the reader), and otherwise get a, b, c… in citation order.
  */
-export function disambiguationLetters(refs: DisambigRef[]): Map<string, string> {
+export function disambiguationLetters(
+  refs: DisambigRef[]
+): Map<string, string> {
   const groups = new Map<string, DisambigRef[]>();
   for (const ref of refs) {
     const key = splitYearLetter(ref.intext).base.toLowerCase();
@@ -227,21 +241,30 @@ export function disambiguationLetters(refs: DisambigRef[]): Map<string, string> 
   return out;
 }
 
+/** The passage numbers an answer actually cites. */
+export function citedPassageIndices(text: string): Set<number> {
+  const out = new Set<number>();
+  if (!text) {
+    return out;
+  }
+  for (const m of text.matchAll(new RegExp(BRACKET, "g"))) {
+    for (const n of m[0].matchAll(/\d+/g)) {
+      out.add(Number(n[0]));
+    }
+  }
+  return out;
+}
+
 /** The reference_ids (papers) the answer cites, via the passage numbers it used. */
 export function citedReferenceIds(
   text: string,
   byCiteIndex: Map<number, CiteRef>
 ): Set<string> {
   const out = new Set<string>();
-  if (!text) {
-    return out;
-  }
-  for (const m of text.matchAll(new RegExp(BRACKET, "g"))) {
-    for (const n of m[0].matchAll(/\d+/g)) {
-      const ref = byCiteIndex.get(Number(n[0]));
-      if (ref) {
-        out.add(ref.referenceId);
-      }
+  for (const index of citedPassageIndices(text)) {
+    const ref = byCiteIndex.get(index);
+    if (ref) {
+      out.add(ref.referenceId);
     }
   }
   return out;

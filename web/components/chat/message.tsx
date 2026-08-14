@@ -4,6 +4,7 @@ import { useActiveChat } from "@/hooks/use-active-chat";
 import {
   type CiteRef,
   citationsInsideSentence,
+  citedPassageIndices,
   citedReferenceIds,
   disambiguationLetters,
   normalizeMath,
@@ -133,6 +134,26 @@ const PurePreviewMessage = ({
     ? retrieval.references.filter((r) => !cited || cited.has(r.reference_id))
     : [];
 
+  // An uploaded paper is usually handed to the model WHOLE, so the pages of the passages
+  // it was given are simply "all of them" — a reference row reading "pp. 1, 2, 3, 4, 5, 6,
+  // 7, 8, 9, 10, 11" says nothing. What a reader wants is where the citation came from, so
+  // for uploads the pages are recomputed from the passages the answer actually cited.
+  // (Corpus references keep the server's own pages: their chunk pages aren't always known.)
+  const citedIndices =
+    isAssistant && retrieval
+      ? citedPassageIndices(cleanedAnswer)
+      : new Set<number>();
+  const citedPagesFor = (referenceId: string): number[] =>
+    [
+      ...new Set(
+        [...citedIndices]
+          .map((index) => chunkByCiteIndex.get(index))
+          .filter((chunk) => chunk?.reference_id === referenceId)
+          .map((chunk) => chunk?.page)
+          .filter((page): page is number => page != null)
+      ),
+    ].sort((a, b) => a - b);
+
   // A paper's filename carries a year letter (Chen_Etal_2014b.pdf) so the corpus files
   // sort unambiguously; it belongs in the citation only when this answer cites two works
   // that would otherwise read identically. That is decided here, where the cited set is
@@ -140,8 +161,10 @@ const PurePreviewMessage = ({
   const letters = disambiguationLetters(rawCitedReferences);
   const citedReferences = rawCitedReferences.map((r) => {
     const letter = letters.get(r.reference_id) ?? "";
+    const pages = r.uploaded ? citedPagesFor(r.reference_id) : r.pages;
     return {
       ...r,
+      pages: pages.length > 0 ? pages : r.pages,
       intext: setIntextLetter(r.intext, letter),
       apa: setApaLetter(r.apa, letter),
     };

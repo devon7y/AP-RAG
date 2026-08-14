@@ -2,7 +2,6 @@
 
 import "pdfjs-dist/web/pdf_viewer.css";
 
-import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import {
   DownloadIcon,
   ExternalLinkIcon,
@@ -11,6 +10,7 @@ import {
   PlusIcon,
   XIcon,
 } from "lucide-react";
+import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import {
   useCallback,
   useEffect,
@@ -19,6 +19,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { isUploadPdfName } from "@/lib/aprag/uploads";
 import { getPdfjs, loadPdf, pdfPageImageUrl, pdfUrl } from "@/lib/pdf/loader";
 import { type PdfTab, usePdfViewer } from "@/lib/pdf/store";
 import { cn } from "@/lib/utils";
@@ -110,11 +111,7 @@ export function PdfReader({ onClose }: { onClose?: () => void }) {
       {/* Every open tab stays mounted; only the active one is visible. Re-mounting on
           each switch is what made switching slow (reload, re-raster, re-locate). */}
       {tabs.map((tab) => (
-        <PdfDocumentPane
-          active={tab.id === active.id}
-          key={tab.id}
-          tab={tab}
-        />
+        <PdfDocumentPane active={tab.id === active.id} key={tab.id} tab={tab} />
       ))}
     </div>
   );
@@ -127,9 +124,9 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const docRef = useRef<PDFDocumentProxy | null>(null);
 
-  const [status, setStatus] = useState<"loading" | "ready" | "missing" | "error">(
-    "loading"
-  );
+  const [status, setStatus] = useState<
+    "loading" | "ready" | "missing" | "error"
+  >("loading");
   const [numPages, setNumPages] = useState(0);
   const [baseBox, setBaseBox] = useState<PageBox | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -165,7 +162,9 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
         const status_ = (error as { status?: number }).status;
         const name = (error as { name?: string }).name;
         setStatus(
-          status_ === 404 || name === "MissingPDFException" ? "missing" : "error"
+          status_ === 404 || name === "MissingPDFException"
+            ? "missing"
+            : "error"
         );
       });
     return () => {
@@ -176,6 +175,13 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
   // ── Resolve where the cited passage lives (page + highlight boxes) ─────────
   useEffect(() => {
     if (!tab.quote || tab.located) {
+      return;
+    }
+    // A paper uploaded into a chat is never asked about: the search runs on the PC, which
+    // has never seen the file, and its passages already carry the page they came from. The
+    // answer would be a "not found" that reads as though the passage were missing from the
+    // paper — so the reader simply opens at the page and highlights nothing.
+    if (isUploadPdfName(tab.filename)) {
       return;
     }
     let cancelled = false;
@@ -204,7 +210,14 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [tab.id, tab.filename, tab.quote, tab.located, tab.requestedPage, setLocated]);
+  }, [
+    tab.id,
+    tab.filename,
+    tab.quote,
+    tab.located,
+    tab.requestedPage,
+    setLocated,
+  ]);
 
   // ── Width: track live, commit when the drag settles ───────────────────────
   useLayoutEffect(() => {
@@ -255,7 +268,10 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
   const pageHeight = baseBox ? baseBox.height * scale : 0;
   const pageWidth = baseBox ? baseBox.width * scale : 0;
   const strideY = pageHeight + PAGE_GAP;
-  const pageOffset = useCallback((page: number) => (page - 1) * strideY, [strideY]);
+  const pageOffset = useCallback(
+    (page: number) => (page - 1) * strideY,
+    [strideY]
+  );
 
   // ── Virtualization + current-page tracking ────────────────────────────────
   const recomputeVisible = useCallback(() => {
@@ -269,7 +285,8 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
       from: Math.max(1, first - RENDER_WINDOW),
       to: Math.min(numPages || 1, last + RENDER_WINDOW),
     });
-    const middle = Math.floor((el.scrollTop + el.clientHeight / 2) / strideY) + 1;
+    const middle =
+      Math.floor((el.scrollTop + el.clientHeight / 2) / strideY) + 1;
     setCurrentPage(Math.min(Math.max(1, middle), numPages || 1));
   }, [strideY, numPages]);
 
@@ -512,12 +529,28 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
           >
             <PlusIcon className="size-4" />
           </Button>
-          <Button aria-label="Open in a new tab" asChild size="icon-sm" type="button" variant="ghost">
-            <a href={pdfUrl(tab.filename)} rel="noopener noreferrer" target="_blank">
+          <Button
+            aria-label="Open in a new tab"
+            asChild
+            size="icon-sm"
+            type="button"
+            variant="ghost"
+          >
+            <a
+              href={pdfUrl(tab.filename)}
+              rel="noopener noreferrer"
+              target="_blank"
+            >
               <ExternalLinkIcon className="size-4" />
             </a>
           </Button>
-          <Button aria-label="Download" asChild size="icon-sm" type="button" variant="ghost">
+          <Button
+            aria-label="Download"
+            asChild
+            size="icon-sm"
+            type="button"
+            variant="ghost"
+          >
             <a download={tab.filename} href={pdfUrl(tab.filename, true)}>
               <DownloadIcon className="size-4" />
             </a>
@@ -540,7 +573,11 @@ function PdfDocumentPane({ tab, active }: { tab: PdfTab; active: boolean }) {
             </p>
             {tab.driveUrl && (
               <Button asChild size="sm" type="button" variant="outline">
-                <a href={tab.driveUrl} rel="noopener noreferrer" target="_blank">
+                <a
+                  href={tab.driveUrl}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
                   <ExternalLinkIcon className="size-3.5" />
                   Open in Drive
                 </a>
@@ -675,7 +712,9 @@ function PageSlot({
       className="absolute left-0 bg-white shadow-sm"
       style={{ top, width, height }}
     >
-      {(!render || !painted) && (
+      {/* The server-rendered stand-in exists for corpus papers only; an uploaded one has
+          no pre-rendered pages on the PC, so asking would just 404 once per page. */}
+      {(!render || !painted) && !isUploadPdfName(filename) && (
         // biome-ignore lint/performance/noImgElement: rendered pdf page, not a static asset
         <img
           alt=""
