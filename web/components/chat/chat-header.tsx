@@ -8,7 +8,6 @@ import { useActiveChat } from "@/hooks/use-active-chat";
 import { usePdfViewer } from "@/lib/pdf/store";
 import { cn } from "@/lib/utils";
 import { AppTitle } from "./app-title";
-import { ConnectDialog } from "./connect-dialog";
 import { DigestIndicator } from "./digest-indicator";
 import { PageHeader } from "./page-header";
 import { PersonaIndicator } from "./persona-indicator";
@@ -31,8 +30,8 @@ function PureChatHeader({
 
   // The header stays put whether or not the sidebar is collapsed. It used to be removed
   // entirely in that state, which meant opening the PDF reader — which collapses the
-  // sidebar — also took away the corpus status, the connect dialog and the persona/
-  // digest pill, exactly when the reader makes them most useful.
+  // sidebar — also took away the corpus status and the persona/digest pill, exactly
+  // when the reader makes them most useful.
   // A peeking sidebar is only transiently expanded, so it still counts as collapsed
   // here; otherwise the toggle would flicker in and out as the pointer passes.
   const sidebarTucked = peek || state === "collapsed";
@@ -67,10 +66,6 @@ function PureChatHeader({
       </div>
 
       <div className="flex items-center gap-2">
-        {/* Author/digest chats hide the corpus connect/status badge to spotlight the
-            pill; so does the reader, where the header has half the width to work with
-            and reading the source matters more than setup instructions. */}
-        {!(isAuthorChat || isDigestChat || readerOpen) && <ConnectDialog />}
         {!isReadonly && (
           <VisibilitySelector
             chatId={chatId}

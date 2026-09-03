@@ -5,6 +5,7 @@ import {
   CompassIcon,
   DatabaseIcon,
   PenSquareIcon,
+  PlugZapIcon,
   TrendingUpIcon,
   UserRoundIcon,
   WaypointsIcon,
@@ -170,6 +171,18 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                     <Link href="/atlas" onClick={() => setOpenMobile(false)}>
                       <CompassIcon className="size-4" />
                       <span className="font-medium">Papers Atlas</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    asChild
+                    className="h-8 rounded-lg text-[13px] text-sidebar-foreground/70 transition-colors duration-150 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                    tooltip="Agentic Tools — point your own agent or terminal at this corpus (MCP server + CLI)"
+                  >
+                    <Link href="/tools" onClick={() => setOpenMobile(false)}>
+                      <PlugZapIcon className="size-4" />
+                      <span className="font-medium">Agentic Tools</span>
                     </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
