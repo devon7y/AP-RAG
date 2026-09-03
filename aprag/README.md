@@ -63,10 +63,28 @@ claude mcp add --scope user aprag \
 
 Tools the agent gets:
 
-- `aprag_query(question, mode="hybrid")` → synthesized answer.
-- `aprag_retrieve(question, mode="naive", top_k?, chunk_top_k?)` → raw chunks
+- `aprag_query(question, mode="hybrid", reasoning="none", …)` → synthesized, APA-cited answer.
+- `aprag_search(question, …)` → ranked papers for a topic (not an answer).
+- `aprag_retrieve(question, mode="naive", top_k?, chunk_top_k?, …)` → raw chunks
   (+ entities/relationships in graph modes). Stateless — the agent accumulates and
   dedupes evidence across hops.
+- `aprag_corpus(facet, q?, limit?)` → the values the metadata filters actually accept
+  (authors/journals/subjects/keywords/affiliations/types), plus `stats` and `health`.
+  Call this before filtering rather than guessing at spellings.
+- `aprag_papers(filename? | q?, …)` → browse the manifest as a table, or one paper's
+  full record. A pure metadata read, so it still answers when Qdrant is down.
+- `aprag_similar(filename, top_k?)` → the papers nearest a given paper.
+- `aprag_locate(filename, quote, hint_page?)` → which PDF page a quoted passage sits
+  on; `page=null` means the passage could not be confirmed in that paper.
+- `aprag_graph(action, …)` → knowledge-graph entities and their connections; how you
+  follow up an entity that `aprag_retrieve` surfaced.
+- `aprag_trends(dim?, term?, limit?)` → corpus-wide publication trends.
+
+The first five accept the metadata filters (`papers`, `authors`, `year`/`year_from`/
+`year_to`, `date_from`/`date_to`, `journals`, `subjects`, `keywords`, `affiliations`,
+`types`). A filter value that matches no paper is rejected with "did you mean"
+suggestions instead of returning an empty result that reads like an empty corpus, and
+every failure is raised as a real MCP error rather than returned as prose.
 
 If `aprag-mcp` is not on the PATH the client uses, register with the absolute path to
 the console script (e.g. `/path/to/venv/bin/aprag-mcp`).

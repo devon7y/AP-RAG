@@ -212,11 +212,16 @@ If `aprag-mcp` is not on the PATH the client uses to launch subprocesses, replac
 **Verify (Claude Code):**
 ```bash
 claude mcp list
-# Should show: aprag: aprag-mcp - ✓ Connected
+# Should show: aprag: aprag-mcp - ✔ Connected
 ```
 
-The agent then gets two tools: `aprag_query(question, mode)` and
-`aprag_retrieve(question, mode, top_k, chunk_top_k)`.
+The agent then gets nine tools: `aprag_query` (synthesized answer), `aprag_search`
+(ranked papers), `aprag_retrieve` (raw chunks/entities), `aprag_corpus` (the values the
+metadata filters accept, plus corpus stats and server health), `aprag_papers` (browse the
+manifest or open one paper's record), `aprag_similar` (papers nearest a given paper),
+`aprag_locate` (which PDF page a quoted passage sits on — the citation-verification
+primitive), `aprag_graph` (knowledge-graph entities) and `aprag_trends` (publication
+trends).
 
 ---
 

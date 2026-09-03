@@ -39,7 +39,17 @@ REQUEST_TIMEOUT = httpx.Timeout(120.0, connect=CONNECT_TIMEOUT_SECONDS)
 
 
 class APRAGError(Exception):
-    """A user-facing error from the client (already formatted for display)."""
+    """A user-facing error from the client (already formatted for display).
+
+    ``status`` carries the HTTP status when the failure was an error *response*
+    (e.g. 404 for an unknown paper) and is None when the request never got that
+    far (connection refused, timeout). Callers use it to tell "you asked for
+    something that does not exist" apart from "the server is down".
+    """
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _auth_headers() -> dict | None:
@@ -134,7 +144,16 @@ def _raise_friendly(exc: Exception, base_url: str) -> APRAGError:
             f"The server may be starting or overloaded. Details: {details}"
         )
     if isinstance(exc, httpx.HTTPStatusError):
-        return APRAGError(f"server at {base_url} returned {exc.response.status_code}")
+        status = exc.response.status_code
+        detail = ""
+        try:  # FastAPI puts the useful part in {"detail": ...}
+            body = exc.response.json()
+            if isinstance(body, dict) and body.get("detail"):
+                detail = f": {body['detail']}"
+        except Exception:  # noqa: BLE001 — a non-JSON error body is fine
+            pass
+        return APRAGError(f"server at {base_url} returned {status}{detail}",
+                          status=status)
     return APRAGError(f"{_exception_details(exc)}")
 
 
@@ -276,3 +295,201 @@ async def health(*, base_url: str | None = None) -> dict:
             return resp.json()
     except Exception as exc:  # noqa: BLE001 — re-raised as a friendly APRAGError
         raise _raise_friendly(exc, base_url) from exc
+
+
+async def add_papers(paths: list[str], *, base_url: str | None = None) -> dict:
+    """Upload PDFs for incremental ingest (POST /ingest).
+
+    Returns {"job_id", "accepted": [...], "rejected": [{"name", "reason"}]}. The
+    server ingests asynchronously — poll ``ingest_job(job_id)`` for progress. Once a
+    paper reaches "done" it is searchable in chat, listed in the Papers browser, and
+    placed on the Atlas map.
+    """
+    base_url = base_url or resolve_base_url()
+    files = []
+    for p in paths:
+        from pathlib import Path
+        pp = Path(p).expanduser()
+        files.append(("files", (pp.name, pp.read_bytes(), "application/pdf")))
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(f"{base_url}/ingest", files=files,
+                                     headers=_auth_headers())
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:  # noqa: BLE001 — re-raised as a friendly APRAGError
+        raise _raise_friendly(exc, base_url) from exc
+
+
+async def ingest_job(job_id: str, *, base_url: str | None = None) -> dict:
+    """One ingest job's state: {"id", "state", "created", "papers": [...], "log"}."""
+    base_url = base_url or resolve_base_url()
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            resp = await client.get(f"{base_url}/ingest/job", params={"id": job_id},
+                                    headers=_auth_headers())
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:  # noqa: BLE001 — re-raised as a friendly APRAGError
+        raise _raise_friendly(exc, base_url) from exc
+
+
+async def ingest_jobs(limit: int = 20, *, base_url: str | None = None) -> dict:
+    """Recent ingest jobs: {"jobs": [...]} newest first."""
+    base_url = base_url or resolve_base_url()
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            resp = await client.get(f"{base_url}/ingest/jobs", params={"limit": limit},
+                                    headers=_auth_headers())
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:  # noqa: BLE001 — re-raised as a friendly APRAGError
+        raise _raise_friendly(exc, base_url) from exc
+
+
+# ── Generic request helpers (used by the discovery/exploration endpoints) ─────
+#
+# The call wrappers above predate these and each inline their own httpx block.
+# Everything added below funnels through these two so a new endpoint is one
+# small function rather than another copy of the try/except boilerplate.
+
+
+async def _get_json(path: str, params: dict | None = None, *,
+                    base_url: str | None = None, timeout=None) -> dict:
+    """GET ``path`` on the query server and return the decoded JSON body."""
+    base_url = base_url or resolve_base_url()
+    clean = {k: v for k, v in (params or {}).items() if v not in (None, [], "")}
+    try:
+        async with httpx.AsyncClient(timeout=timeout or REQUEST_TIMEOUT) as client:
+            resp = await client.get(f"{base_url}{path}", params=clean,
+                                    headers=_auth_headers())
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:  # noqa: BLE001 — re-raised as a friendly APRAGError
+        raise _raise_friendly(exc, base_url) from exc
+
+
+async def _post_json(path: str, body: dict, *, base_url: str | None = None,
+                     timeout=None) -> dict:
+    """POST ``body`` to ``path`` on the query server and return the JSON body."""
+    base_url = base_url or resolve_base_url()
+    try:
+        async with httpx.AsyncClient(timeout=timeout or REQUEST_TIMEOUT) as client:
+            resp = await client.post(f"{base_url}{path}", json=body,
+                                     headers=_auth_headers())
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:  # noqa: BLE001 — re-raised as a friendly APRAGError
+        raise _raise_friendly(exc, base_url) from exc
+
+
+# ── Corpus discovery (what values do the metadata filters actually accept?) ───
+
+
+async def facets(*, base_url: str | None = None) -> dict:
+    """Distinct authors/journals/subjects/keywords/affiliations/types (GET /facets).
+
+    Server-cached, but ~1.5 MB on a 10k-paper corpus — callers should filter it
+    down rather than render it whole.
+    """
+    return await _get_json("/facets", base_url=base_url)
+
+
+async def author_suggestions(q: str | None = None, limit: int = 15, *,
+                             base_url: str | None = None) -> dict:
+    """Author suggestions as *people* (GET /authors) → {"authors": [...], "total"}.
+
+    Each row carries ``name`` ("Zhang, Kechen") — the value to send back as an
+    ``authors`` filter — plus disambiguating context (n_papers, years, journal).
+    """
+    return await _get_json("/authors", {"q": q, "limit": limit}, base_url=base_url)
+
+
+async def stats(*, base_url: str | None = None) -> dict:
+    """Corpus size (GET /stats) → {"papers": N}."""
+    return await _get_json("/stats", base_url=base_url)
+
+
+async def list_papers(q: str | None = None, *, sort: str = "year",
+                      order: str = "desc", offset: int = 0, limit: int = 50,
+                      filters: dict | None = None,
+                      base_url: str | None = None) -> dict:
+    """Browse the manifest (GET /papers) → {"papers", "total", "offset", "limit"}.
+
+    A pure manifest read that applies the same filter semantics as /query and
+    /search, so it doubles as the authoritative "how many papers does this filter
+    actually match?" probe — and it keeps working when Qdrant/embeddings are down.
+    """
+    params: dict = {"q": q, "sort": sort, "order": order,
+                    "offset": offset, "limit": limit}
+    params.update(filters or {})
+    return await _get_json("/papers", params, base_url=base_url)
+
+
+async def paper_detail(filename: str, *, base_url: str | None = None) -> dict:
+    """Full manifest record for one paper (GET /paper)."""
+    return await _get_json("/paper", {"filename": filename}, base_url=base_url)
+
+
+# ── Exploration (similar papers, quote location, knowledge graph, trends) ─────
+
+
+async def similar(filename: str, *, top_k: int = 12, chunk_top_k: int | None = None,
+                  base_url: str | None = None) -> dict:
+    """Papers nearest one paper's chunk centroid (POST /similar)."""
+    body: dict = {"filename": filename, "top_k": top_k}
+    if chunk_top_k is not None:
+        body["chunk_top_k"] = chunk_top_k
+    return await _post_json("/similar", body, base_url=base_url)
+
+
+async def pdf_locate(filename: str, quote: str, hint_page: int | None = None, *,
+                     base_url: str | None = None) -> dict:
+    """Find the page a quote sits on (POST /pdf_locate) → {"page", "rects", ...}.
+
+    ``page`` is None when the passage could not be located (scanned page, mangled
+    text) — that is a miss, not an error.
+    """
+    body: dict = {"filename": filename, "quote": quote}
+    if hint_page is not None:
+        body["hint_page"] = hint_page
+    return await _post_json("/pdf_locate", body, base_url=base_url)
+
+
+async def graph_overview(*, base_url: str | None = None) -> dict:
+    """Knowledge-graph size and top entity types (GET /graph/overview)."""
+    return await _get_json("/graph/overview", base_url=base_url)
+
+
+async def graph_entities(q: str | None = None, *, entity_type: str | None = None,
+                         file: str | None = None, limit: int = 50, offset: int = 0,
+                         base_url: str | None = None) -> dict:
+    """Search/browse KG entities (GET /graph/entities)."""
+    return await _get_json(
+        "/graph/entities",
+        {"q": q, "type": entity_type, "file": file, "limit": limit, "offset": offset},
+        base_url=base_url,
+    )
+
+
+async def graph_entity(name: str, *, base_url: str | None = None) -> dict:
+    """One entity's card: description, connections, source papers (GET /graph/entity)."""
+    return await _get_json("/graph/entity", {"name": name}, base_url=base_url)
+
+
+async def trends(*, base_url: str | None = None) -> dict:
+    """Corpus-wide publication trends (GET /trends)."""
+    return await _get_json("/trends", base_url=base_url)
+
+
+async def trend_detail(dim: str, term: str, *, base_url: str | None = None) -> dict:
+    """One term's trend neighbourhood and owners (GET /trend_detail)."""
+    return await _get_json("/trend_detail", {"dim": dim, "term": term},
+                           base_url=base_url)
+
+
+async def papers_index(*, base_url: str | None = None) -> list[list]:
+    """Every paper as a compact ``[filename, title, first_author_family, year]`` row
+    (GET /papers_index) — the corpus-wide lookup used for filename suggestions."""
+    payload = await _get_json("/papers_index", base_url=base_url)
+    return payload.get("papers") or []

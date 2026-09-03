@@ -146,7 +146,7 @@ Register the MCP server so an agent (Claude Code, Claude Desktop, …) can query
 claude mcp add --scope user aprag --env APRAG_QUERY_URL=http://<host>:8001 -- aprag-mcp
 ```
 
-It exposes two tools: `aprag_query(question, mode)` → synthesized answer, and `aprag_retrieve(question, mode, …)` → raw chunks. Full setup (Tailscale, etc.): see [docs/APRAG_ACCESS.md](docs/APRAG_ACCESS.md) and [aprag/README.md](aprag/README.md).
+It exposes nine tools: `aprag_query` (synthesized answer), `aprag_search` (ranked papers), `aprag_retrieve` (raw chunks), `aprag_corpus` (what the metadata filters accept, plus corpus stats/health), `aprag_papers` (browse the manifest), `aprag_similar` (more like this), `aprag_locate` (which PDF page a quote is on), `aprag_graph` (knowledge-graph entities) and `aprag_trends` (publication trends). Full setup (Tailscale, etc.): see [docs/APRAG_ACCESS.md](docs/APRAG_ACCESS.md) and [aprag/README.md](aprag/README.md).
 
 ### Run the serving stack (on the PC)
 
