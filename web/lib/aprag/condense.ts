@@ -27,7 +27,12 @@ const EXTRACT_SYSTEM =
   'explicitly names it: "Caplan papers" -> authors:["Caplan"]; "in Cognition" -> ' +
   'journals:["Cognition"]; "from Alberta" / "at MIT" -> affiliations:["Alberta"]/["MIT"]; ' +
   '"since 2020" -> year_from:2020; "before 2015" -> year_to:2014; "in 2025 and 2026" -> ' +
-  'years:[2025,2026]. Correct obvious ' +
+  'years:[2025,2026]. A CITATION naming a specific paper is an explicit author-AND-year ' +
+  'filter — always extract BOTH parts: "Chen et al. 2014" / "Chen et al. (2014)" / ' +
+  '"the Chen 2014 paper" -> authors:["Chen"], years:[2014]; "Smith & Jones (2019)" -> ' +
+  'authors:["Smith","Jones"], years:[2019]. NEVER take a citation\'s year without its ' +
+  'surname(s): a year on its own cannot reach the paper, and it narrows the search to ' +
+  'every OTHER paper of that year. Correct obvious ' +
   'misspellings of journal/affiliation names to the intended name. Do NOT extract topics, ' +
   "subjects, or keywords as filters. Do NOT infer filters from vague wording ('recent', " +
   "'classic'). " +
@@ -108,6 +113,67 @@ function asInts(v: unknown): number[] | undefined {
   return out.length > 0 ? Array.from(new Set(out)).sort((a, b) => a - b) : undefined;
 }
 
+// ── Citation backstop ────────────────────────────────────────────────────────
+// "Chen et al. 2014" is the commonest way an academic names one paper, and the router
+// LLM is not reliable on it: over 20 runs of one such question it returned the author
+// once, and a bare years:[2014] thirteen times. A year without its author is worse than
+// no filter at all — it cannot reach the paper, and it concentrates retrieval on every
+// OTHER paper of that year, which is how a question about Chen et al. (2014) came back
+// answered from a different 2014 paper. So the citation is ALSO read deterministically
+// here and unioned into whatever the LLM returned, and validateInferredFilters drops a
+// year that is left stranded without its author.
+
+/** A surname inside a citation: capitalised, at least three letters. */
+const SURNAME = String.raw`\p{Lu}[\p{L}'’-]{2,}`;
+
+/** "Chen et al. 2014" · "Chen et al., (2014)" · "Smith & Jones 2019" · "Yanitski (2026)" */
+const CITATION_RE = new RegExp(
+  String.raw`\b(${SURNAME})` + // first surname
+    String.raw`(?:\s*,?\s*(?:&|and)\s*(${SURNAME}))?` + // optional second
+    String.raw`(?:\s*,?\s*\bet\s+al\b\.?)?` + // optional "et al."
+    String.raw`\s*,?\s*\(?\b((?:19|20)\d{2})[a-z]?\)?`, // 2014 · 2014b · (2014)
+  "gu"
+);
+
+// Capitalised words that routinely sit in front of a year without being anyone's name.
+// A false positive is cheap (an author that isn't in the corpus is dropped by
+// validateInferredFilters) but these are common enough to be worth excluding outright.
+const NOT_A_SURNAME = new Set(
+  (
+    "since in from before after during between until through by around about circa " +
+    "the and or but for with published written released revised updated version " +
+    "edition volume vol issue chapter section page figure fig table experiment " +
+    "study studies report survey review year years spring summer autumn fall winter " +
+    "january february march april may june july august september october november " +
+    "december what when why how who which where was were data corpus"
+  ).split(" ")
+);
+
+/** The author surnames and years named by citations in a message. */
+export function citationsIn(text: string): {
+  authors: string[];
+  years: number[];
+} {
+  const authors: string[] = [];
+  const years: number[] = [];
+  for (const m of (text ?? "").matchAll(CITATION_RE)) {
+    const names = [m[1], m[2]].filter((n): n is string => Boolean(n));
+    if (names.some((n) => NOT_A_SURNAME.has(n.toLowerCase()))) {
+      continue;
+    }
+    const year = Number.parseInt(m[3], 10);
+    for (const n of names) {
+      if (!authors.includes(n)) {
+        authors.push(n);
+      }
+    }
+    if (!years.includes(year)) {
+      years.push(year);
+    }
+  }
+  return { authors, years };
+}
+
 // One cheap gpt-5.4-mini call: standalone retrieval query + a second-pass extraction of
 // explicit metadata filters (validated against the corpus). Always returns something
 // usable — on any error it falls back to the raw question with no filters.
@@ -159,10 +225,20 @@ export async function condenseAndExtract(
         raw[k] = v;
       }
     }
+    // Union in the citation the message names outright, so an author the router missed
+    // is still applied and one it found is never lost.
+    const cited = citationsIn(question);
+    if (cited.authors.length > 0) {
+      raw.authors = Array.from(new Set([...(raw.authors ?? []), ...cited.authors]));
+      raw.years = Array.from(
+        new Set([...(raw.years ?? []), ...cited.years])
+      ).sort((a, b) => a - b);
+    }
+
     const mode = CONCRETE_RETRIEVAL_MODES.find((m) => m === obj.mode);
     return {
       query,
-      filters: await validateInferredFilters(raw),
+      filters: await validateInferredFilters(raw, cited.years),
       mode,
       hlKeywords: asStrings(obj.high_level_keywords),
       llKeywords: asStrings(obj.low_level_keywords),
@@ -176,9 +252,12 @@ export async function condenseAndExtract(
 
 // Keep only inferred name-filters that actually exist in the corpus, so a near-miss or
 // hallucination broadens to semantic search instead of returning nothing. Years pass
-// through. Best-effort: if facets are unavailable, the filters are applied as-is.
+// through, EXCEPT a year that came from a citation and lost its author to that check —
+// see the stranded-year rule at the bottom. Best-effort: if facets are unavailable, the
+// filters are applied as-is.
 export async function validateInferredFilters(
-  f: RagFilters
+  f: RagFilters,
+  citationYears: number[] = []
 ): Promise<RagFilters> {
   const out: RagFilters = {};
   if (f.years?.length) {
@@ -210,6 +289,41 @@ export async function validateInferredFilters(
     if (kept.length > 0) {
       out[k] = kept;
     }
+  }
+  return dropStrandedCitationYear(out, citationYears);
+}
+
+/**
+ * Drop a year filter that came from a citation but has no surviving name filter beside
+ * it — the surname was never extracted, or it was and the corpus doesn't have it.
+ *
+ * Such a filter is strictly harmful: it cannot reach the paper the citation names, and
+ * it restricts retrieval to every OTHER paper of that year, which for a methods question
+ * is precisely the pool most likely to answer it convincingly and wrongly. Searching the
+ * whole corpus instead at least ranks the named author's own work highly.
+ *
+ * Only a citation's own year is dropped. A standalone date restriction ("papers from
+ * 2014", "since 2020") never reaches here, and an explicit range is left alone.
+ */
+function dropStrandedCitationYear(
+  out: RagFilters,
+  citationYears: number[]
+): RagFilters {
+  const hasYear = (out.years?.length ?? 0) > 0 || out.year != null;
+  const hasName = EXTRACT_LIST_KEYS.some((k) => (out[k]?.length ?? 0) > 0);
+  const fromCitation =
+    citationYears.length > 0 &&
+    (out.years ?? []).every((y) => citationYears.includes(y)) &&
+    (out.year == null || citationYears.includes(out.year));
+  if (
+    hasYear &&
+    !hasName &&
+    fromCitation &&
+    out.year_from == null &&
+    out.year_to == null
+  ) {
+    const { year: _year, years: _years, ...rest } = out;
+    return rest;
   }
   return out;
 }
