@@ -59,7 +59,7 @@ def test_resolve_none_when_no_filters():
 
 def test_filter_by_author_surname():
     assert s.resolve_filter({"authors": ["Westbury"]}, MANIFEST) == {"Westbury_Hollis_2019.pdf"}
-    # case-insensitive substring; matches a co-author too
+    # case-insensitive; matches a co-author too
     assert s.resolve_filter({"authors": ["hollis"]}, MANIFEST) == {"Westbury_Hollis_2019.pdf"}
 
 
@@ -116,6 +116,58 @@ def test_specific_person_needs_a_matching_surname():
     assert s.resolve_filter({"authors": ["estbury"]}, MANIFEST) == {
         "Westbury_Hollis_2019.pdf"}
     assert s.resolve_filter({"authors": ["estbury, Chris"]}, MANIFEST) == set()
+
+
+SURNAME_NEIGHBOURS = {
+    "Chen_Etal_2014b.pdf": {
+        "authors": [{"family": "Chen", "given": "Y. Y."},
+                    {"family": "Caplan", "given": "J. B."}], "year": "2014",
+    },
+    "Hesse_Schenk_2014.pdf": {
+        "authors": [{"family": "Hesse", "given": "C."},
+                    {"family": "Schenk", "given": "T."}], "year": "2014",
+    },
+    "Han_Etal_2014.pdf": {
+        "authors": [{"family": "Han", "given": "C."},
+                    {"family": "Cheng", "given": "S."}], "year": "2014",
+    },
+}
+
+
+def test_bare_surname_is_exact_not_substring():
+    """A known surname must not drag in the surnames that merely contain it — "Chen"
+    claiming S-chen-k and Chen-g is what made a question about one paper retrieve a
+    pool of unrelated same-year ones."""
+    assert s.resolve_filter({"authors": ["Chen"]}, SURNAME_NEIGHBOURS) == {
+        "Chen_Etal_2014b.pdf"}
+    assert s.resolve_filter({"authors": ["Chen"], "years": [2014]},
+                            SURNAME_NEIGHBOURS) == {"Chen_Etal_2014b.pdf"}
+    # the surnames that used to be swept up are still reachable on their own
+    assert s.resolve_filter({"authors": ["Schenk"]}, SURNAME_NEIGHBOURS) == {
+        "Hesse_Schenk_2014.pdf"}
+    assert s.resolve_filter({"authors": ["Cheng"]}, SURNAME_NEIGHBOURS) == {
+        "Han_Etal_2014.pdf"}
+
+
+def test_substring_fallback_is_per_term():
+    """An unknown spelling still broadens to substring, but only that term — a known
+    surname alongside it stays exact."""
+    # "hen" matches nothing exactly, so it falls back and claims all three
+    assert s.resolve_filter({"authors": ["hen"]}, SURNAME_NEIGHBOURS) == set(
+        SURNAME_NEIGHBOURS)
+    # "Chen" is known so it stays exact; "esse" is not so it broadens — union of both
+    assert s.resolve_filter({"authors": ["Chen", "esse"]}, SURNAME_NEIGHBOURS) == {
+        "Chen_Etal_2014b.pdf", "Hesse_Schenk_2014.pdf"}
+
+
+def test_loose_author_terms():
+    assert s.loose_author_terms({"authors": ["Chen"]}, SURNAME_NEIGHBOURS) == frozenset()
+    assert s.loose_author_terms({"authors": ["hen"]}, SURNAME_NEIGHBOURS) == {"hen"}
+    assert s.loose_author_terms({"authors": ["Chen", "hen"]},
+                                SURNAME_NEIGHBOURS) == {"hen"}
+    # "Family, Given" never uses substring matching, so it is never a loose term
+    assert s.loose_author_terms({"authors": ["hen, Y."]}, SURNAME_NEIGHBOURS) == frozenset()
+    assert s.loose_author_terms({}, SURNAME_NEIGHBOURS) == frozenset()
 
 
 def test_given_name_helpers():

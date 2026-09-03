@@ -57,6 +57,14 @@ def _any_substr(needles: list[str], haystacks: list[str]) -> bool:
 # since a surname alone can't tell two Zhangs apart). Given names are compared on their
 # normalised prefix in both directions, so picking "Zhang, Kechen" still matches records
 # that only recorded the initial ("Zhang, K.") and vice versa.
+#
+# A bare surname matches EXACTLY by default. It used to match as a substring, which
+# quietly widened every such filter: authors:["Chen"] also claimed S-chen-k and Chen-g,
+# so a question naming one paper retrieved a pool of unrelated ones. Substring matching
+# is still available, but only for a surname that matches nothing exactly anywhere in
+# the corpus — that is the case it was really for (a partial or variant spelling like
+# "estbury", or "Muller" for "Müller"). ``loose_author_terms`` makes that call per term,
+# against the manifest; callers thread the result through as ``loose_authors``.
 
 
 def _norm_given(given: str) -> str:
@@ -99,12 +107,19 @@ def parse_author_filter(value: str) -> tuple[str, str]:
     return family.strip().lower(), given.strip().lower()
 
 
-def author_matches(family: str, given: str, people: list[tuple[str, str]]) -> bool:
-    """Does one parsed author filter match any of a record's ``(family, given)`` names?"""
+def author_matches(family: str, given: str, people: list[tuple[str, str]],
+                   loose: bool = False) -> bool:
+    """Does one parsed author filter match any of a record's ``(family, given)`` names?
+
+    A bare surname matches the family name exactly unless ``loose``, which relaxes it to
+    a substring (see ``loose_author_terms`` for when that is granted).
+    """
     if not family:
         return False
     if not given:
-        return any(family in fam for fam, _ in people if fam)   # bare surname: substring
+        if loose:
+            return any(family in fam for fam, _ in people if fam)
+        return any(family == fam for fam, _ in people if fam)
     return any(fam == family and given_matches(given, giv) for fam, giv in people)
 
 
@@ -112,6 +127,28 @@ def record_people(record: dict) -> list[tuple[str, str]]:
     """A record's authors + editors as lower-cased ``(family, given)`` pairs."""
     return [((a.get("family") or "").strip().lower(), (a.get("given") or "").strip())
             for a in (record.get("authors") or []) + (record.get("editors") or [])]
+
+
+def loose_author_terms(filters: dict | None, manifest: dict) -> frozenset[str]:
+    """The bare surnames in ``filters`` that match NO family name in the corpus exactly.
+
+    Only those get substring matching — an exactly-known surname stays exact, so
+    ``authors:["Chen"]`` cannot drag in Schenk or Cheng. Decided per term, so one
+    unknown spelling in a multi-author filter does not loosen the others. One pass over
+    the manifest, and only when a bare-surname filter is actually present.
+    """
+    terms = {fam for fam, giv in map(parse_author_filter, _lc_list((filters or {}).get("authors")))
+             if fam and not giv}
+    if not terms:
+        return frozenset()
+    for rec in (manifest or {}).values():
+        if not isinstance(rec, dict):
+            continue
+        for fam, _ in record_people(rec):
+            terms.discard(fam)
+        if not terms:
+            return frozenset()
+    return frozenset(terms)
 
 
 def _record_year(record: dict) -> int | None:
@@ -169,11 +206,14 @@ def _paper_stem(name: str) -> str:
     return n[:-4] if n.endswith(".pdf") else n
 
 
-def record_matches(record: dict, filters: dict, filename: str = "") -> bool:
+def record_matches(record: dict, filters: dict, filename: str = "",
+                   loose_authors: frozenset[str] = frozenset()) -> bool:
     """True if a manifest record satisfies every specified filter dimension.
 
     ``filename`` is the record's manifest key — needed only by the ``papers`` filter
     (specific papers pinned by filename, ".pdf" optional, case-insensitive exact match).
+    ``loose_authors`` is the corpus-wide verdict from ``loose_author_terms``: the bare
+    surnames that may fall back to substring matching.
     """
     papers = _lc_list(filters.get("papers"))
     if papers:
@@ -183,7 +223,7 @@ def record_matches(record: dict, filters: dict, filename: str = "") -> bool:
     authors = _lc_list(filters.get("authors"))
     if authors:
         people = record_people(record)
-        if not any(author_matches(fam, giv, people)
+        if not any(author_matches(fam, giv, people, loose=fam in loose_authors)
                    for fam, giv in map(parse_author_filter, authors)):
             return False
 
@@ -235,9 +275,12 @@ def resolve_filter(filters: dict | None, manifest: dict) -> set[str] | None:
     """
     if not has_filters(filters):
         return None
+    manifest = manifest or {}
+    loose = loose_author_terms(filters, manifest)
     return {
-        fn for fn, rec in (manifest or {}).items()
-        if isinstance(rec, dict) and record_matches(rec, filters, filename=fn)
+        fn for fn, rec in manifest.items()
+        if isinstance(rec, dict) and record_matches(rec, filters, filename=fn,
+                                                    loose_authors=loose)
     }
 
 
@@ -384,6 +427,7 @@ def list_papers(manifest: dict, filters: dict | None = None, q: str | None = Non
     if sort not in LIST_SORT_KEYS:
         sort = "year"
     active_filters = filters if has_filters(filters) else None
+    loose = loose_author_terms(active_filters, manifest) if active_filters else frozenset()
     needle = (q or "").strip()
 
     present: list[tuple] = []   # (sort_value, filename, record)
@@ -391,7 +435,8 @@ def list_papers(manifest: dict, filters: dict | None = None, q: str | None = Non
     for fn, rec in (manifest or {}).items():
         if not isinstance(rec, dict):
             continue
-        if active_filters and not record_matches(rec, active_filters, filename=fn):
+        if active_filters and not record_matches(rec, active_filters, filename=fn,
+                                                 loose_authors=loose):
             continue
         if needle and not quick_match(fn, rec, needle):
             continue
