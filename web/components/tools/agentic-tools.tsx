@@ -246,7 +246,7 @@ export function AgenticTools() {
    │   ├── Qdrant vector DB          (4096-dim chunk embeddings)  │
    │   ├── local embedding model     (query + chunk vectors)      │
    │   ├── papers_metadata.json      (APA7 records, filters)      │
-   │   └── gpt-5-mini                (answer synthesis only)      │
+   │   └── gpt-5.6-luna, Fast tier   (answer synthesis only)      │
    └──────────────────────────────────────────────────────────────┘`}</Code>
           <P>
             The split matters for how you use it. Retrieval — vector search,
@@ -521,7 +521,7 @@ claude mcp list      # expect: aprag: aprag-mcp - ✔ Connected`}</Code>
             <div>
               <Row name="aprag_query" note="question, mode, reasoning">
                 A finished, written answer with APA7 in-text citations and a
-                references list. The server retrieves, gpt-5-mini synthesizes,
+                references list. The server retrieves, gpt-5.6-luna synthesizes,
                 and the citations are rewritten from the bibliographic manifest.
                 Raise <C>reasoning</C> (<C>none</C> to <C>xhigh</C>) for hard
                 questions at the cost of latency. Use it when you want the
@@ -831,7 +831,7 @@ aprag ask "word frequency effects" --json | jq -r '.references[].apa'`}</Code>
               and, in graph modes, graph traversal produce a candidate set that
               is reranked down to <C>chunk_top_k</C> chunks. <C>/retrieve</C>{" "}
               stops there and hands them back. <C>/query</C> passes them to
-              gpt-5-mini, which writes an answer with numeric citations; the
+              gpt-5.6-luna, which writes an answer with numeric citations; the
               server then rewrites every <C>[n]</C> into an APA7 in-text
               citation and rebuilds the reference list from{" "}
               <C>papers_metadata.json</C> — a per-paper bibliographic record
