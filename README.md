@@ -1,313 +1,329 @@
-# AP-RAG — Academic Paper Retrieval-Augmented Generation
+# AP-RAG
 
-**The problem.** The biggest roadblock to letting AI agents do real research is hallucination. When a model lacks the full context of a research area, it does not stop — it produces a plausible, confident, wrong answer. The obvious fix is to give it the literature, but that is impossible: a research area is thousands of papers and a context window holds a fraction of one of them.
+AP-RAG is a retrieval-augmented generation system for scientific papers. Retrieval-augmented generation (RAG) refers to fetching the specific text a question needs and handing it to a language model at the moment it answers, rather than relying on what the model absorbed during training.
 
-**The fix.** Retrieval-augmented generation over the papers themselves. AP-RAG turns a library of scientific PDFs into an index an agent can search rather than memorize, and hands back the small number of passages that actually bear on the question — with the paper, the page, and the citation attached, so every claim can be checked against the source it came from.
+## The problem it solves
 
-The live instance indexes **~10,300 papers → 445,394 passages → ~3.6M knowledge-graph entities and ~8.1M relationships**, spanning 1818–2026 across cognitive science, psycholinguistics, neuroscience, and (increasingly) NLP and LLM research.
+A large language model (LLM) that lacks the full context of a research area does not fall silent. It produces a plausible guess, which in a research setting is a hallucination that reads like a finding. This is the main obstacle to letting an AI agent carry out research on its own.
 
-There are two ways to use it, and they are the two halves of this README:
+The obvious remedy is to give the model the literature, and it does not work. A research area runs to thousands of papers, one paper runs to tens of thousands of tokens, and a context window holds a small fraction of a single collection.
 
-| | For | Where it runs |
-|---|---|---|
-| **[The app](#1-the-app)** | People. Chat, digests, trends, a paper browser, a 3D map of the corpus. | Web at [aprag.devon7y.com](https://aprag.devon7y.com), plus native macOS and Windows apps. |
-| **[The agentic tools](#2-the-agentic-tools)** | Agents and terminals. An MCP server with nine tools, and a CLI. | Your machine — a thin client, no models, no data. |
+AP-RAG makes a literature searchable instead of memorized. You point it at a folder of PDFs and it builds an index over them. A person or an agent then asks a question, and the system returns the few chunks that bear on it, where a chunk is one contiguous passage of one paper. Every chunk arrives with its paper, its page and its citation, so any claim built on it can be traced back to the source.
 
-Both sit on the same HTTP API and answer from the identical index.
+The index is reached two ways. [The application](#the-application) is for people. It provides a chat interface, a paper browser, trend and digest tools, and a three-dimensional map of the corpus, running in a browser or as a native macOS or Windows build. [The agentic tools](#the-agentic-tools) are for machines. They provide a Model Context Protocol (MCP) server that hands an agent nine research tools, and a command-line interface (CLI) for terminals and scripts. Both call the same HTTP application programming interface (API) and read the same index.
+
+The screenshots throughout come from a running deployment.
 
 ![The AP-RAG chat interface](docs/images/chat_interface.png)
 
 ---
 
-## 1. The app
+## The application
 
-A full research interface over the corpus, shipped as a Next.js web app and wrapped as a native desktop app. Everything below is one product: the sidebar tools, the 3D atlas and the chat share one paper database, one retrieval server, and one citation format.
+The application is a Next.js web app, wrapped unchanged as a desktop app for macOS and Windows. The chat, the sidebar tools and the atlas all read one paper database, call one retrieval server, and use one citation format.
 
-### Chat, with the citation wired to the page
+### Chat
 
-Ask a question and get a synthesized answer with **APA7 in-text citations** and a reference list. The citations are not decoration: click one and the PDF opens in an in-app reader, scrolled to the page the passage came from, with the retrieved passage highlighted. Verifying a claim is one click, which is the whole point — the answer is an index into the literature, not a replacement for it.
+A question goes to the server, which retrieves the relevant chunks, and an answer model writes a response with APA 7 in-text citations and a reference list. Clicking a citation opens that paper in a reader inside the app, at the page the chunk came from, with the chunk highlighted. Checking a claim therefore takes one click. The answer is an index into the literature rather than a replacement for reading it.
 
 ![An answer with the cited paper open at the cited passage](docs/images/chat_interface_paper.png)
 
-- **Retrieval mode** per message — `auto` (the model picks), `hybrid`, `local`, `global`, `mix`, `naive` (see [Retrieval modes](#retrieval-modes)).
-- **Reasoning effort** per message, from none to `xhigh`.
-- **Metadata filters** — papers, authors, journals, subjects, keywords, affiliations, year and date ranges. A filtered question genuinely searches only that subset.
-- **Chunk mode** shows the raw retrieved passages as cards instead of an answer.
-- **Upload papers** that are *not* in the database (a preprint, a manuscript under review) and discuss them alongside the corpus; they are cited in the same numbered reference list and open in the same reader.
-- Multi-turn, with follow-up questions condensed into standalone retrieval queries, and shareable chats.
+Each message carries its own settings:
 
-Answers are synthesized by **gpt-5.6-luna**; retrieval comes from the AP-RAG server.
+- **Retrieval mode.** Auto lets the answer model choose the method. The five concrete modes are described under [Retrieval modes](#retrieval-modes).
+- **Reasoning effort**, from none to xhigh.
+- **Metadata filters** on papers, authors, journals, subjects, keywords, affiliations, years and date ranges. A filtered question retrieves only from the papers that match.
+- **Chunk mode**, which returns the retrieved chunks as cards instead of a written answer.
+- **Attached papers.** A PDF that is not in the database, such as a preprint or a manuscript under review, can be attached to a chat and discussed alongside the indexed corpus. It is cited in the same numbered reference list and opens in the same reader.
+
+Conversation is multi-turn. Before retrieval runs, a follow-up question is condensed into a standalone query, so a question like "how does that relate to the second experiment" retrieves on what it actually refers to.
 
 ### Research Digest
 
-Give it a topic and a time window and it writes a chronologically sectioned review of what the corpus contains in that window — month by month or year by year, every claim cited. It is a literature review of a slice of the library, and the chat continues normally afterwards.
+A digest takes a topic and a time window and returns a chronologically sectioned account of what the corpus holds in that window, month by month or year by year, with every claim cited. The chat continues normally afterwards, so the digest can be questioned rather than only read.
 
-![A research digest sectioned by month, every claim cited](docs/images/research_digest.png)
+![A research digest, sectioned by month, with every claim cited](docs/images/research_digest.png)
 
 ### Research Trends
 
-What the library has published on, over two centuries. Corpus output per year, and per-term trend lines across **subjects, keywords, regions, journals, authors, affiliations and publication types**, with first/peak/median year and trend slope per term. Because a lab library is not a census of the literature, comparisons default to each term's **share of that year's collected papers**, and where OpenAlex has a matching concept the world-wide curve can be overlaid. Any trend can be handed straight to a Research Digest.
+Trends reports what the corpus contains and when it was published. The first panel is output per year. The second compares terms along one of seven dimensions: subjects, keywords, regions, journals, authors, affiliations and publication type. Each term reports its first year, peak year, median year, paper count and trend slope.
 
-![Research Trends: corpus output per year and comparative topic trends](docs/images/research_trends.png)
+A library is not a census of the literature. Collection rates rise and fall for reasons that have nothing to do with a field, so raw counts mislead. Comparisons therefore default to each term's share of that year's collected papers. Where OpenAlex holds a matching concept, the world-wide curve can be drawn over the local one. Any trend can be handed straight to a Research Digest.
+
+![Research Trends, showing output per year and comparative topic curves](docs/images/research_trends.png)
 
 ### Talk to Author
 
-Ask a researcher about their own work. Retrieval is locked to the papers that author wrote, the answer is written in the first person, and passages are tagged by authorship position so a paper they led is spoken of differently from one they joined. Every statement still carries a normal citation, and asking about something they never published gets you a plain "I didn't work on that" rather than an invention.
+An author persona answers questions about one researcher's own work. Four properties define it.
 
-![Talk to Author: browse 5,480 authors and question them about their own papers](docs/images/talk_to_author.png)
+First, retrieval is restricted to papers that author wrote, whether they led the work or joined it, so nothing from anyone else's papers reaches the answer. Second, the answer is written in the first person, in the vocabulary of that author's own retrieved text. Third, each retrieved chunk is tagged with the author's position on that paper, so work they led is described differently from work they contributed to, and credit is not overstated. Fourth, every statement carries the same numbered citation a normal answer would, so the reader can open the page behind it.
+
+Asking about something the author never published returns a plain statement to that effect rather than an answer drawn from general knowledge.
+
+![Talk to Author, listing authors with their paper and passage counts](docs/images/talk_to_author.png)
 
 ### Papers Database
 
-The whole library as a sortable, filterable table: title, authors, year, journal, keywords, subjects, DOI, abstract, affiliations. Free-text search over the metadata, or press Enter for **semantic search** across the corpus. Every row opens the paper, finds similar papers, or exports.
+The corpus as a table: title, authors, year, journal, keywords, subjects, abstract, DOI and affiliations, sortable and filterable on each column. Typing searches the metadata, and pressing Enter runs a semantic search over the indexed chunks instead. A row opens the paper, lists its nearest neighbours, or exports.
 
-![The Papers Database: 10,307 papers as a filterable table](docs/images/papers_database.png)
+![The Papers Database as a sortable, filterable table](docs/images/papers_database.png)
 
 ### Papers Atlas
 
-The corpus as a place. Every passage of every paper is embedded and laid out in 3D, so distance means similarity of meaning, and the same data is shown two ways — a **landscape**, where mountains rise where many papers crowd onto the same ground and empty areas are genuinely unexplored, and a **galaxy**, the raw semantic space with knowledge-graph entities as spiked stars and constellation lines joining an entity's passages. Region names are not hand-written; they come from the corpus itself, the paper or graph concept that dominates each summit.
+The atlas lays the whole corpus out in three dimensions. Every chunk of every paper is embedded, and the embeddings are projected so that distance means similarity of meaning. The same data is shown two ways.
+
+The landscape view reads as terrain. Height counts papers, so a mountain is ground that many papers crowd onto and a flat empty region is ground nobody has covered. Colour is publication year.
 
 ![Papers Atlas, landscape view](docs/images/papers_atlas_landscape.jpg)
 
+The galaxy view shows the raw semantic space. Small stars are chunks, and a brighter star has more connections in the knowledge graph. The spiked stars are knowledge-graph entities, placed at the centre of the chunks that mention them. Constellation lines join one entity's chunks, and a fainter web joins entities the graph relates.
+
 ![Papers Atlas, galaxy view](docs/images/papers_atlas_galaxy.jpg)
 
-Colour is publication year on both views, so you can watch where the field moved. **Lenses** filter the world by metadata — matching papers pulse gold, the rest steps back — and an author lens draws their gold trail through the map in publication order, from first paper to last.
+Region names are taken from the corpus rather than written by hand. Each summit is named for the paper or graph concept that dominates it.
+
+A lens filters the world by metadata. Matching papers pulse gold and everything else steps back. An author lens draws that author's trail through the map in publication order, from first paper to last.
 
 ![Papers Atlas with an author lens applied](docs/images/papers_atlas_author.jpg)
 
-The search bar takes plain queries, `@author` / `journal:` / `kw:` / `year:1990..2005` shortcuts, or a question ending in `?` to ask the corpus from inside the world.
+The search bar accepts plain queries, the shortcuts `@name`, `journal:`, `kw:` and `year:1990..2005`, and a question ending in a question mark, which asks the corpus from inside the world.
 
 ### Knowledge Graph
 
-The entity graph built while reading the papers, browsable directly: search entities by name, type or source paper, then open one for its consolidated description, its strongest connections, and the papers it was extracted from. A concept that showed up in an answer becomes a reading list.
+The knowledge graph is built while the papers are being read. It holds entities such as concepts, methods, theories and findings, together with the relationships between them. The browser searches entities by name, by type, or by the paper they came from. An entity page gives its consolidated description, its strongest connections, and the papers it was extracted from, which turns a concept that appeared in an answer into a reading list.
 
-### Add papers
+### Adding papers
 
-Drop PDFs on `/papers/add` (or run `aprag add`) and they are ingested into the live corpus one at a time, without waiting for the next cluster run: dedup → bibliographic record → chunking → contextualization → entity extraction → embeddings → the live vector, graph and metadata stores → atlas placement. Each paper reports the stage it is in, and it is searchable in chat, the database and the atlas within minutes. It uses the **same models as the batch pipeline**, so nothing drifts.
+A PDF can be added to a live index without waiting for a batch run. The server deduplicates it, builds its bibliographic record, files the PDF, chunks and contextualizes it, extracts its entities, embeds the chunks, writes them to the vector, graph and metadata stores, and places the paper in the atlas. Each paper reports the stage it is in, because ingest takes minutes per paper and a spinner cannot be told apart from a hung job. The paper is then searchable in chat, in the database and in the atlas.
 
-### The desktop apps (macOS & Windows)
+Incremental ingest uses the same models as the batch pipeline, so the vectors it writes are interchangeable with the ones already stored.
 
-The same app as a real dock/taskbar application — `.dmg` for macOS (Apple silicon and Intel), one-click `.exe` for Windows. It is a thin Electron shell around the deployed site, so it stays current with every deploy and holds no data of its own. What it adds over a browser tab: persistent window state and a native title bar, in-app navigation limited to the app (paper links open in your browser), bundled Chromium so the Atlas's WebGPU scene runs on the engine it was built against, offline and crash handling, and **login autofill backed by the OS keystore** (macOS Keychain / Windows DPAPI, behind Touch ID where available) — Chromium cannot reach iCloud Keychain, so the shell provides the equivalent itself.
+### Desktop apps for macOS and Windows
+
+The desktop build is the same application in a dock or taskbar window: a `.dmg` for macOS on Apple silicon and Intel, and a one-click `.exe` for Windows. It is a thin Electron shell around the deployed site, so it tracks every deployment and holds no data of its own.
+
+Four things distinguish it from a browser tab. Window size and position persist, and on macOS the native title bar is hidden so the site's own header serves as the drag area. Navigation is restricted to the application, and every other link opens in the default browser. Chromium is bundled, so the atlas runs on the same graphics engine it was built against on both platforms. Login autofill is backed by the operating system keystore, using the macOS Keychain or Windows Data Protection API and a Touch ID prompt where available, because Chromium cannot reach iCloud Keychain.
 
 ```bash
 cd desktop && npm install
-npm start          # dev, against production
-npm run dist       # .dmg + .exe into desktop/dist/
+npm start          # run against the deployed site
+npm run dist       # build the .dmg and the .exe into desktop/dist/
 ```
 
-Releases are built by CI on a `desktop-v*` tag. Build, signing and distribution notes: [desktop/README.md](desktop/README.md).
+Continuous integration builds both installers from a `desktop-v*` tag. Build, signing and distribution notes are in [desktop/README.md](desktop/README.md).
 
 ---
 
-## 2. The agentic tools
+## The agentic tools
 
-The app is one client of the AP-RAG API. The other is a small Python package that puts the same corpus inside an agent or a terminal:
+The application is one client of the AP-RAG API. The other is a Python package that puts the same corpus inside an agent or a terminal.
 
-- **`aprag-mcp`** — an MCP server, so Claude Code, Codex, Cursor, Gemini CLI or anything MCP-capable can research the corpus on its own initiative.
-- **`aprag`** — a CLI, for one-off questions and scripts.
+- **`aprag-mcp`** is an MCP server. An agent such as Claude Code, Codex, Cursor or Gemini CLI picks up nine research tools and decides for itself when to retrieve, what to retrieve, and when it has enough.
+- **`aprag`** is a CLI, for one question at a time and for scripts.
 
-Neither runs a model or stores a paper. The expensive parts — knowledge graph, vector index, embedding model, answer LLM — stay on the server.
+Neither runs a model or stores a paper. The knowledge graph, the vector index, the embedding model and the answer model all stay on the server.
 
 ```
 your machine
 └── aprag package
-    ├── aprag       (CLI — you type)          ─┐
-    └── aprag-mcp   (MCP server — agent calls)─┤
-                                               │  HTTPS + X-API-Key
-                                               ▼
-                                   AP-RAG query server (FastAPI)
-                                    ├── LightRAG knowledge graph (Neo4j)
-                                    ├── Qdrant vector DB (4096-dim)
-                                    ├── local embedding model
-                                    ├── papers_metadata.json (APA7 records)
-                                    └── gpt-5.6-luna (answer synthesis only)
+    ├── aprag       (CLI, you type)
+    └── aprag-mcp   (MCP server, the agent calls)
+                  │
+                  │  HTTPS with an X-API-Key header
+                  ▼
+        AP-RAG query server (FastAPI)
+         ├── LightRAG knowledge graph
+         ├── vector database of chunk embeddings
+         ├── embedding model
+         ├── bibliographic manifest (APA 7 records)
+         └── answer model (synthesis only)
 ```
 
-That split is the reason this is useful to an agent. Retrieval — vector search, graph traversal, metadata filtering, page lookup — is cheap and deterministic, so an agent can call it dozens of times in a session. Synthesis is the only step that runs an LLM on the server, and it is optional: `aprag_retrieve` hands back the raw passages and lets the agent's own model do the reasoning, which is usually what you want when the agent is already good at reading.
+That split determines how the tools are meant to be used. Retrieval is cheap and deterministic, covering vector search, graph traversal, metadata filtering and page lookup, so an agent can call it dozens of times in one session. Synthesis is the only step that runs a model on the server, and it is optional. `aprag_retrieve` returns the raw chunks and leaves the reasoning to the agent's own model, which is usually what you want when the agent is already competent at reading.
 
 ### Setup
 
 ```bash
-pipx install "git+https://github.com/devon7y/AP-RAG.git"   # puts `aprag` + `aprag-mcp` on PATH
+pipx install "git+https://github.com/devon7y/AP-RAG.git"   # installs aprag and aprag-mcp
 
-aprag config set-server https://rag-api.devon7y.com        # persists to ~/.config/aprag/config
-export APRAG_API_KEY=<your-key>                            # the server is public; every request is keyed
-aprag health                                               # retrieval_ready / manifest_papers / page_aware
+aprag config set-server https://your-aprag-server          # written to ~/.config/aprag/config
+export APRAG_API_KEY=your-key                              # required when the server sets one
+aprag health                                               # reports retrieval_ready and manifest_papers
 ```
 
-Register the MCP server with Claude Code:
+Registering the MCP server with Claude Code:
 
 ```bash
 claude mcp add --scope user aprag \
-  --env APRAG_QUERY_URL=https://rag-api.devon7y.com \
-  --env APRAG_API_KEY=<your-key> \
+  --env APRAG_QUERY_URL=https://your-aprag-server \
+  --env APRAG_API_KEY=your-key \
   -- aprag-mcp
 ```
 
-Any client that takes the standard `mcp.json` shape (Cursor, Codex, Gemini CLI) uses the same block with `"command": "aprag-mcp"` and those two env vars. **Put the key in the MCP config's `env` block, not only in your shell profile** — an MCP subprocess launched by a GUI client does not read `~/.zshrc`, and that is the most common first failure.
+Any client that reads the standard `mcp.json` shape, including Cursor, Codex and Gemini CLI, takes the same block with `"command": "aprag-mcp"` and those two environment variables.
 
-Optionally set `APRAG_PAPERS_DIR` to your paper folders (a Google Drive for Desktop mount counts) and citations resolve to clickable `file://` links on your own disk. That step runs entirely client-side; the server cannot see your filesystem.
+Two settings account for most first-run failures. The key must go in the MCP configuration's own `env` block, because a server launched by a graphical client does not read your shell profile. If the client cannot find `aprag-mcp`, run `which aprag-mcp` and give the absolute path as the command, since a graphical application inherits a minimal PATH.
+
+Setting `APRAG_PAPERS_DIR` to your own paper folders makes each citation resolve to a clickable `file://` link on your disk. A Google Drive for Desktop mount counts as a local folder. That step runs entirely on the client, as the server cannot see your filesystem.
 
 ### The nine MCP tools
 
-**Retrieval**
+Three tools retrieve, two describe what the corpus holds, and four explore it.
 
 | Tool | What it returns |
 |---|---|
-| `aprag_query` | A finished answer with APA7 in-text citations and a reference list. `reasoning` from `none` to `xhigh`. |
-| `aprag_retrieve` | The raw material — the text chunks retrieval surfaced, plus entities and relationships in graph modes. **No LLM runs.** Each chunk carries its paper, reference and PDF page. This is the multi-hop primitive. |
-| `aprag_search` | Ranked *papers* rather than an answer: semantic relevance combined with hard metadata filters, each hit an APA7 citation with a link and a snippet. |
+| `aprag_query` | A written answer with APA 7 in-text citations and a reference list. The `reasoning` argument runs from none to xhigh. |
+| `aprag_retrieve` | The chunks retrieval surfaced, plus the entities and relationships in graph modes. No model runs. Each chunk carries its paper, its reference and its PDF page. This is the multi-hop primitive. |
+| `aprag_search` | Ranked papers rather than an answer, combining semantic relevance with the metadata filters. Each result is an APA 7 citation with a link and a snippet. |
+| `aprag_corpus` | The values the filters accept, across authors, journals, subjects, keywords, affiliations and types, plus corpus statistics and server health. The author facet resolves people rather than surnames, so two authors who share a surname are distinguished by their papers, years and venues. |
+| `aprag_papers` | The corpus as a table, or one paper's full record by filename. It reads metadata only, so it still answers when the vector store is unavailable. |
+| `aprag_similar` | The papers nearest a given paper, ranked against that paper's mean chunk vector with its own chunks excluded. It grows a reading list from one known-good paper without requiring a query to be phrased. |
+| `aprag_locate` | The page of a PDF on which a quoted passage sits. A result of `page=null` means the quote could not be confirmed in that paper. |
+| `aprag_graph` | Knowledge-graph entities, found by name, type or source paper, or one entity's description, strongest connections and source papers. |
+| `aprag_trends` | Publication trends across the corpus, covering what is rising, fading, new or bursting, or one term explained through its co-occurrences and the authors and venues that published it. |
 
-**Discovery**
+`aprag_query`, `aprag_search`, `aprag_retrieve` and `aprag_papers` accept the metadata filters: `papers`, `authors`, `year`, `year_from`, `year_to`, `date_from`, `date_to`, `journals`, `subjects`, `keywords`, `affiliations` and `types`. Filters are resolved against the bibliographic manifest into a set of filenames, and retrieval then runs restricted to those files, so a filtered question searches only that subset rather than searching everything and discarding the remainder. `aprag_corpus` is how an agent finds the values the filters accept.
 
-| Tool | What it returns |
-|---|---|
-| `aprag_corpus` | What the filters actually accept — `authors`, `journals`, `subjects`, `keywords`, `affiliations`, `types`, plus `stats` and `health`. The author facet resolves *people*, not surnames, so two authors sharing a surname are told apart. |
-| `aprag_papers` | The corpus as a table, or one paper's full record by filename. Pure metadata, so it still answers when the vector store is down. |
+Four conventions hold across all nine tools, and each exists because the obvious alternative misleads a model.
 
-**Exploration**
+1. **A filter that matches nothing raises an error rather than returning an empty result.** A misspelled author name previously came back as zero papers found, which is indistinguishable from a genuine gap in the corpus, so an agent would report that a lab had never studied something. Filter values are now checked against the corpus first, and a mismatch raises with suggested spellings.
+2. **Failures raise.** An error is returned as a protocol error rather than as prose, so an outage cannot be mistaken for a finding.
+3. **Every result is both text and data.** Each call returns formatted text carrying citations for the model to read, and `structuredContent` holding the chunks, entities, references and scores for code to consume.
+4. **Every tool is read-only.** All nine are annotated `readOnlyHint` and `idempotentHint`, so an agent can call them freely and a client need not prompt for confirmation.
 
-| Tool | What it returns |
-|---|---|
-| `aprag_similar` | More like this — the corpus ranked against a paper's mean chunk vector, for growing a reading list from one known-good paper. |
-| `aprag_locate` | Which page of a PDF a quoted passage sits on. The citation-verification primitive; `page=null` means unconfirmed. |
-| `aprag_graph` | The knowledge graph: find entities by name, type or source paper, or open one entity for its description, strongest connections and source papers. |
-| `aprag_trends` | Corpus-wide publication trends — rising, fading, new, bursting — or one term explained with its co-occurrences and who published it when. |
+### The loop the tools are built for
 
-The three retrieval tools and `aprag_papers` accept the metadata filters (`papers`, `authors`, `year`/`year_from`/`year_to`, `date_from`/`date_to`, `journals`, `subjects`, `keywords`, `affiliations`, `types`); `aprag_corpus` is how you find out which values they take. Filters are resolved against the bibliographic manifest into a set of filenames, and retrieval then runs restricted to those files — so a filtered question genuinely searches only that subset rather than searching everything and discarding the rest.
-
-**Four conventions run through all of them**, because the obvious alternatives quietly mislead a model:
-
-- **A filter that matches nothing is an error, not an empty result.** A misspelled author name used to return "0 papers", indistinguishable from a real gap in the corpus — so an agent would confidently report that a lab never studied something. Filter values are validated against the corpus and a mismatch raises with "did you mean" suggestions.
-- **Failures raise.** Errors come back as protocol errors, never as prose that reads like an answer, so an outage cannot be mistaken for a finding.
-- **Every result is both text and data** — citation-carrying text for the model to read, and `structuredContent` (chunks, entities, references, scores) for code to consume.
-- **Everything is read-only**, annotated `readOnlyHint` and `idempotentHint`, so agents can call freely without confirmation prompts.
-
-### The loop this is designed for
-
-`aprag_retrieve` is stateless — each call retrieves independently and the server remembers nothing — so the agent accumulates and deduplicates evidence itself. That makes multi-hop research a loop the agent controls:
+`aprag_retrieve` is stateless. Each call retrieves independently and the server remembers nothing, so the agent accumulates and deduplicates the evidence itself. Multi-hop research is therefore a loop the agent controls:
 
 ```
-1.  aprag_corpus(facet="authors", q="Westbury")      → the exact name to filter on
-2.  aprag_retrieve("humor and incongruity", mode="local")
-                                                     → chunks + entities
-3.  aprag_graph(action="entity", name="Semantic Neighbourhood Density")
-                                                     → definition, links, source papers
-4.  aprag_retrieve("neighbourhood density funniness", mode="naive",
-                   authors=["Westbury, Chris"])      → scoped second hop
-5.  aprag_similar(filename="Westbury_2016.pdf")      → adjacent work it missed
-6.  aprag_locate(filename="Westbury_2016.pdf", quote="…")
-                                                     → the page to cite
+1.  aprag_corpus(facet="authors", q="Carter")         → the exact name to filter on
+2.  aprag_retrieve("how is statistical power reported", mode="local")
+                                                      → chunks and entities
+3.  aprag_graph(action="entity", name="Statistical Power")
+                                                      → description, links, source papers
+4.  aprag_retrieve("power analysis in small samples", mode="naive",
+                   authors=["Carter, J."])            → a scoped second hop
+5.  aprag_similar(filename="Carter_2019.pdf")         → adjacent work the first hops missed
+6.  aprag_locate(filename="Carter_2019.pdf", quote="…")
+                                                      → the page to cite
 ```
 
-Steps 1 and 6 are the ones that get skipped and then regretted: step 1 stops the agent inventing a filter value, and step 6 is how it proves a quote it is about to attribute really appears in that PDF.
+Steps 1 and 6 are the ones most often skipped. Step 1 stops the agent inventing a filter value, and step 6 is how it confirms that a quote it is about to attribute really appears in that paper.
 
 ### The CLI
 
-Seven commands. Every one takes `--server`/`--local`, `--json` for machine-readable output, and the same metadata filters as repeatable flags.
+Seven commands. Each takes `--server` or `--local`, `--json` for machine-readable output, and the same metadata filters as repeatable flags.
 
 | Command | What it does |
 |---|---|
-| `aprag ask` | A synthesized answer, rendered as markdown in the terminal with APA7 citations and clickable PDF links. Default mode `hybrid`. |
-| `aprag chunks` | Raw retrieval, printed as cited markdown — one header per chunk with the paper, page and open-PDF link. Default mode `naive`; `--entities` adds the graph. |
-| `aprag search` | Metadata-filtered semantic search over papers. |
-| `aprag add` | Uploads PDFs for incremental ingest, streaming each paper's stage. |
-| `aprag ingest-status` | Lists ingest jobs, or one job's detail as JSON. |
-| `aprag health` | The server's `/health` — the first thing to run when something returns nothing. |
-| `aprag config` | Show the resolved server and every source that could set it, or persist a default. |
+| `aprag ask` | Writes a synthesized answer as markdown in the terminal, with APA 7 citations and clickable PDF links. The default mode is `hybrid`. |
+| `aprag chunks` | Prints the raw retrieval as cited markdown, one header per chunk giving the paper, the page and an open-PDF link. The default mode is `naive`, and `--entities` adds the graph. |
+| `aprag search` | Runs a metadata-filtered semantic search over papers. |
+| `aprag add` | Uploads PDFs for incremental ingest and streams each paper's stage. |
+| `aprag ingest-status` | Lists ingest jobs, or dumps one job's detail as JSON. |
+| `aprag health` | Prints the server's `/health` response. Run this first when something comes back empty. |
+| `aprag config` | Shows the resolved server and every source that could set it, or persists a default. |
 
 ```bash
 # a cited answer, scoped to one researcher and the last decade
-aprag ask "what predicts funniness?" --author Westbury --year-from 2015
+aprag ask "what predicts replication success?" --author Carter --year-from 2015
 
-# evidence instead of an answer, with graph context, from one journal
-aprag chunks "semantic neighbourhood density" --mode local --entities \
-  --journal Cognition --chunk-top-k 8
+# the evidence rather than an answer, with graph context, from one journal
+aprag chunks "measurement invariance" --mode local --entities \
+  --journal "Psychological Methods" --chunk-top-k 8
+
+# find the papers without answering the question
+aprag search "preregistration" --year-from 2015 --subject "Research Methods"
 
 # pin retrieval to two specific papers
-aprag ask "how were the stimuli chosen?" --paper Westbury_2016 --paper Hollis_2018
+aprag ask "how were the stimuli chosen?" --paper Carter_2019 --paper Okafor_2021
 
 # scriptable
-aprag chunks "entropy" --json | jq '.data.chunks | length'
-aprag ask "word frequency effects" --json | jq -r '.references[].apa'
+aprag chunks "effect size" --json | jq '.data.chunks | length'
+aprag ask "questionable research practices" --json | jq -r '.references[].apa'
 ```
+
+Filter flags are repeatable and combine exactly as the MCP filters do: `--paper`, `--author`, `--journal`, `--subject`, `--keyword`, `--affiliation`, `--year`, `--year-from`, `--year-to`, `--date-from` and `--date-to`. The full list is in `aprag ask --help`.
 
 ### Retrieval modes
 
-Both clients take a mode, and it changes what retrieval means. Choosing badly is the most common reason a query comes back thin.
+Both clients take a mode, and the mode decides what retrieval means. Choosing badly is the most common reason a query comes back thin.
 
-| Mode | What it does | Good for |
+| Mode | How it retrieves | What it suits |
 |---|---|---|
-| `naive` | Plain semantic search over passages. No graph. | Passages that literally discuss what you asked. Fastest. |
-| `local` | Matches graph entities, then pulls their descriptions and source chunks. | Specific leads: a method, a measure, a named effect. |
-| `global` | Retrieves relationships and the entities they connect. | Broad thematic questions no single passage answers. |
-| `hybrid` | `local` + `global`. | The right first guess for a real research question. |
-| `mix` | Graph retrieval plus straight vector search. | Broadest, slowest, keeps passage-level detail. |
+| `naive` | Embeds the question and returns the nearest chunks. No graph step. | Passages that discuss the thing you asked about. The fastest and the most literal. |
+| `local` | Matches entities in the graph, then pulls their descriptions and the chunks they were extracted from. | Specific leads, such as a method, a measure, a named effect, or one study's details. |
+| `global` | Retrieves relationships and the entities they connect, before any passage. | Broad thematic questions, where the answer is spread over many papers and no single passage states it. |
+| `hybrid` | Runs `local` and `global` together. | The first thing to try on a real research question. This is the default for `aprag ask` and `aprag_query`. |
+| `mix` | Combines graph retrieval with straight vector search. | The broadest and the slowest, keeping passage-level detail the graph abstracts away. |
 
-`top_k` caps graph entities and relationships; `chunk_top_k` caps the text chunks kept after reranking. Adding any metadata filter switches retrieval to the chunks-only path — the graph is corpus-wide and cannot be sliced per paper without losing what makes it useful.
+Two arguments control volume. `top_k` caps the entities and relationships taken from the graph, and `chunk_top_k` caps the chunks kept after reranking. Raise `chunk_top_k` when an answer looks under-evidenced, and lower it when the chunks are going into a small context.
 
-### Skipping the client
+Adding any metadata filter switches retrieval to the chunks-only path, which ranks passages from the matching papers by semantic relevance with no graph step. A filtered question is still answered, just from those chunks. The graph is corpus-wide and cannot be sliced per paper without losing what makes it useful, so a filter and a graph mode do not combine.
 
-It is four HTTP endpoints; anything that can POST JSON can use the corpus directly.
+### Using the API directly
+
+The clients wrap four HTTP endpoints, and anything that can POST JSON can use the corpus without them.
 
 ```bash
-curl -s https://rag-api.devon7y.com/health -H "X-API-Key: $APRAG_API_KEY"
+curl -s "$APRAG_QUERY_URL/health" -H "X-API-Key: $APRAG_API_KEY"
 
-curl -s -X POST https://rag-api.devon7y.com/retrieve \
+curl -s -X POST "$APRAG_QUERY_URL/retrieve" \
   -H "Content-Type: application/json" -H "X-API-Key: $APRAG_API_KEY" \
-  -d '{"question":"humor","mode":"naive","chunk_top_k":3}'
+  -d '{"question":"working memory capacity","mode":"naive","chunk_top_k":3}'
 ```
 
-`/query` returns `{answer, references, mode}`; `/retrieve` returns entities, relationships, chunks and references; `/search` returns ranked papers; all three accept the same optional `filters` object. You lose the APA localisation and the "did you mean" filter validation, which is most of what the client is for.
-
-Full reference, including troubleshooting: the **Agentic Tools** page in the app, or [aprag/README.md](aprag/README.md) and [docs/APRAG_ACCESS.md](docs/APRAG_ACCESS.md).
+`/query` returns an answer, its references and the mode. `/retrieve` returns entities, relationships, chunks and references. `/search` returns ranked papers. All three take the same optional `filters` object. What you give up is the client-side citation linking and the filter validation, which is most of what the clients do.
 
 ---
 
 ## How it works
 
-Three physically separate stages. Knowing which machine runs which is most of understanding the system.
+AP-RAG runs in three stages, and they need not run on the same machine.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ 1. INGEST — batch, on HPC GPU clusters (Alliance Canada H100 / A100)          │
-│    pipeline/ingest.py, launched by SLURM                                      │
-│    PDFs → extract text (page boundaries preserved) → structure-aware chunk    │
-│    → contextualize + extract entities/relations (Qwen3.6-35B-A3B on vLLM)     │
-│    → embed (Qwen3-Embedding-8B, dim 4096) → graph + KV stores + vectors       │
+│ 1. INGEST, in batch, on GPU nodes                                            │
+│    pipeline/ingest.py, submitted through SLURM                               │
+│    PDFs → extract text, preserving page boundaries → structure-aware chunk   │
+│    → contextualize each chunk and extract entities and relations (LLM)       │
+│    → embed the chunks → write the graph, the KV stores and the vectors       │
 └──────────────────────────────────────────────────────────────────────────────┘
                               │ storage artifacts
                               ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ 2. SERVE — always-on PC, public via Cloudflare Tunnel (X-API-Key)             │
-│    scripts/server.py  :8000   embeddings (OpenAI-compatible)                  │
-│    query_server.py    :8001   LightRAG + Qdrant + Neo4j + the manifest        │
-│        POST /query     → synthesized APA-cited answer (gpt-5.6-luna)          │
-│        POST /retrieve  → raw entities/relationships/chunks, no LLM            │
-│        POST /search    → metadata-filtered ranked papers                      │
+│ 2. SERVE, from an always-on host                                             │
+│    scripts/server.py     :8000   embeddings, OpenAI-compatible               │
+│    query_server.py       :8001   LightRAG, the vector DB and the manifest    │
+│        POST /query      → a synthesized answer with APA 7 citations          │
+│        POST /retrieve   → raw entities, relationships and chunks, no model   │
+│        POST /search     → metadata-filtered ranked papers                    │
 └──────────────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ 3. CLIENTS — run no models, hold no data                                      │
-│    web app (Vercel) · macOS/Windows app · aprag CLI · aprag-mcp MCP server    │
+│ 3. CLIENTS, which run no models and hold no data                             │
+│    the web app, the desktop apps, the aprag CLI, the aprag-mcp MCP server    │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Note the asymmetry: a local open-weights model does the expensive one-time reading (**Qwen3.6-35B-A3B** — a contextualization call and an entity-extraction call for every chunk of every paper, which is why it needs a cluster), and a hosted model does the cheap per-question writing (**gpt-5.6-luna**). Read once, answer forever.
+The two model roles are deliberately asymmetric. Ingest is read-once work that costs one contextualization call and one extraction call for every chunk of every paper, which is why it runs a local open-weights model on a cluster. Answering is per-question work over a handful of chunks, which is why it runs a hosted model. Either can be swapped through environment variables.
 
 ### The academic specialization
 
-AP-RAG is a **wrapper around [LightRAG](https://github.com/HKUDS/LightRAG)**, which provides knowledge-graph construction, multi-mode retrieval and the storage backends. What AP-RAG adds is everything that makes a *paper* different from a blob of text:
+AP-RAG wraps [LightRAG](https://github.com/HKUDS/LightRAG), which supplies the knowledge-graph construction, the multi-mode retrieval and the storage backends. What AP-RAG adds is what makes a paper different from a block of text.
 
-- **Structure-aware chunking** ([`pipeline/scientific_chunker.py`](pipeline/scientific_chunker.py)) — splits on a section → paragraph → sentence → token priority rather than a fixed window. It detects scientific sections, distinguishes hard section boundaries from soft subsection headings (Participants, Stimuli, Procedure), strips running heads, mastheads and page numbers, avoids false sentence splits on abbreviations, decimals and initials, isolates figure and table captions, adds overlap only *within* a section, rebalances undersized chunks, and excludes References and Acknowledgements. Every chunk is stamped with the PDF page it starts on — that is where citation page numbers come from.
-- **Book chunking** ([`pipeline/book_chunker.py`](pipeline/book_chunker.py)) — chapter detection, skipping contents/index pages, multi-line headings. `CHUNKER_TYPE=auto` routes each document to the right chunker by structure.
-- **Contextual retrieval** — before embedding, an LLM writes a short blurb situating each chunk in its paper, which is what keeps a passage findable when it says "this effect" instead of naming it.
-- **An academic entity schema** — Author, Concept, Method, Theory, Dataset, Result, Experiment, Finding, Institution, Publication.
-- **A bibliographic layer** — `papers_metadata.json`, a per-paper APA7 record (authors, date to day precision where known, journal, DOI, abstract, keywords, subjects, affiliations) built from Crossref plus LLM extraction. It is what the metadata filters resolve against and what turns `[3]` into `(Westbury et al., 2016)`.
+**Structure-aware chunking** ([`pipeline/scientific_chunker.py`](pipeline/scientific_chunker.py)) splits on a section, then paragraph, then sentence, then token priority, rather than on a fixed window. It detects scientific sections, separates real section boundaries from subsection headings such as Participants or Procedure, strips running heads, mastheads and page numbers, avoids false sentence breaks on abbreviations, decimals and initials, isolates figure and table captions, adds overlap only within a section, rebalances undersized chunks, and drops the references and acknowledgements. Every chunk records the PDF page it starts on, which is where the page numbers in citations come from. A second chunker ([`pipeline/book_chunker.py`](pipeline/book_chunker.py)) handles books by detecting chapters, skipping contents and index pages, and reading multi-line headings. Setting `CHUNKER_TYPE=auto` routes each document to the right one by inspecting its structure.
 
-### A wrapper, not a fork
+**Contextual retrieval** has an LLM write a short description of where a chunk sits in its paper before the chunk is embedded. This is what keeps a passage findable when it says "this effect" instead of naming it.
 
-Upstream LightRAG lives in a nested, git-ignored `LightRAG/` directory (pinned to **v1.5.3**) and is never edited. Everything AP-RAG adds is injected into the stock `LightRAG` class as functions — a custom `chunking_func`, an embedding function, an LLM function — never as an in-library patch.
+**An academic entity schema** types the graph as Author, Concept, Method, Theory, Dataset, Result, Experiment, Finding, Institution and Publication, rather than as generic entities.
+
+**A bibliographic layer** stores one APA 7 record per paper, holding authors, publication date to day precision where it is known, journal, DOI, abstract, keywords, subjects and affiliations, built from Crossref with LLM extraction as a fallback. The metadata filters resolve against it, and it is what turns a numbered citation in a generated answer into a reference a reader can follow.
+
+### A wrapper rather than a fork
+
+Upstream LightRAG lives in a nested, git-ignored `LightRAG/` directory, pinned to v1.5.3, and is never edited. Everything AP-RAG adds is injected into the stock `LightRAG` class as functions, namely a custom `chunking_func`, an embedding function and an LLM function, rather than as a patch to the library.
 
 ```
 import lightrag (unmodified, upstream)  ──►  LightRAG(chunking_func=…, embedding_func=…, llm_model_func=…)
@@ -315,38 +331,40 @@ import lightrag (unmodified, upstream)  ──►  LightRAG(chunking_func=…, e
         AP-RAG wrappers (this repo, in pipeline/) ──────┘
 ```
 
-The point is upgradability: when a newer LightRAG ships, you drop it in and the wrapper keeps working, so AP-RAG always rides the latest engine and can be swapped for a different one entirely. That only holds while the fork stays patch-free, so a clean `git status` inside `LightRAG/` is the target state.
+The reason is upgradability. When a newer LightRAG is released, you drop it in and the wrapper keeps working, so AP-RAG rides the current engine and could be moved to a different one. This holds only while the fork stays free of patches, so a clean `git status` inside `LightRAG/` is the target state.
 
 ---
 
 ## Repository layout
 
-| Path | What it is |
+| Path | Contents |
 |---|---|
-| [`web/`](web/) | The Next.js 16 web app deployed at aprag.devon7y.com — chat, digest, trends, authors, graph, papers browser, atlas, agentic-tools page. See [web/README.md](web/README.md) and [web/ATLAS.md](web/ATLAS.md). |
-| [`desktop/`](desktop/) | The Electron shell packaged as macOS `.dmg` + Windows `.exe`. See [desktop/README.md](desktop/README.md). |
+| [`web/`](web/) | The Next.js web application: chat, digest, trends, authors, graph, papers browser, atlas and the agentic-tools page. See [web/README.md](web/README.md) and [web/ATLAS.md](web/ATLAS.md). |
+| [`desktop/`](desktop/) | The Electron shell, packaged as a macOS `.dmg` and a Windows `.exe`. See [desktop/README.md](desktop/README.md). |
 | [`aprag/`](aprag/) | The installable client package: the `aprag` CLI and the `aprag-mcp` MCP server. |
-| `query_server.py`, `aprag_*.py`, `apa_citations.py` | The serving stack on the always-on PC: retrieval API, search, graph, trends, PDF locate, incremental ingest, APA citation rewriting. |
-| [`pipeline/`](pipeline/) | The ingest package: structure-aware chunkers, contextual-retrieval wrapper, and `ingest.py`. |
-| [`scripts/`](scripts/) | Maintenance and utility scripts: the embedding server, prechunkers, graph/embedding rebuilders, Qdrant migration, manifest builders, PDF/OCR tools. |
-| [`slurm/`](slurm/) | Per-cluster SLURM jobs for the corpus runs. |
-| [`tests/`](tests/) | Fast, local chunker tests. |
-| [`docs/`](docs/) | Runbooks and operational notes (point-in-time; verify against the code). |
-| `LightRAG/` | **Upstream LightRAG, git-ignored** — its own repo, pinned to v1.5.3, never edited. |
+| `query_server.py`, `aprag_*.py`, `apa_citations.py` | The serving stack: the retrieval API, search, graph, trends, page lookup, incremental ingest and APA citation rewriting. |
+| [`pipeline/`](pipeline/) | The ingest package: the structure-aware chunkers, the contextual-retrieval wrapper and `ingest.py`. |
+| [`scripts/`](scripts/) | Maintenance and utility scripts: the embedding server, prechunkers, graph and embedding rebuilders, vector-store migration, manifest builders, and PDF and OCR tools. |
+| [`slurm/`](slurm/) | SLURM job scripts for batch ingest and the rebuild modes. |
+| [`tests/`](tests/) | The chunker tests, which run locally in seconds. |
+| [`docs/`](docs/) | Runbooks and operational notes. They are point-in-time records, so verify them against the code. |
+| `LightRAG/` | Upstream LightRAG, git-ignored. It keeps its own repository, is pinned to v1.5.3, and is never edited. |
 | [`CLAUDE.md`](CLAUDE.md) | The in-depth internal guide to this codebase. |
 
 ---
 
-## Running it yourself
+## Running it
 
-### Clients
+### The clients
 
 ```bash
 git clone https://github.com/devon7y/AP-RAG.git && cd AP-RAG
-pip install -e .          # exposes `aprag` and `aprag-mcp`
+pip install -e .          # installs aprag and aprag-mcp
 ```
 
-### The chunkers (the only fast, machine-independent tests here)
+### The chunker tests
+
+These are the only tests here that are fast and independent of a particular machine.
 
 ```bash
 pip install -e .
@@ -358,48 +376,50 @@ ruff check .
 ### The serving stack
 
 ```bash
-python -m uvicorn server:app       --host 0.0.0.0 --port 8000   # embeddings (scripts/server.py)
-python -m uvicorn query_server:app --host 0.0.0.0 --port 8001   # query API (LightRAG + Qdrant + Neo4j)
+python -m uvicorn server:app       --host 0.0.0.0 --port 8000   # embeddings, from scripts/server.py
+python -m uvicorn query_server:app --host 0.0.0.0 --port 8001   # the query API
 ```
 
-`restart_aprag_pc.sh` restarts the whole PC stack. The paper database is `data/papers_metadata.json` + `data/drive_links.json`; after either changes, `scripts/propagate_papers.sh` re-derives every downstream pack and redeploys ([docs/SINGLE_DATABASE.md](docs/SINGLE_DATABASE.md)).
+The paper database is `data/papers_metadata.json` together with `data/drive_links.json`. After either file changes, `scripts/propagate_papers.sh` re-derives every downstream pack and redeploys, as described in [docs/SINGLE_DATABASE.md](docs/SINGLE_DATABASE.md).
 
-### Ingestion (needs GPUs)
+### Batch ingest
 
-Batch ingest is submitted via SLURM on Alliance Canada clusters. The standard pattern is **N vLLM jobs serving Qwen3.6-35B-A3B + one ingest job** with a dependency; per-cluster scripts are suffixed `_fir` / `_ror` / `_nibi` / `_tril` / `_nar`. Exact commands and proven parameters: [docs/CANONICAL_INGEST_PARAMS.md](docs/CANONICAL_INGEST_PARAMS.md).
+Batch ingest needs GPUs and is submitted through SLURM. The pattern is N vLLM jobs serving the ingest model, plus one ingest job that depends on them. The scripts in [`slurm/`](slurm/) are working examples, named for the clusters they were tuned on. Parameters that have been measured rather than guessed are recorded in [docs/CANONICAL_INGEST_PARAMS.md](docs/CANONICAL_INGEST_PARAMS.md).
 
-| Mode | What it does | When |
+There are three ingest modes, chosen by what is cleaned before submission.
+
+| Mode | What it does | When to use it |
 |---|---|---|
-| `resume` (default) | Continue; skip processed docs; reuse all caches. | Normal incremental runs. |
-| `fresh` | Wipe doc-status/graph/vectors but **keep** the LLM response cache. | Re-run without paying for extraction again. |
-| `reembed` (`REBUILD_EMBEDDINGS=1`) | Rebuild only the vector DB from cached chunks + graph; no vLLM needed. | Switching embedding model or vector backend. |
+| `resume`, the default | Continues a run, skipping documents already processed and reusing every cache. | Normal incremental runs. |
+| `fresh` | Wipes the document status, the graph and the vectors, but keeps the LLM response cache. | Re-running without paying for entity extraction a second time. |
+| `reembed`, set by `REBUILD_EMBEDDINGS=1` | Rebuilds only the vector database, from the cached chunks and the graph. No vLLM job is needed. | Changing the embedding model or the vector backend. |
 
-An optional native-multimodal path (`INGEST_VLM=1`) parses figures, tables and equations with MinerU and captions them into the chunks and the graph ([docs/VLM_INGEST.md](docs/VLM_INGEST.md)).
+An optional multimodal path, enabled with `INGEST_VLM=1`, parses figures, tables and equations with MinerU and captions them into the chunks and the graph. It is documented in [docs/VLM_INGEST.md](docs/VLM_INGEST.md).
 
 ### Configuration
 
-Behavior is driven by environment variables, not code edits.
+Behaviour is set through environment variables rather than code edits.
 
 | Variable | Purpose |
 |---|---|
-| `CHUNKER_TYPE` | `scientific` (default), `book`, or `auto` (per-document structure routing). |
-| `CHUNK_TARGET_TOKENS` / `CHUNK_MAX_TOKENS` / `CHUNK_MIN_TOKENS` / `CHUNK_OVERLAP_TOKENS` | Chunk sizing (defaults 512 / 640 / 192 / 51, set by the chunk-size eval in `scripts/chunk_eval/`). |
-| `CHUNK_EXCLUDE_REFS` / `CHUNK_EXCLUDE_ACK` | Drop References / Acknowledgements. |
-| `CONTEXTUALIZE_CHUNKS` | `1` (default) enables contextual retrieval. |
-| `LLM_MODEL` / `EMBED_MODEL_ID` | Ingest LLM and embedding model. |
-| `PARALLEL_DOCS`, `LLM_MAX_ASYNC`, `CONTEXT_MAX_ASYNC`, `EMBED_FUNC_MAX_ASYNC`, `MAX_PARALLEL_INSERT` | Ingest concurrency ([docs/CANONICAL_INGEST_PARAMS.md](docs/CANONICAL_INGEST_PARAMS.md)). |
-| `QDRANT_URL` | Use Qdrant for vectors; otherwise file-based NanoVectorDB. |
-| `APRAG_QUERY_URL` / `APRAG_API_KEY` | Where clients send requests, and the shared secret. |
-| `APRAG_PAPERS_DIR` | Client-side paper folders, for `file://` citation links. |
+| `CHUNKER_TYPE` | `scientific` (default), `book`, or `auto` to route each document by its structure. |
+| `CHUNK_TARGET_TOKENS`, `CHUNK_MAX_TOKENS`, `CHUNK_MIN_TOKENS`, `CHUNK_OVERLAP_TOKENS` | Chunk sizing. The defaults of 512, 640, 192 and 51 come from the evaluation in `scripts/chunk_eval/`. |
+| `CHUNK_EXCLUDE_REFS`, `CHUNK_EXCLUDE_ACK` | Whether to drop the references and acknowledgements sections. |
+| `CONTEXTUALIZE_CHUNKS` | Set to 1 by default, which enables contextual retrieval. |
+| `LLM_MODEL`, `EMBED_MODEL_ID` | The ingest model and the embedding model. |
+| `PARALLEL_DOCS`, `LLM_MAX_ASYNC`, `CONTEXT_MAX_ASYNC`, `EMBED_FUNC_MAX_ASYNC`, `MAX_PARALLEL_INSERT` | Ingest concurrency. See [docs/CANONICAL_INGEST_PARAMS.md](docs/CANONICAL_INGEST_PARAMS.md). |
+| `QDRANT_URL` | Use Qdrant for vectors. Without it, vectors go to file-based NanoVectorDB. |
+| `APRAG_QUERY_URL`, `APRAG_API_KEY` | Where the clients send requests, and the shared secret the server checks. |
+| `APRAG_PAPERS_DIR` | Client-side paper folders, used to turn citations into `file://` links. |
 
-> Changing the embedding model or its dimension requires rebuilding the vector store (`reembed` mode) — embeddings must be identical at index and query time.
+Changing the embedding model or its dimension requires rebuilding the vector store in `reembed` mode, because embeddings must be produced by the same model at index time and at query time.
 
 ---
 
-## Status & access
+## Status
 
-Active work in progress. The serving stack, the web and desktop apps, and the agentic clients are in daily use; several `docs/*.md` files are operational session notes rather than stable documentation, and the live instance is login-gated to an allowlist. For access to the hosted corpus, or an API key, ask Devon.
+AP-RAG is a work in progress. The ingest pipeline, the serving stack, the web and desktop applications and the agentic clients are all in regular use. Several files under `docs/` are operational session notes rather than stable documentation, and the code is the authority wherever the two disagree.
 
 ## Acknowledgements
 
-AP-RAG is built on **[LightRAG](https://github.com/HKUDS/LightRAG)** by HKUDS, which provides the knowledge-graph construction, multi-mode retrieval and storage backends. AP-RAG adds the academic-paper specialization on top and leaves LightRAG unmodified so it can be upgraded independently. All credit for the underlying RAG engine goes to the LightRAG authors. The web app began as the Vercel `chatbot` template.
+AP-RAG is built on [LightRAG](https://github.com/HKUDS/LightRAG) by HKUDS, which provides the knowledge-graph construction, the multi-mode retrieval and the storage backends. AP-RAG adds the academic-paper specialization on top and leaves LightRAG unmodified so that it can be upgraded independently. All credit for the underlying RAG engine belongs to the LightRAG authors. The web application began as the Vercel `chatbot` template.
