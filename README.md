@@ -1,6 +1,6 @@
-# AP-RAG
+# AP-RAG: Academic Paper Retrieval-Augmented Generation
 
-AP-RAG is a retrieval-augmented generation system for scientific papers. Retrieval-augmented generation (RAG) refers to fetching the specific text a question needs and handing it to a language model at the moment it answers, rather than relying on what the model absorbed during training.
+Retrieval-augmented generation (RAG) refers to fetching the specific text a question needs and handing it to a language model at the moment it answers, rather than relying on what the model absorbed during training. AP-RAG applies that to a library of scientific papers.
 
 ## The problem it solves
 
