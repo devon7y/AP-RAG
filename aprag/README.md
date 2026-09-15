@@ -80,7 +80,7 @@ Tools the agent gets:
   follow up an entity that `aprag_retrieve` surfaced.
 - `aprag_trends(dim?, term?, limit?)` → corpus-wide publication trends.
 
-The first five accept the metadata filters (`papers`, `authors`, `year`/`year_from`/
+`aprag_query`, `aprag_search`, `aprag_retrieve` and `aprag_papers` accept the metadata filters (`papers`, `authors`, `year`/`year_from`/
 `year_to`, `date_from`/`date_to`, `journals`, `subjects`, `keywords`, `affiliations`,
 `types`). A filter value that matches no paper is rejected with "did you mean"
 suggestions instead of returning an empty result that reads like an empty corpus, and
