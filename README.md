@@ -74,17 +74,17 @@ The atlas lays the whole corpus out in three dimensions. Every chunk of every pa
 
 The landscape view reads as terrain. Height counts papers, so a mountain is ground that many papers crowd onto and a flat empty region is ground nobody has covered. Colour is publication year.
 
-![Papers Atlas, landscape view](docs/images/papers_atlas_landscape.jpg)
+![Papers Atlas, landscape view](docs/images/papers_atlas_landscape.png)
 
 The galaxy view shows the raw semantic space. Small stars are chunks, and a brighter star has more connections in the knowledge graph. The spiked stars are knowledge-graph entities, placed at the centre of the chunks that mention them. Constellation lines join one entity's chunks, and a fainter web joins entities the graph relates.
 
-![Papers Atlas, galaxy view](docs/images/papers_atlas_galaxy.jpg)
+![Papers Atlas, galaxy view](docs/images/papers_atlas_galaxy.png)
 
 Region names are taken from the corpus rather than written by hand. Each summit is named for the paper or graph concept that dominates it.
 
 A lens filters the world by metadata. Matching papers pulse gold and everything else steps back. An author lens draws that author's trail through the map in publication order, from first paper to last.
 
-![Papers Atlas with an author lens applied](docs/images/papers_atlas_author.jpg)
+![Papers Atlas with an author lens applied](docs/images/papers_atlas_author.png)
 
 The search bar accepts plain queries, the shortcuts `@name`, `journal:`, `kw:` and `year:1990..2005`, and a question ending in a question mark, which asks the corpus from inside the world.
 
