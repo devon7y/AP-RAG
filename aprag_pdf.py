@@ -355,20 +355,30 @@ def _locate_attempt(doc, count: int, order: list[int], words: list[str],
         if end >= 0 and matched > best_matched:
             best_matched = matched
             best_page = index
-    if best_page is None or best_matched < floor:
+    if best_page is None:
         return None
 
+    # The bar is checked against the whole passage, not its first page: one that opens
+    # with a line or two at the foot of a page matches only those few words there, and
+    # judging it on that page alone rejected it before its continuation was looked at.
     spans: list[dict] = []
+    total_matched = 0
+    ran_off_page = True
     remaining = target
     page_index = best_page
-    for _ in range(LOCATE_MAX_CONTINUATION_PAGES + 1):
+    for hop in range(LOCATE_MAX_CONTINUATION_PAGES + 1):
         if not remaining or page_index >= count:
             break
         current = doc[page_index]
         words_on_page = current.get_text("words")
         tokens, index_map = _page_tokens(words_on_page)
         start, end, matched, consumed = _align_words(tokens, remaining)
-        if end < start or matched < 3:
+        # A continuation page must pick the passage up where the last page left it. If
+        # the passage visibly ran off the bottom of that page a few words will do. If it
+        # didn't (in two-column layouts the text layer often lists a figure or the other
+        # column after it), the rest of the passage has to be convincingly here.
+        need = 3 if hop == 0 or ran_off_page else max(5, min(20, len(remaining) // 2))
+        if end < start or matched < need:
             break
 
         rect = current.rect
@@ -386,14 +396,14 @@ def _locate_attempt(doc, count: int, order: list[int], words: list[str],
             ],
         })
 
+        total_matched += matched
         remaining = remaining[consumed:]
-        # Only follow onto the next page when the passage really ran out of page —
-        # otherwise it simply ended here.
-        if len(remaining) < 5 or end < len(tokens) - 3:
+        if len(remaining) < 5:
             break
+        ran_off_page = end >= len(tokens) - 3
         page_index += 1
 
-    if not spans:
+    if not spans or total_matched < floor:
         return None
     return {
         "page": spans[0]["page"],

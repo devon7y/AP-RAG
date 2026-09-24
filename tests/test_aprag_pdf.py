@@ -267,3 +267,37 @@ def test_locate_survives_a_contextual_blurb_prefix(tmp_path):
     got = p.locate_quote(str(path), f"{blurb}\n\n{' '.join(lines)}")
     assert got["page"] == 1, "the passage is on the page even though the blurb is not"
     assert got["rects"]
+
+
+def test_locate_follows_a_passage_that_opens_at_the_foot_of_a_page(tmp_path):
+    """A passage whose first line sits at the bottom of a page matches only that line
+    there. Judged on that page alone it fell short of the match bar, and because other
+    text (the second column, a figure) follows it in the text layer, it was never
+    followed onto the next page either, so every such citation came back "not found"."""
+    pymupdf = pytest.importorskip("pymupdf")
+    path = tmp_path / "footer_start.pdf"
+    doc = pymupdf.open()
+    first = doc.new_page()
+    first.insert_text((60, 120), "Unrelated opening material about the stimuli.", fontsize=11)
+    opening = "To test this possible behavioral relevance, we correlated"
+    first.insert_text((60, 740), opening, fontsize=11)
+    # Inserted last, so the text layer lists it after the passage's opening line.
+    first.insert_text((320, 300), "Fig. 4 Grand average waveforms at electrode Pz", fontsize=9)
+    second = doc.new_page()
+    second.insert_text((60, 50), "Exp Brain Res (2014) 232:3175-3190", fontsize=9)
+    rest = [
+        "across subjects each measure of the subsequent memory effect with",
+        "sensitivity and the response time of hits. Of the encoding components,",
+        "the late positive component correlated positively with sensitivity and",
+        "negatively with response time, while the slow wave showed no reliable",
+        "relation to either measure in any of the conditions we examined here.",
+    ]
+    for i, line in enumerate(rest):
+        second.insert_text((60, 120 + i * 22), line, fontsize=11)
+    doc.save(str(path))
+    doc.close()
+
+    got = p.locate_quote(str(path), f"{opening} {' '.join(rest)}")
+    assert got["page"] == 1, "the passage starts on page 1"
+    assert [s["page"] for s in got["spans"]] == [1, 2]
+    assert all(s["rects"] for s in got["spans"])
