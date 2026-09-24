@@ -43,7 +43,7 @@ export async function GET(
     return new Response(null, { status: 204 });
   }
 
-  const streamContext = getStreamContext();
+  const streamContext = await getStreamContext();
   if (!streamContext) {
     return new Response(null, { status: 204 });
   }

@@ -1,3 +1,5 @@
+import { createClient } from "redis";
+
 // Where the app's Redis connection string comes from.
 //
 // Redis is optional here — without it the chat still works, it just loses resumable
@@ -14,4 +16,23 @@ export function getRedisUrl(): string | undefined {
 
 export function hasRedis(): boolean {
   return Boolean(getRedisUrl());
+}
+
+// A connected client, or a rejection: never a crash and never a hang. node-redis emits
+// 'error' on a failed connect, and an 'error' with no listener is an uncaught exception.
+// resumable-stream's default clients have no listener and start connecting the moment the
+// context is made, while the chat route awaited two DB writes before handing it a stream.
+// When the Redis host vanished (NXDOMAIN), DNS failed inside that gap and killed the
+// function mid-answer: the reply stopped wherever it had got to (once inside a "[1"
+// citation, which rendered as "1 [blocked]") and was never saved. Retries are off because
+// a failed client otherwise keeps reconnecting and holds queued commands forever; these
+// clients live for one request, so the next request simply tries again.
+export async function connectRedis() {
+  const client = createClient({
+    url: getRedisUrl(),
+    socket: { connectTimeout: 3000, reconnectStrategy: false },
+  });
+  client.on("error", () => undefined);
+  await client.connect();
+  return client;
 }

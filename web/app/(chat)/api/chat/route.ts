@@ -78,7 +78,7 @@ import {
 import type { DBMessage } from "@/lib/db/schema";
 import { ChatbotError } from "@/lib/errors";
 import { checkIpRateLimit } from "@/lib/ratelimit";
-import { hasRedis } from "@/lib/redis";
+import { connectRedis, hasRedis } from "@/lib/redis";
 import type { ChatMessage } from "@/lib/types";
 import {
   convertToUIMessages,
@@ -90,9 +90,31 @@ import { type PostRequestBody, postRequestBodySchema } from "./schema";
 
 export const maxDuration = 300;
 
-function getStreamContext() {
+// Null when there is no usable Redis (unset, down, or gone): resumable streams are
+// optional, so the answer just streams without them. Both clients must connect first;
+// see connectRedis for why the library is never left to connect its own.
+async function getStreamContext() {
+  if (!hasRedis()) {
+    return null;
+  }
+  const [publisher, subscriber] = await Promise.allSettled([
+    connectRedis(),
+    connectRedis(),
+  ]);
+  if (publisher.status === "rejected" || subscriber.status === "rejected") {
+    for (const c of [publisher, subscriber]) {
+      if (c.status === "fulfilled") {
+        c.value.destroy();
+      }
+    }
+    return null;
+  }
   try {
-    return createResumableStreamContext({ waitUntil: after });
+    return createResumableStreamContext({
+      waitUntil: after,
+      publisher: publisher.value,
+      subscriber: subscriber.value,
+    });
   } catch (_) {
     return null;
   }
@@ -719,7 +741,7 @@ export async function POST(request: Request) {
           return;
         }
         try {
-          const streamContext = getStreamContext();
+          const streamContext = await getStreamContext();
           if (streamContext) {
             const streamId = generateId();
             await createStreamId({ streamId, chatId: id });
