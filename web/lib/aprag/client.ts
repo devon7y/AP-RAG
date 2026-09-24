@@ -56,7 +56,7 @@ export type RetrieveResult = {
 };
 
 // POST /retrieve — structured retrieval (entities/relationships/chunks + enriched
-// references), no LLM. The web app does its own gpt-5-mini synthesis on top of this.
+// references), no LLM. The web app does its own gpt-6-luna synthesis on top of this.
 export async function retrieve(
   params: RetrieveParams
 ): Promise<RetrieveResult> {

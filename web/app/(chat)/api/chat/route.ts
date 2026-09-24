@@ -618,7 +618,7 @@ export async function POST(request: Request) {
           return;
         }
 
-        // 4b. Answer mode: synthesize with gpt-5.4-mini, streamed, citing passage [n].
+        // 4b. Answer mode: synthesize with gpt-6-luna, streamed, citing passage [n].
         // Only carry text-bearing turns into history (a prior chunk-mode turn has just a
         // data part — convertToModelMessages would otherwise produce an empty message).
         const priorForSynthesis = priorMessages.filter((m) =>

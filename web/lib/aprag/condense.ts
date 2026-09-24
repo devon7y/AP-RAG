@@ -174,7 +174,7 @@ export function citationsIn(text: string): {
   return { authors, years };
 }
 
-// One cheap gpt-5.4-mini call: standalone retrieval query + a second-pass extraction of
+// One cheap gpt-6-luna call: standalone retrieval query + a second-pass extraction of
 // explicit metadata filters (validated against the corpus). Always returns something
 // usable — on any error it falls back to the raw question with no filters.
 export async function condenseAndExtract(

@@ -19,7 +19,7 @@
     "sync-pdfjs-worker": "cp node_modules/pdfjs-dist/build/pdf.worker.min.mjs public/pdfjs/pdf.worker.min.js && cp node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs lib/pdfjs/pdf.worker.min.mjs"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^3.0.74",
+    "@ai-sdk/openai": "^3.0.118",
     "@ai-sdk/provider": "^3.0.3",
     "@ai-sdk/react": "3.0.118",
     "@codemirror/lang-python": "^6.1.6",

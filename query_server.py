@@ -55,12 +55,12 @@ STORAGE_DIR   = os.environ.get("STORAGE_DIR", r"C:\rag_server\rag_storage_westbu
 EMBED_HOST    = os.environ.get("EMBED_HOST", "http://127.0.0.1:8000/v1")
 QDRANT_URL    = os.environ.get("QDRANT_URL", "http://127.0.0.1:6333")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-LLM_MODEL     = os.environ.get("LLM_MODEL", "gpt-5.6-luna")
+LLM_MODEL     = os.environ.get("LLM_MODEL", "gpt-6-luna")
 # OpenAI processing tier for every LLM call. "fast" (formerly "priority") buys ~2.5x
-# faster, more consistent latency for a 2x per-token premium — on Luna that is still
-# ~half the price of gpt-5.4-mini at standard speed. Set LLM_SERVICE_TIER="" (or
-# "default") to fall back to standard processing. The API echoes the tier it actually
-# served as; under a hard traffic ramp it may silently downgrade to "default".
+# faster, more consistent latency for a 2x per-token premium. Set LLM_SERVICE_TIER=""
+# (or "default") to fall back to standard processing. The API echoes the tier it
+# actually served as (gpt-6-luna reports "fast"); under a hard traffic ramp it may
+# silently downgrade to "default".
 LLM_SERVICE_TIER = os.environ.get("LLM_SERVICE_TIER", "fast").strip()
 # Output verbosity (low|medium|high). Lower = fewer output tokens, generated faster. The
 # deployment checklist says to choose it per use case: "low" is unambiguously right for
@@ -155,17 +155,17 @@ async def pc_embed(texts: list[str], context: str = "query") -> np.ndarray:
 
 # ── LLM via OpenAI ────────────────────────────────────────────────────────────
 
-# Reasoning effort for gpt-5.6-luna. Defaults to "none" (no reasoning tokens — fastest);
+# Reasoning effort for gpt-6-luna. Defaults to "none" (no reasoning tokens — fastest);
 # the answer synthesis level is overridable per request (CLI/MCP/API). Keyword extraction
 # and any other structured/JSON call stay "none" — they are mechanical, so reasoning only
 # adds latency. Set per-request via a process global (see below) so it reaches the awaited
 # LightRAG calls in the same task.
 #
-# NOTE on the ladder (probed against the live API, 2026-08-02): GPT-5.6's documented
+# NOTE on the ladder (probed against the live API, 2026-09-24): gpt-6-luna's documented
 # levels are none/low/medium/high/xhigh/max, but "max" is only reachable through the
 # *Responses* API (reasoning.effort). LightRAG calls *Chat Completions*, whose flat
-# reasoning_effort rejects it on every 5.6 variant: "Supported values are: 'none', 'low',
-# 'medium', 'high', and 'xhigh'". "minimal" is likewise rejected. So this path tops out at
+# reasoning_effort rejects it: "Supported values are: 'none', 'low', 'medium', 'high',
+# and 'xhigh'". "minimal" is likewise rejected. So this path tops out at
 # xhigh; a "max" request is clamped to xhigh below rather than silently falling to "none".
 # (Offering true max here would mean calling /v1/responses from this module instead of
 # LightRAG's chat helper — deliberately not done, to keep LightRAG patch-free.)
@@ -180,7 +180,7 @@ _REASONING = {"effort": "none"}
 
 def _valid_reasoning(value) -> str:
     v = (value or "none").strip().lower()
-    if v == "max":            # documented for 5.6 but Responses-API-only; don't drop to "none"
+    if v == "max":            # documented for Luna but Responses-API-only; don't drop to "none"
         return "xhigh"
     return v if v in VALID_REASONING else "none"
 

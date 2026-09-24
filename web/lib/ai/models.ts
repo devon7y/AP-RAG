@@ -1,25 +1,28 @@
-// AP-RAG uses a single answer model — gpt-5.6-luna (OpenAI), exactly like the `aprag`
+// AP-RAG uses a single answer model — gpt-6-luna (OpenAI), exactly like the `aprag`
 // CLI. The template's multi-model / AI-Gateway selector is replaced by the
 // reasoning-effort + retrieval-mode controls (see RagControls). This file keeps the
 // symbols the rest of the template imports, but collapsed to that one model.
 
-export const CHAT_MODEL_ID = "gpt-5.6-luna";
+export const CHAT_MODEL_ID = "gpt-6-luna";
 export const DEFAULT_CHAT_MODEL = CHAT_MODEL_ID;
 
 // Fast mode (renamed from Priority Processing on 2026-07-30): ~2.5x faster and more
-// consistent latency for a 2x per-token premium. On Luna that lands at $0.40/$2.40 per
-// MTok — still ~half of gpt-5.4-mini at standard speed. The API takes "fast" or
-// "priority" interchangeably; the AI SDK's typed union only has "priority" (and a live
-// request sent as "fast" comes back reporting service_tier "priority" anyway).
+// consistent latency for a 2x per-token premium. The API takes "fast" or "priority"
+// interchangeably, and gpt-6-luna reports "fast" either way.
+// @ai-sdk/openai decides per model ID whether a model gets the fast tier and reasoning
+// options, and SILENTLY DROPS both for an ID it doesn't recognize (it only logs a
+// warning). 3.0.118 recognizes gpt-6; 3.0.74 did not, and would have sent this model on
+// standard processing with no reasoning effort. Check the SDK's
+// getOpenAILanguageModelCapabilities before changing CHAT_MODEL_ID to a new family.
 // Under a hard traffic ramp OpenAI may downgrade a request and bill standard rates —
 // the response then reports service_tier "default".
-export const SERVICE_TIER = "priority" as const;
+export const SERVICE_TIER = "fast" as const;
 
 // Answer-synthesis reasoning effort, mirroring the CLI's `--reasoning`. "none" (no
-// reasoning tokens — fastest) is the default. GPT-5.6 also documents a "max" level, but
-// it is Responses-API-only and the PC query server reaches Luna over Chat Completions,
-// where it 400s — so the ladder is kept identical across both surfaces on purpose.
-// "minimal" is rejected by 5.6 outright.
+// reasoning tokens — fastest) is the default. gpt-6-luna also documents a "max" level,
+// but it is Responses-API-only and the PC query server reaches Luna over Chat
+// Completions, where it 400s — so the ladder is kept identical across both surfaces on
+// purpose. "minimal" is rejected outright.
 export const REASONING_EFFORTS = [
   "none",
   "low",
@@ -102,7 +105,7 @@ export const chatModels: ChatModel[] = [
     id: CHAT_MODEL_ID,
     name: CHAT_MODEL_ID,
     provider: "openai",
-    description: "AP-RAG answer synthesis (OpenAI gpt-5.6-luna, Fast mode)",
+    description: "AP-RAG answer synthesis (OpenAI gpt-6-luna, Fast mode)",
   },
 ];
 

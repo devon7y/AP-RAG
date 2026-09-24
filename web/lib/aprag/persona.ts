@@ -1,6 +1,6 @@
 // "Talk to Author" — the persona half of the AP-RAG synthesis path. A normal chat uses
 // SYNTH_SYSTEM_PROMPT + buildContext (a neutral research assistant); a persona chat swaps
-// in these, so the same gpt-5.4-mini synthesis speaks in the author's first person,
+// in these, so the same gpt-6-luna synthesis speaks in the author's first person,
 // grounded ONLY in passages from their own papers, defending their findings when
 // challenged. The [n] citation contract is identical, so the UI's reference cards / inline
 // citations work unchanged.

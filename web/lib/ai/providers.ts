@@ -3,7 +3,7 @@ import { customProvider } from "ai";
 import { isTestEnvironment } from "../constants";
 import { CHAT_MODEL_ID } from "./models";
 
-// Direct OpenAI provider (the user's own key) — not the AI Gateway. gpt-5-mini is the
+// Direct OpenAI provider (the user's own key) — not the AI Gateway. gpt-6-luna is the
 // single model for both answer synthesis and chat-title generation, matching the CLI.
 const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY });
 

@@ -66,7 +66,7 @@ export interface RagReference {
   [k: string]: unknown;
 }
 
-/** Synthesized answer via the PC query server (gpt-5-mini + APA refs). */
+/** Synthesized answer via the PC query server (gpt-6-luna + APA refs). */
 export async function ragQuery(body: {
   question: string;
   mode?: string;
