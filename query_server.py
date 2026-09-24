@@ -57,10 +57,11 @@ QDRANT_URL    = os.environ.get("QDRANT_URL", "http://127.0.0.1:6333")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 LLM_MODEL     = os.environ.get("LLM_MODEL", "gpt-6-luna")
 # OpenAI processing tier for every LLM call. "fast" (formerly "priority") buys ~2.5x
-# faster, more consistent latency for a 2x per-token premium. Set LLM_SERVICE_TIER=""
-# (or "default") to fall back to standard processing. The API echoes the tier it
-# actually served as (gpt-6-luna reports "fast"); under a hard traffic ramp it may
-# silently downgrade to "default".
+# faster, more consistent latency for a 2x per-token premium — on gpt-6-luna that is
+# $0.20/$1.00 per MTok (short context), half of gpt-5.6-luna's Fast price. Set
+# LLM_SERVICE_TIER="" (or "default") to fall back to standard processing. The API
+# echoes the tier it actually served as (gpt-6-luna reports "fast"); under a hard
+# traffic ramp it may silently downgrade to "default".
 LLM_SERVICE_TIER = os.environ.get("LLM_SERVICE_TIER", "fast").strip()
 # Output verbosity (low|medium|high). Lower = fewer output tokens, generated faster. The
 # deployment checklist says to choose it per use case: "low" is unambiguously right for

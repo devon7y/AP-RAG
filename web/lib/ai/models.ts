@@ -7,8 +7,9 @@ export const CHAT_MODEL_ID = "gpt-6-luna";
 export const DEFAULT_CHAT_MODEL = CHAT_MODEL_ID;
 
 // Fast mode (renamed from Priority Processing on 2026-07-30): ~2.5x faster and more
-// consistent latency for a 2x per-token premium. The API takes "fast" or "priority"
-// interchangeably, and gpt-6-luna reports "fast" either way.
+// consistent latency for a 2x per-token premium. On gpt-6-luna that lands at
+// $0.20/$1.00 per MTok (short context), half of gpt-5.6-luna's Fast price. The API takes
+// "fast" or "priority" interchangeably, and gpt-6-luna reports "fast" either way.
 // @ai-sdk/openai decides per model ID whether a model gets the fast tier and reasoning
 // options, and SILENTLY DROPS both for an ID it doesn't recognize (it only logs a
 // warning). 3.0.118 recognizes gpt-6; 3.0.74 did not, and would have sent this model on
